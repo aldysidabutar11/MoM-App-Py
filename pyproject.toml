@@ -1,0 +1,110 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mom-igd"
+version = "0.1.0"
+description = "Fully offline Minutes of Meeting application for in-person meetings (Windows 11, native runtime)."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+# Intentionally no `license` field: the project is private/internal and no
+# license has been chosen by the owner. See README.md.
+authors = [{ name = "IGD" }]
+keywords = ["minutes-of-meeting", "offline", "windows", "asr", "diarization"]
+classifiers = [
+  "Private :: Do Not Upload",
+  "Environment :: Win32 (MS Windows)",
+  "Operating System :: Microsoft :: Windows :: Windows 11",
+  "Programming Language :: Python :: 3.12",
+]
+
+# ---------------------------------------------------------------------------
+# Phase 1 runtime dependencies.
+#
+# Deliberately minimal. NO cloud SDK, NO AI runtime, NO audio library.
+# Exact reproducible versions live in requirements.txt (runtime) and
+# requirements-dev.txt (development). This table declares intent; those files
+# declare the pinned truth.
+#
+# Forbidden in this project (enforced by tests/test_offline_policy.py):
+#   google-genai, google-generativeai, openai, anthropic, boto3, botocore,
+#   azure-*, google-cloud-*, cohere, mistralai, replicate, ...
+# Deferred to their implementation phases (must NOT appear in Phase 1):
+#   faster-whisper, ctranslate2, openai-whisper, pyannote.audio, torch,
+#   torchaudio, speechbrain, openvino, onnxruntime*, sounddevice, soundfile
+# ---------------------------------------------------------------------------
+dependencies = [
+  "fastapi>=0.115,<1.0",   # local loopback API (brings pydantic v2 + starlette)
+  "uvicorn>=0.34,<1.0",    # ASGI server, loopback only
+  "psutil>=6.0,<8.0",      # doctor: RAM / disk / Docker-WSL memory reporting
+  "pywebview>=5.3,<6.0",   # desktop shell on WebView2 (no Electron, no npm)
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0,<9.0",
+  "pytest-cov>=5.0,<8.0",
+  "httpx>=0.27,<1.0",      # required by starlette.testclient
+]
+
+[project.scripts]
+mom-igd = "mom_igd.__main__:main"
+
+[project.urls]
+Documentation = "file:///D:/Aldy/MoM-IGD/docs/architecture.md"
+
+# ---------------------------------------------------------------------------
+# Packaging: flat layout, package at repository root.
+# The application is run as `python -m mom_igd ...` from the repository root
+# and is packaged with PyInstaller later (Phase 11). No editable install is
+# required for development, which keeps the toolchain free of a build step.
+# ---------------------------------------------------------------------------
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mom_igd*"]
+exclude = ["tests*", "docs*", "config*", "models*"]
+
+[tool.setuptools.package-data]
+mom_igd = ["db/migrations/*.sql", "shell/web/*.html", "shell/web/*.css", "shell/web/*.js"]
+
+# ---------------------------------------------------------------------------
+# pytest
+# `pythonpath = ["."]` makes the flat-layout package importable without an
+# install step. Tests must never touch the real runtime data directory; see
+# tests/conftest.py for the guard.
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = [
+  "-ra",
+  "--strict-markers",
+  "--strict-config",
+]
+filterwarnings = ["error::DeprecationWarning:mom_igd.*"]
+markers = [
+  "slow: test that starts a real loopback socket server",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["mom_igd"]
+# Nothing is omitted on purpose: `mom_igd/shell/launcher.py` reports a low number
+# because `run_shell()` opens a GUI window and cannot be exercised headlessly,
+# and `mom_igd/__main__.py` reports 0% because its `if __name__ == "__main__"`
+# guard only runs in a child process (covered by tests/test_cli.py). Hiding
+# either behind `omit` would inflate the headline figure instead of explaining it.
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+]

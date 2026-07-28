@@ -1,0 +1,167 @@
+# ---------------------------------------------------------------------------
+# MoM-IGD .gitattributes
+#
+# WHY THIS FILE IS MANDATORY
+# The development machine has `core.autocrlf = true` (verified in Phase 0).
+# Without explicit rules, Git would apply CRLF/LF translation to any file it
+# guesses is text. For this project that would silently corrupt FLAC/WAV
+# audio, SQLite databases, ONNX/GGUF model files and binary evaluation
+# fixtures, and it would invalidate every SHA-256 checksum in the audio
+# manifest and the model registry.
+#
+# Rule: text files are normalised to LF in the repository and checked out with
+# native line endings on Windows; every binary format below is marked -text so
+# Git never touches its bytes.
+# ---------------------------------------------------------------------------
+
+# Default: let Git detect text and normalise it to LF in the repository.
+* text=auto
+
+# --- Source and configuration (explicit text, LF in repo) -----------------
+*.py      text diff=python
+*.pyi     text diff=python
+*.toml    text
+*.cfg     text
+*.ini     text
+*.json    text
+*.jsonl   text
+*.yaml    text
+*.yml     text
+*.md      text diff=markdown
+*.txt     text
+*.rst     text
+*.sql     text
+*.html    text diff=html
+*.css     text diff=css
+*.js      text
+*.svg     text
+*.rttm    text
+*.vtt     text
+*.srt     text
+*.csv     text
+.gitignore      text
+.gitattributes  text
+.editorconfig   text
+
+# --- Windows-only scripts must keep CRLF ----------------------------------
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# --- Shell scripts must keep LF -------------------------------------------
+*.sh text eol=lf
+
+# ===========================================================================
+# BINARY: audio (master recordings and working copies)
+# ===========================================================================
+*.wav   binary
+*.wave  binary
+*.flac  binary
+*.mp3   binary
+*.m4a   binary
+*.aac   binary
+*.ogg   binary
+*.oga   binary
+*.opus  binary
+*.wma   binary
+*.aiff  binary
+*.aif   binary
+*.raw   binary
+*.pcm   binary
+
+# ===========================================================================
+# BINARY: AI model artefacts
+# ===========================================================================
+*.gguf        binary
+*.ggml        binary
+*.bin         binary
+*.onnx        binary
+*.onnx_data   binary
+*.ot          binary
+*.pt          binary
+*.pth         binary
+*.ckpt        binary
+*.safetensors binary
+*.tflite      binary
+*.mlmodel     binary
+*.npy         binary
+*.npz         binary
+*.model       binary
+*.spm         binary
+
+# ===========================================================================
+# BINARY: databases
+# ===========================================================================
+*.db        binary
+*.db-wal    binary
+*.db-shm    binary
+*.sqlite    binary
+*.sqlite3   binary
+*.sqlite3-wal binary
+*.sqlite3-shm binary
+
+# ===========================================================================
+# BINARY: images
+# ===========================================================================
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.bmp   binary
+*.ico   binary
+*.tif   binary
+*.tiff  binary
+*.webp  binary
+*.avif  binary
+
+# ===========================================================================
+# BINARY: documents (generated MoM exports and templates)
+# ===========================================================================
+*.pdf   binary
+*.docx  binary
+*.doc   binary
+*.xlsx  binary
+*.xls   binary
+*.pptx  binary
+*.odt   binary
+*.rtf   binary
+
+# ===========================================================================
+# BINARY: archives and packaging output
+# ===========================================================================
+*.zip   binary
+*.7z    binary
+*.gz    binary
+*.tgz   binary
+*.bz2   binary
+*.xz    binary
+*.zst   binary
+*.tar   binary
+*.rar   binary
+*.cab   binary
+*.msi   binary
+*.exe   binary
+*.dll   binary
+*.pyd   binary
+*.lib   binary
+*.whl   binary
+
+# ===========================================================================
+# BINARY: fonts (bundled locally only; no remote fonts are ever fetched)
+# ===========================================================================
+*.ttf   binary
+*.otf   binary
+*.woff  binary
+*.woff2 binary
+
+# ===========================================================================
+# BINARY evaluation fixtures
+# Any file under a `binary/` fixture directory is byte-exact by definition.
+# ===========================================================================
+tests/fixtures/binary/**  binary
+eval/datasets/**          binary
+eval/fixtures/binary/**   binary
+
+# --- Exclude noise from GitHub language statistics / diffs ----------------
+requirements*.txt   linguist-generated=false
+docs/**             linguist-documentation

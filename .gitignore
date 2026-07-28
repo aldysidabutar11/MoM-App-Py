@@ -1,0 +1,190 @@
+# ---------------------------------------------------------------------------
+# MoM-IGD .gitignore
+#
+# Hard rule: model binaries, meeting recordings, voiceprints, generated MoM
+# documents, runtime databases and secrets are NEVER committed.
+# Source code, tests, migrations, templates and documentation ARE committed.
+# ---------------------------------------------------------------------------
+
+# --- Virtual environments --------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.conda/
+.python-version
+
+# --- Python caches ---------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+*.so
+.Python
+cython_debug/
+
+# --- Test / lint / type caches --------------------------------------------
+.pytest_cache/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+.hypothesis/
+
+# --- Coverage --------------------------------------------------------------
+.coverage
+.coverage.*
+coverage.xml
+coverage.json
+htmlcov/
+nosetests.xml
+*.cover
+
+# --- Build / packaging output ---------------------------------------------
+build/
+dist/
+sdist/
+wheels/
+wheelhouse/
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+MANIFEST
+*.spec.bak
+installer_output/
+
+# --- IDE / editor ----------------------------------------------------------
+.idea/
+.vs/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# --- OS noise --------------------------------------------------------------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# --- Secrets / credentials -------------------------------------------------
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
+*.crt
+*.cer
+*.jks
+*.keystore
+secrets.*
+credentials.*
+token.txt
+session_token*
+*.secret
+
+# --- Local configuration overrides ----------------------------------------
+config/local.toml
+config/*.local.toml
+
+# --- Logs ------------------------------------------------------------------
+logs/
+*.log
+*.log.*
+
+# --- Runtime databases -----------------------------------------------------
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# --- Runtime data root (should live OUTSIDE the repo; ignored defensively) --
+userdata/
+runtime_data/
+MoM-IGD-Data/
+data/
+
+# --- Meeting recordings / audio -------------------------------------------
+recordings/
+audio/
+*.wav
+*.flac
+*.mp3
+*.m4a
+*.aac
+*.ogg
+*.opus
+*.wma
+*.aiff
+*.aif
+*.raw
+*.pcm
+
+# --- Model binaries and model caches --------------------------------------
+models/**
+!models/.gitignore
+!models/README.md
+!models/registry.json
+*.gguf
+*.ggml
+*.bin
+*.onnx
+*.onnx_data
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.tflite
+*.mlmodel
+*.xml.bin
+*.npz
+.cache/
+huggingface/
+hf_cache/
+torch_cache/
+whisper_cache/
+openvino_cache/
+
+# --- Voiceprints / biometric data (NEVER commit) --------------------------
+voiceprints/
+*.voiceprint
+*.embedding
+*.emb
+
+# --- Generated MoM documents / exports ------------------------------------
+exports/
+*.mom.pdf
+*.mom.docx
+*.mom.md
+*.mom.json
+
+# --- Evaluation datasets (real meeting audio must not be committed) -------
+eval/datasets/**
+!eval/datasets/.gitignore
+eval/reports/
+
+# --- Temporary files -------------------------------------------------------
+temp/
+tmp/
+.tmp/
+*.tmp
+*.temp
+*.partial
+*.part
+*.bak
+*.orig
+*.rej
+backups/
+*.zip.part

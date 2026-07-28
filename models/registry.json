@@ -1,0 +1,5 @@
+{
+  "registry_schema_version": 1,
+  "description": "Declaration of model artefacts this build is allowed to load. EMPTY BY DESIGN in Phase 1: no ASR, diarization, speaker-embedding or LLM provider has been selected yet; the choice is deferred to the Phase 4A benchmark (see docs/adr/0005-ai-provider-selection-deferred-to-phase-4a.md). This file is tracked in Git because it is a reviewable declaration. The binaries it describes live under <data_root>/models and are never committed.",
+  "models": []
+}

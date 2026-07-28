@@ -1,0 +1,60 @@
+# ===========================================================================
+# MoM-IGD - Phase 1 RUNTIME dependencies, exact versions.
+#
+# Target interpreter: official Python 3.12 (python.org, per-user install).
+# NOT the Microsoft Store shim, NOT Python 3.14.
+#
+# Install:
+#     py -3.12 -m venv .venv
+#     .venv\Scripts\python.exe -m pip install -r requirements.txt
+#
+# Refresh (after deliberately changing a direct dependency in pyproject.toml):
+#     .venv\Scripts\python.exe -m pip install --upgrade <package>
+#     .venv\Scripts\python.exe -m pip freeze --exclude-editable
+#   then move dev-only lines into requirements-dev.txt and keep this file to the
+#   runtime closure. `tests/test_offline_policy.py` fails if a cloud SDK or a
+#   deferred AI/audio dependency appears in the environment, and
+#   `tests/test_cli.py` fails if any line here is not pinned with `==`.
+#
+# Hash-pinned offline wheelhouse creation is deferred to Phase 11.
+# ---------------------------------------------------------------------------
+# DIRECT (4): fastapi, uvicorn, psutil, pywebview
+# Everything else below is a transitive dependency of those four.
+#
+# Deliberately ABSENT and forbidden in Phase 1:
+#   - any cloud SDK (google-genai, openai, anthropic, boto3, azure-*, ...)
+#   - any AI runtime (faster-whisper, ctranslate2, torch, onnxruntime, openvino,
+#     pyannote.audio, speechbrain, llama-cpp-python, transformers)
+#   - any audio library (sounddevice, soundfile, librosa, pyaudio, av, soxr)
+#   - Redis, Kafka, MinIO, any vector database
+# ===========================================================================
+
+# --- direct ---------------------------------------------------------------
+fastapi==0.140.7
+psutil==7.2.2
+pywebview==5.4
+uvicorn==0.51.0
+
+# --- transitive: fastapi -> starlette / pydantic --------------------------
+annotated-doc==0.0.4
+annotated-types==0.8.0
+anyio==4.14.2
+idna==3.18
+pydantic==2.13.4
+pydantic-core==2.46.4
+starlette==1.3.1
+typing-extensions==4.16.0
+typing-inspection==0.4.2
+
+# --- transitive: uvicorn --------------------------------------------------
+click==8.4.2
+colorama==0.4.6
+h11==0.16.0
+
+# --- transitive: pywebview (WebView2 binding on Windows) ------------------
+bottle==0.13.4
+cffi==2.1.0
+clr-loader==0.3.1
+proxy-tools==0.1.0
+pycparser==3.0
+pythonnet==3.1.0

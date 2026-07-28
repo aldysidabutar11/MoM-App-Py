@@ -1,0 +1,116 @@
+# ===========================================================================
+# MoM-IGD default configuration  (tracked in Git)
+#
+# Do not put machine-specific values or secrets here. For per-machine
+# overrides create `config/local.toml` (git-ignored) or set MOM_IGD_* environment
+# variables. Precedence, lowest to highest:
+#
+#   default.toml  <  local.toml  <  MOM_IGD_* env vars  <  CLI flags
+#
+# Every setting below is validated on load. Invalid values abort startup with an
+# explicit message rather than being silently corrected.
+# ===========================================================================
+
+# Configuration schema version. A build refuses to load a schema it does not
+# understand instead of guessing.
+config_schema_version = 1
+
+# Runtime mode. Only "offline" is supported: there is no cloud or hybrid mode
+# and no cloud fallback (ADR-0002).
+runtime_mode = "offline"
+
+# Offline invariant. Rejected if set to false.
+offline = true
+
+# DEBUG | INFO | WARNING | ERROR | CRITICAL
+log_level = "INFO"
+
+# ---------------------------------------------------------------------------
+# Runtime data root (ADR-0003)
+#
+# All recordings, databases, exports, logs, model binaries, temp files and
+# backups live under this directory, which must be OUTSIDE the repository.
+# Override with the MOM_IGD_DATA_DIR environment variable or in local.toml.
+# ---------------------------------------------------------------------------
+data_root = 'D:\MoM-IGD-Data'
+
+# Model registry declaration. Relative paths resolve against the repository
+# root. The registry (a small JSON file) is tracked in Git; the model BINARIES
+# it describes live under <data_root>/models and are never committed.
+model_registry_path = 'models/registry.json'
+
+# ---------------------------------------------------------------------------
+# Local HTTP API
+#
+# host is fixed to loopback. Any wildcard, LAN or public address is rejected by
+# configuration validation, not merely discouraged.
+# port_strategy:
+#   "ephemeral" - bind port 0 and let the OS pick a free port (default; a
+#                 single-device desktop app has no reason to claim a fixed port
+#                 and this removes port-conflict failures entirely)
+#   "fixed"     - bind the `port` below
+# ---------------------------------------------------------------------------
+[api]
+host = "127.0.0.1"
+port = 8765
+port_strategy = "ephemeral"
+# OpenAPI/Swagger is served only over loopback and is additionally protected by
+# a Host-header allowlist that blocks DNS-rebinding attempts.
+docs_enabled = true
+startup_timeout_s = 15.0
+shutdown_timeout_s = 10.0
+
+# ---------------------------------------------------------------------------
+# Resource guardrails (ADR-0004)
+#
+# Target device: Intel Core i7-1260P, 16 GB RAM, Intel Iris Xe.
+# Phase 0 measured only ~4.1 GB free RAM under a normal desktop session, so at
+# most one heavy model may be resident at any moment. Values above 1 are
+# rejected.
+# ---------------------------------------------------------------------------
+[resources]
+max_heavy_workers = 1
+# Warning threshold only: the doctor reports WARN below this, it does not fail.
+min_free_ram_mb = 2048
+# Warning threshold for free space on the runtime data volume.
+min_free_disk_gb = 10
+
+# ---------------------------------------------------------------------------
+# SQLite (ADR-0003)
+#
+# WAL mode and foreign-key enforcement are verified on every connection; a
+# database that does not report them is treated as an error, not a warning.
+# ---------------------------------------------------------------------------
+[database]
+filename = "mom_igd.db"
+busy_timeout_ms = 5000
+
+# ---------------------------------------------------------------------------
+# Desktop shell (pywebview + WebView2)
+# ---------------------------------------------------------------------------
+[ui]
+startup_timeout_s = 20.0
+window_width = 1180
+window_height = 780
+
+# ---------------------------------------------------------------------------
+# AI providers
+#
+# EMPTY BY DESIGN IN PHASE 1. No ASR, diarization, speaker-embedding or LLM
+# provider has been selected; the choice is deferred to the Phase 4A benchmark
+# (ADR-0005).
+#
+# When entries are added they must be either:
+#   * an absolute filesystem path, or a path containing a separator
+#     (resolved against <data_root>/models), or
+#   * a loopback URL: http://127.0.0.1:PORT, http://localhost:PORT, http://[::1]:PORT
+#
+# Any other host - including every hosted inference API - is rejected by
+# configuration validation.
+# ---------------------------------------------------------------------------
+[providers]
+
+[providers.endpoints]
+# Examples (commented out; Phase 1 selects nothing):
+# asr = 'D:\MoM-IGD-Data\models\asr\model.bin'
+# llm = "http://127.0.0.1:8080"

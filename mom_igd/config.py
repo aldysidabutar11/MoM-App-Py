@@ -1,0 +1,456 @@
+"""Versioned application configuration and its validation rules.
+
+Configuration is layered, highest precedence last:
+
+1. ``config/default.toml`` -- tracked in Git, the documented defaults.
+2. ``config/local.toml`` -- optional, git-ignored, per-machine overrides.
+3. Environment variables (``MOM_IGD_*``).
+4. Explicit ``overrides`` passed by the caller (CLI flags, tests).
+
+Validation is not advisory. :func:`load_config` refuses to produce a
+configuration object that would let the application bind to a non-loopback
+address, run more than one heavy worker, write runtime data into the source
+tree, use a relative data path, run in an unsupported runtime mode, or point a
+provider at a cloud URL.
+"""
+
+from __future__ import annotations
+
+import copy
+import os
+import tomllib
+from pathlib import Path
+from typing import Any, Final, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from mom_igd import offline_policy
+from mom_igd.paths import (
+    ENV_DATA_DIR,
+    PathValidationError,
+    RuntimePaths,
+    repo_root,
+    resolve_data_root,
+)
+from mom_igd.version import (
+    APP_NAME,
+    APP_VERSION,
+    CONFIG_SCHEMA_VERSION,
+)
+
+__all__ = [
+    "AppConfig",
+    "ApiConfig",
+    "ConfigError",
+    "DatabaseConfig",
+    "PUBLIC_ENDPOINTS",
+    "ProvidersConfig",
+    "ResourceConfig",
+    "SUPPORTED_RUNTIME_MODES",
+    "UiConfig",
+    "default_config_path",
+    "load_config",
+]
+
+SUPPORTED_RUNTIME_MODES: Final[frozenset[str]] = frozenset({"offline"})
+"""Runtime modes this build supports. Phase 1 supports offline only."""
+
+MAX_HEAVY_WORKERS: Final[int] = 1
+"""Hard ceiling from ADR-0004: at most one heavy model in one worker process."""
+
+LOG_LEVELS: Final[tuple[str, ...]] = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+PUBLIC_ENDPOINTS: Final[tuple[str, ...]] = ("/health", "/version")
+"""Endpoints intentionally reachable without the session token.
+
+Rationale (documented policy, see docs/architecture.md):
+
+* Both are already restricted to loopback by the bind address and by the
+  ``Host`` header check, so only local processes of the signed-in user can reach
+  them at all.
+* Both must work *before* the desktop shell has obtained a session token, so the
+  shell can report "backend unreachable" instead of "unauthorised".
+* Neither returns a filesystem path, hardware inventory, secret or user datum --
+  only the application name, version, phase and coarse readiness booleans.
+
+Every other endpoint, including ``/doctor`` and ``/internal/ready``, requires the
+session token because it exposes host paths and hardware details.
+"""
+
+_ENV_PREFIX: Final[str] = "MOM_IGD_"
+
+
+class ConfigError(ValueError):
+    """Raised when configuration is invalid. Wraps pydantic and path errors."""
+
+
+# ---------------------------------------------------------------------------
+# Sections
+# ---------------------------------------------------------------------------
+
+
+class ApiConfig(BaseModel):
+    """Local HTTP API settings. Loopback only, by construction."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    host: str = "127.0.0.1"
+    port: int = Field(default=8765, ge=1, le=65535)
+    port_strategy: Literal["fixed", "ephemeral"] = "ephemeral"
+    docs_enabled: bool = True
+    startup_timeout_s: float = Field(default=15.0, gt=0, le=120)
+    shutdown_timeout_s: float = Field(default=10.0, gt=0, le=120)
+
+    @field_validator("host")
+    @classmethod
+    def _host_must_be_loopback(cls, value: str) -> str:
+        return offline_policy.validate_bind_host(value)
+
+    def effective_port(self) -> int:
+        """Return the port to bind: ``0`` requests an ephemeral OS-assigned port."""
+        return 0 if self.port_strategy == "ephemeral" else self.port
+
+    def base_url(self, actual_port: int | None = None) -> str:
+        port = self.port if actual_port is None else actual_port
+        return f"http://{self.host}:{port}"
+
+
+class ResourceConfig(BaseModel):
+    """Resource guardrails for a 16 GB single-device machine (ADR-0004)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_heavy_workers: int = Field(default=1, ge=1)
+    min_free_ram_mb: int = Field(default=2048, ge=0)
+    min_free_disk_gb: int = Field(default=10, ge=0)
+
+    @field_validator("max_heavy_workers")
+    @classmethod
+    def _at_most_one_heavy_worker(cls, value: int) -> int:
+        if value > MAX_HEAVY_WORKERS:
+            raise ValueError(
+                f"max_heavy_workers={value} exceeds the hard limit of "
+                f"{MAX_HEAVY_WORKERS}. Only one heavy model may be resident at a "
+                "time on the target hardware (16 GB RAM, ~4 GB observed free); "
+                "see docs/adr/0004-single-heavy-worker-resource-policy.md."
+            )
+        return value
+
+
+class DatabaseConfig(BaseModel):
+    """SQLite settings. WAL and foreign keys are verified at connect time."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    filename: str = "mom_igd.db"
+    busy_timeout_ms: int = Field(default=5000, ge=0, le=120_000)
+
+    @field_validator("filename")
+    @classmethod
+    def _bare_filename(cls, value: str) -> str:
+        if not value or "/" in value or "\\" in value or value in {".", ".."}:
+            raise ValueError(
+                f"database.filename must be a bare file name, got {value!r}. The "
+                "directory is decided by the runtime path service, not by config."
+            )
+        return value
+
+
+class UiConfig(BaseModel):
+    """Desktop shell settings (pywebview / WebView2)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    startup_timeout_s: float = Field(default=20.0, gt=0, le=300)
+    window_width: int = Field(default=1180, ge=640, le=7680)
+    window_height: int = Field(default=780, ge=480, le=4320)
+    window_title: str = f"{APP_NAME} - Offline Minutes of Meeting"
+
+
+class ProvidersConfig(BaseModel):
+    """Future AI provider endpoints.
+
+    Empty in Phase 1: no ASR, diarization, speaker-embedding or LLM provider has
+    been selected (ADR-0005). Any value present must be a local filesystem path
+    or a loopback URL.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    endpoints: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("endpoints")
+    @classmethod
+    def _endpoints_must_be_local(cls, value: dict[str, str]) -> dict[str, str]:
+        try:
+            return offline_policy.validate_provider_endpoints(value)
+        except offline_policy.OfflinePolicyError as exc:
+            raise ValueError(str(exc)) from None
+
+
+# ---------------------------------------------------------------------------
+# Root configuration
+# ---------------------------------------------------------------------------
+
+
+class AppConfig(BaseModel):
+    """Fully validated application configuration."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    config_schema_version: int = CONFIG_SCHEMA_VERSION
+    app_name: str = APP_NAME
+    app_version: str = APP_VERSION
+
+    runtime_mode: str = "offline"
+    offline: bool = True
+    log_level: str = "INFO"
+
+    data_root: Path
+    model_registry_path: Path
+
+    api: ApiConfig = Field(default_factory=ApiConfig)
+    resources: ResourceConfig = Field(default_factory=ResourceConfig)
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    ui: UiConfig = Field(default_factory=UiConfig)
+    providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
+
+    # -- validators ---------------------------------------------------------
+
+    @field_validator("config_schema_version")
+    @classmethod
+    def _known_schema_version(cls, value: int) -> int:
+        if value != CONFIG_SCHEMA_VERSION:
+            raise ValueError(
+                f"config_schema_version={value} is not supported by this build "
+                f"(expected {CONFIG_SCHEMA_VERSION}). Refusing to guess how to "
+                "interpret an unknown configuration schema."
+            )
+        return value
+
+    @field_validator("runtime_mode")
+    @classmethod
+    def _supported_runtime_mode(cls, value: str) -> str:
+        mode = (value or "").strip().lower()
+        if mode not in SUPPORTED_RUNTIME_MODES:
+            raise ValueError(
+                f"runtime_mode={value!r} is not supported. Allowed: "
+                f"{sorted(SUPPORTED_RUNTIME_MODES)}. There is no cloud or hybrid "
+                "mode: the application has no cloud fallback by design."
+            )
+        return mode
+
+    @field_validator("offline")
+    @classmethod
+    def _offline_must_stay_true(cls, value: bool) -> bool:
+        if not value:
+            raise ValueError(
+                "offline=false is rejected. Offline runtime is an architectural "
+                "invariant (ADR-0002), not a toggle."
+            )
+        return value
+
+    @field_validator("log_level")
+    @classmethod
+    def _known_log_level(cls, value: str) -> str:
+        level = (value or "").strip().upper()
+        if level not in LOG_LEVELS:
+            raise ValueError(f"log_level={value!r} is not one of {list(LOG_LEVELS)}.")
+        return level
+
+    @field_validator("data_root", mode="before")
+    @classmethod
+    def _validated_data_root(cls, value: Any) -> Path:
+        # env={} so that constructing AppConfig directly never silently picks up
+        # MOM_IGD_DATA_DIR; precedence is resolved once, in load_config().
+        try:
+            return resolve_data_root(value, env={})
+        except PathValidationError as exc:
+            raise ValueError(str(exc)) from None
+
+    @field_validator("model_registry_path", mode="before")
+    @classmethod
+    def _resolved_registry_path(cls, value: Any) -> Path:
+        raw = Path(os.fspath(value)) if value is not None else Path("models/registry.json")
+        if not raw.is_absolute():
+            raw = repo_root() / raw
+        return Path(os.path.normpath(raw))
+
+    # -- derived helpers ----------------------------------------------------
+
+    def runtime_paths(self) -> RuntimePaths:
+        """Return the runtime path service for this configuration."""
+        return RuntimePaths(root=self.data_root)
+
+    def database_path(self) -> Path:
+        return self.runtime_paths().database_path(self.database.filename)
+
+    def summary(self) -> dict[str, Any]:
+        """Serialisable, secret-free summary for diagnostics and the shell."""
+        return {
+            "app_name": self.app_name,
+            "app_version": self.app_version,
+            "config_schema_version": self.config_schema_version,
+            "runtime_mode": self.runtime_mode,
+            "offline": self.offline,
+            "log_level": self.log_level,
+            "data_root": str(self.data_root),
+            "model_registry_path": str(self.model_registry_path),
+            "api": {
+                "host": self.api.host,
+                "port": self.api.port,
+                "port_strategy": self.api.port_strategy,
+                "docs_enabled": self.api.docs_enabled,
+            },
+            "resources": {
+                "max_heavy_workers": self.resources.max_heavy_workers,
+                "min_free_ram_mb": self.resources.min_free_ram_mb,
+                "min_free_disk_gb": self.resources.min_free_disk_gb,
+            },
+            "database": {
+                "filename": self.database.filename,
+                "busy_timeout_ms": self.database.busy_timeout_ms,
+            },
+            "ui": {"startup_timeout_s": self.ui.startup_timeout_s},
+            "providers": {"endpoints": dict(self.providers.endpoints)},
+        }
+
+
+# ---------------------------------------------------------------------------
+# Loading
+# ---------------------------------------------------------------------------
+
+
+def default_config_path() -> Path:
+    """Path to the tracked default configuration file."""
+    return repo_root() / "config" / "default.toml"
+
+
+def local_config_path() -> Path:
+    """Path to the optional, git-ignored per-machine override file."""
+    return repo_root() / "config" / "local.toml"
+
+
+def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    result = copy.deepcopy(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
+def _read_toml(path: Path) -> dict[str, Any]:
+    try:
+        with path.open("rb") as handle:
+            return tomllib.load(handle)
+    except FileNotFoundError:
+        raise ConfigError(f"Configuration file not found: {path}") from None
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"Configuration file {path} is not valid TOML: {exc}") from None
+
+
+def _env_overrides(env: dict[str, str]) -> dict[str, Any]:
+    """Translate ``MOM_IGD_*`` variables into a nested override mapping."""
+    overrides: dict[str, Any] = {}
+
+    def _set(path: tuple[str, ...], value: Any) -> None:
+        cursor = overrides
+        for part in path[:-1]:
+            cursor = cursor.setdefault(part, {})
+        cursor[path[-1]] = value
+
+    simple: dict[str, tuple[str, ...]] = {
+        f"{_ENV_PREFIX}LOG_LEVEL": ("log_level",),
+        f"{_ENV_PREFIX}RUNTIME_MODE": ("runtime_mode",),
+        f"{_ENV_PREFIX}MODEL_REGISTRY": ("model_registry_path",),
+        f"{_ENV_PREFIX}API_HOST": ("api", "host"),
+        f"{_ENV_PREFIX}API_PORT_STRATEGY": ("api", "port_strategy"),
+        f"{_ENV_PREFIX}DB_FILENAME": ("database", "filename"),
+    }
+    for name, target in simple.items():
+        raw = env.get(name)
+        if raw is not None and raw.strip():
+            _set(target, raw.strip())
+
+    integer: dict[str, tuple[str, ...]] = {
+        f"{_ENV_PREFIX}API_PORT": ("api", "port"),
+        f"{_ENV_PREFIX}DB_BUSY_TIMEOUT_MS": ("database", "busy_timeout_ms"),
+        f"{_ENV_PREFIX}MIN_FREE_RAM_MB": ("resources", "min_free_ram_mb"),
+        f"{_ENV_PREFIX}MIN_FREE_DISK_GB": ("resources", "min_free_disk_gb"),
+        f"{_ENV_PREFIX}MAX_HEAVY_WORKERS": ("resources", "max_heavy_workers"),
+    }
+    for name, target in integer.items():
+        raw = env.get(name)
+        if raw is not None and raw.strip():
+            try:
+                _set(target, int(raw.strip()))
+            except ValueError:
+                raise ConfigError(
+                    f"Environment variable {name}={raw!r} must be an integer."
+                ) from None
+
+    return overrides
+
+
+def load_config(
+    config_path: str | os.PathLike[str] | None = None,
+    *,
+    data_root: str | os.PathLike[str] | None = None,
+    overrides: dict[str, Any] | None = None,
+    env: dict[str, str] | None = None,
+    use_local_file: bool = True,
+) -> AppConfig:
+    """Load, layer and validate the application configuration.
+
+    Args:
+        config_path: Defaults file to read; defaults to ``config/default.toml``.
+        data_root: Highest-precedence runtime data root (CLI ``--data-dir``).
+        overrides: Nested mapping merged last, above environment variables.
+        env: Environment mapping; defaults to ``os.environ``.
+        use_local_file: Read ``config/local.toml`` when it exists.
+
+    Raises:
+        ConfigError: For any validation failure, with a message that names the
+            offending setting and why it is rejected.
+    """
+    environ = dict(os.environ if env is None else env)
+
+    base_path = Path(config_path) if config_path is not None else default_config_path()
+    data = _read_toml(base_path)
+
+    if use_local_file:
+        local = local_config_path()
+        if local.is_file():
+            data = _deep_merge(data, _read_toml(local))
+
+    data = _deep_merge(data, _env_overrides(environ))
+    if overrides:
+        data = _deep_merge(data, overrides)
+
+    # Data-root precedence: explicit argument > env var > config file > default.
+    chosen_root: str | os.PathLike[str] | None = data_root
+    if chosen_root is None:
+        from_env = environ.get(ENV_DATA_DIR)
+        if from_env and from_env.strip():
+            chosen_root = from_env
+    if chosen_root is None:
+        from_file = data.get("data_root")
+        if isinstance(from_file, str) and from_file.strip():
+            chosen_root = from_file
+    try:
+        data["data_root"] = resolve_data_root(chosen_root, env=environ)
+    except PathValidationError as exc:
+        raise ConfigError(str(exc)) from None
+
+    data.setdefault("model_registry_path", "models/registry.json")
+
+    try:
+        return AppConfig(**data)
+    except ValidationError as exc:
+        details = "; ".join(
+            f"{'.'.join(str(p) for p in err['loc']) or '<root>'}: {err['msg']}"
+            for err in exc.errors()
+        )
+        raise ConfigError(f"Invalid configuration ({base_path}): {details}") from None

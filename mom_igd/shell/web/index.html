@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!--
+    Content-Security-Policy: no external origin is reachable at all. Everything
+    is served from the loopback backend; there is no CDN, no remote font, no
+    external script and no external stylesheet.
+  -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>MoM-IGD — Offline Minutes of Meeting</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Lewati ke konten utama</a>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">MoM</span>
+      <div class="brand-text">
+        <h1 id="app-name">MoM-IGD</h1>
+        <p class="brand-sub">
+          Minutes of Meeting — <span id="app-version">memuat…</span>
+          <span class="phase-chip" id="app-phase">Phase —</span>
+        </p>
+      </div>
+    </div>
+
+    <div class="topbar-right">
+      <span class="badge badge-offline" id="offline-badge" title="Aplikasi tidak pernah menghubungi layanan cloud saat runtime.">
+        <span class="dot" aria-hidden="true"></span> Offline Mode
+      </span>
+      <button type="button" class="btn" id="refresh-btn">Muat ulang status</button>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- ================= STATUS ================= -->
+    <section aria-labelledby="status-heading">
+      <div class="section-head">
+        <h2 id="status-heading">Status sistem</h2>
+        <p class="muted" id="status-updated">Belum diperiksa.</p>
+      </div>
+
+      <div class="status-grid">
+        <article class="status-card" id="card-backend">
+          <header>
+            <span class="status-pill" data-state="unknown">—</span>
+            <h3>Backend lokal</h3>
+          </header>
+          <p class="status-detail">Memeriksa koneksi ke backend loopback…</p>
+          <dl class="kv"></dl>
+        </article>
+
+        <article class="status-card" id="card-database">
+          <header>
+            <span class="status-pill" data-state="unknown">—</span>
+            <h3>Database</h3>
+          </header>
+          <p class="status-detail">Memeriksa SQLite, WAL, dan versi migrasi…</p>
+          <dl class="kv"></dl>
+        </article>
+
+        <article class="status-card" id="card-datadir">
+          <header>
+            <span class="status-pill" data-state="unknown">—</span>
+            <h3>Direktori data runtime</h3>
+          </header>
+          <p class="status-detail">Memeriksa lokasi dan hak tulis…</p>
+          <dl class="kv"></dl>
+        </article>
+
+        <article class="status-card" id="card-readiness">
+          <header>
+            <span class="status-pill" data-state="unknown">—</span>
+            <h3>Hardware &amp; kesiapan</h3>
+          </header>
+          <p class="status-detail">Menjalankan diagnostik…</p>
+          <dl class="kv"></dl>
+        </article>
+      </div>
+
+      <details class="diag" id="diag-details">
+        <summary>Rincian diagnostik <span class="muted">(hasil <code>doctor</code>)</span></summary>
+        <div class="diag-body">
+          <p class="muted">Belum ada data. Klik “Muat ulang status”.</p>
+        </div>
+      </details>
+    </section>
+
+    <!-- ================= FUTURE FEATURES ================= -->
+    <section aria-labelledby="features-heading">
+      <div class="section-head">
+        <h2 id="features-heading">Fitur aplikasi</h2>
+        <p class="muted">
+          Semua kartu di bawah <strong>belum diimplementasikan</strong>. Phase 1 hanya
+          membangun fondasi: konfigurasi, path runtime, database, state machine,
+          API loopback, diagnostik, dan shell ini.
+        </p>
+      </div>
+
+      <div class="feature-grid">
+        <article class="feature-card" aria-disabled="true">
+          <div class="feature-head">
+            <h3>Meeting setup</h3>
+            <span class="phase-tag">Phase 1–2</span>
+          </div>
+          <p>Membuat rapat, agenda, jadwal, dan pre-flight perangkat sebelum merekam.</p>
+          <p class="not-implemented">Belum diimplementasikan</p>
+        </article>
+
+        <article class="feature-card" aria-disabled="true">
+          <div class="feature-head">
+            <h3>Recording</h3>
+            <span class="phase-tag">Phase 2</span>
+          </div>
+          <p>Perekaman WASAPI, chunk lossless, manifest + checksum, dan pemulihan crash.</p>
+          <p class="not-implemented">Belum diimplementasikan</p>
+        </article>
+
+        <article class="feature-card" aria-disabled="true">
+          <div class="feature-head">
+            <h3>Participants</h3>
+            <span class="phase-tag">Phase 3</span>
+          </div>
+          <p>Registrasi hingga sembilan peserta dan enrollment suara terenkripsi.</p>
+          <p class="not-implemented">Belum diimplementasikan</p>
+        </article>
+
+        <article class="feature-card" aria-disabled="true">
+          <div class="feature-head">
+            <h3>Processing</h3>
+            <span class="phase-tag">Phase 4–8</span>
+          </div>
+          <p>VAD, ASR, diarization, voice ID, rekonsiliasi, dan ekstraksi MoM — satu model berat pada satu waktu.</p>
+          <p class="not-implemented">Belum diimplementasikan</p>
+        </article>
+
+        <article class="feature-card" aria-disabled="true">
+          <div class="feature-head">
+            <h3>Review</h3>
+            <span class="phase-tag">Phase 9</span>
+          </div>
+          <p>Peninjauan manusia dengan pemutaran audio, koreksi pembicara, dan gate persetujuan.</p>
+          <p class="not-implemented">Belum diimplementasikan</p>
+        </article>
+
+        <article class="feature-card" aria-disabled="true">
+          <div class="feature-head">
+            <h3>Export</h3>
+            <span class="phase-tag">Phase 10</span>
+          </div>
+          <p>Ekspor PDF, Word, JSON, dan Markdown dari snapshot yang telah disetujui.</p>
+          <p class="not-implemented">Belum diimplementasikan</p>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>
+      Runtime offline · tanpa cloud API · tanpa CUDA · tanpa Docker di produksi.
+      Provisioning dependensi dan model dilakukan sekali secara terkendali di luar runtime.
+    </p>
+    <p class="muted" id="footer-build">—</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

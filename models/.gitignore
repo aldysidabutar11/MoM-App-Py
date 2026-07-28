@@ -1,0 +1,7 @@
+# Nothing in this directory is committed except the registry declaration and the
+# two files that explain it. Model binaries live under <data_root>/models
+# (default D:\MoM-IGD-Data\models), never inside the repository.
+*
+!.gitignore
+!README.md
+!registry.json

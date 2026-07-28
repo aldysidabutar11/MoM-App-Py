@@ -1,0 +1,35 @@
+# ===========================================================================
+# MoM-IGD - Phase 1 DEVELOPMENT/TEST dependencies, exact versions.
+#
+# Install (runtime first, then this file):
+#     .venv\Scripts\python.exe -m pip install -r requirements.txt
+#     .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+#
+# Refresh: see the header of requirements.txt.
+# ---------------------------------------------------------------------------
+# DIRECT (3): pytest, pytest-cov, httpx
+#
+# httpx is required by starlette.testclient. It is a TEST-ONLY dependency: the
+# application itself never uses an HTTP client library. The desktop shell's
+# loopback proxy and the headless smoke test both use `urllib.request` from the
+# standard library, so no HTTP client ships in the runtime closure.
+#
+# certifi arrives with httpx as a CA bundle. It is inert here: no test and no
+# runtime code makes an outbound TLS connection.
+# ===========================================================================
+
+-r requirements.txt
+
+# --- direct ---------------------------------------------------------------
+httpx==0.28.1
+pytest==8.4.2
+pytest-cov==7.1.0
+
+# --- transitive -----------------------------------------------------------
+certifi==2026.7.22
+coverage==7.15.2
+httpcore==1.0.9
+iniconfig==2.3.0
+packaging==26.2
+pluggy==1.6.0
+pygments==2.20.0
