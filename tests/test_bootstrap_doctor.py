@@ -1,7 +1,7 @@
 """Reduced, standard-library-only diagnostics.
 
 The property under test: `doctor` must produce a useful report on an interpreter
-where the Phase 1 runtime dependencies are absent, instead of raising
+where the core runtime dependencies are absent, instead of raising
 `ModuleNotFoundError`. That is what makes `py -3.12 -m mom_igd doctor` usable
 straight from the repository root on an unprepared machine.
 """

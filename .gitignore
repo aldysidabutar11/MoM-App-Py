@@ -96,8 +96,29 @@ session_token*
 config/local.toml
 config/*.local.toml
 
+# ---------------------------------------------------------------------------
+# HAZARD, read before editing the directory patterns below.
+#
+# An unanchored pattern like `audio/` matches a directory of that name at ANY
+# depth -- including the source package `mom_igd/audio/`. During Phase 2 that
+# silently excluded the entire capture engine from version control: `git status`
+# showed nothing and a commit would have dropped the code.
+#
+# Every RUNTIME-DATA directory pattern is therefore anchored with a leading `/`
+# so it matches only at the repository root. Runtime data lives outside the
+# repository anyway (default D:\MoM-IGD-Data); these rules are defence in depth,
+# not the primary mechanism.
+#
+# Extension patterns (*.wav, *.db, ...) stay unanchored -- they can never shadow
+# a Python source file, and `tests/test_paths.py` fails the build if any such
+# artefact appears anywhere in the tree.
+#
+# `tests/test_repo_hygiene.py` asserts that no packaged source file is ignored,
+# so this class of mistake cannot recur silently.
+# ---------------------------------------------------------------------------
+
 # --- Logs ------------------------------------------------------------------
-logs/
+/logs/
 *.log
 *.log.*
 
@@ -111,14 +132,15 @@ logs/
 *.sqlite3-shm
 
 # --- Runtime data root (should live OUTSIDE the repo; ignored defensively) --
-userdata/
-runtime_data/
-MoM-IGD-Data/
-data/
+/userdata/
+/runtime_data/
+/MoM-IGD-Data/
+/data/
 
 # --- Meeting recordings / audio -------------------------------------------
-recordings/
-audio/
+# Anchored: `mom_igd/audio/` is SOURCE CODE and must stay tracked.
+/recordings/
+/audio/
 *.wav
 *.flac
 *.mp3
@@ -158,13 +180,13 @@ whisper_cache/
 openvino_cache/
 
 # --- Voiceprints / biometric data (NEVER commit) --------------------------
-voiceprints/
+/voiceprints/
 *.voiceprint
 *.embedding
 *.emb
 
 # --- Generated MoM documents / exports ------------------------------------
-exports/
+/exports/
 *.mom.pdf
 *.mom.docx
 *.mom.md
@@ -176,8 +198,8 @@ eval/datasets/**
 eval/reports/
 
 # --- Temporary files -------------------------------------------------------
-temp/
-tmp/
+/temp/
+/tmp/
 .tmp/
 *.tmp
 *.temp
@@ -186,5 +208,5 @@ tmp/
 *.bak
 *.orig
 *.rej
-backups/
+/backups/
 *.zip.part

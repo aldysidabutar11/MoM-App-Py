@@ -18,14 +18,20 @@
 #
 # Hash-pinned offline wheelhouse creation is deferred to Phase 11.
 # ---------------------------------------------------------------------------
-# DIRECT (4): fastapi, uvicorn, psutil, pywebview
-# Everything else below is a transitive dependency of those four.
+# DIRECT (5): fastapi, uvicorn, psutil, pywebview, sounddevice
+# Everything else below is a transitive dependency of those five.
 #
-# Deliberately ABSENT and forbidden in Phase 1:
+# `sounddevice` arrived with Phase 2 (offline audio capture). It is the only
+# audio dependency: it wraps PortAudio/WASAPI for input, and `RawInputStream`
+# hands us raw bytes, so NumPy is not required. WAV files are written with the
+# standard-library `wave` module and checksums with `hashlib`, so no codec,
+# resampler or DSP library is needed either.
+#
+# Deliberately ABSENT and forbidden:
 #   - any cloud SDK (google-genai, openai, anthropic, boto3, azure-*, ...)
 #   - any AI runtime (faster-whisper, ctranslate2, torch, onnxruntime, openvino,
 #     pyannote.audio, speechbrain, llama-cpp-python, transformers)
-#   - any audio library (sounddevice, soundfile, librosa, pyaudio, av, soxr)
+#   - numpy, soundfile, librosa, pyaudio, av, soxr, webrtcvad, silero-vad
 #   - Redis, Kafka, MinIO, any vector database
 # ===========================================================================
 
@@ -33,6 +39,7 @@
 fastapi==0.140.7
 psutil==7.2.2
 pywebview==5.4
+sounddevice==0.5.5
 uvicorn==0.51.0
 
 # --- transitive: fastapi -> starlette / pydantic --------------------------
@@ -51,7 +58,10 @@ click==8.4.2
 colorama==0.4.6
 h11==0.16.0
 
-# --- transitive: pywebview (WebView2 binding on Windows) ------------------
+# --- transitive: pywebview (WebView2 binding on Windows) + sounddevice ----
+# cffi/pycparser are shared: pywebview needs them via clr-loader, sounddevice
+# needs them to bind PortAudio. The PortAudio binary ships inside the
+# sounddevice wheel, so there is no separate native dependency to provision.
 bottle==0.13.4
 cffi==2.1.0
 clr-loader==0.3.1

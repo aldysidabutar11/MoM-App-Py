@@ -1,11 +1,14 @@
 """SQLite foundation: connections with verified pragmas, and migrations.
 
-Phase 1 creates only the foundational tables (``schema_migrations``,
-``app_settings``, ``participants``, ``meetings``, ``recordings``,
-``recording_chunks``, ``jobs``, ``job_stages``, ``audit_events``). Tables for
-voiceprints, consents, ASR words, diarization turns, utterances, speaker
-assignments, MoM items, evidence links and action tracking are deliberately
-deferred to their implementation phases.
+The schema is still the nine foundational tables Phase 1 created
+(``schema_migrations``, ``app_settings``, ``participants``, ``meetings``,
+``recordings``, ``recording_chunks``, ``jobs``, ``job_stages``,
+``audit_events``). Phase 2 adds no table: migration ``0002`` widens
+``recordings`` and ``recording_chunks`` to what a real capture produces.
+
+Tables for voiceprints, consents, ASR words, diarization turns, utterances,
+speaker assignments, MoM items, evidence links and action tracking are
+deliberately deferred to their implementation phases.
 """
 
 from mom_igd.db.connection import (

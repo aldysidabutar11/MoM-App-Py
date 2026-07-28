@@ -7,7 +7,7 @@ requirements from things that only matter in a later phase.
 The result types and the text renderer live in :mod:`mom_igd.diagnostics.model`,
 which imports nothing outside the standard library, so
 :mod:`mom_igd.diagnostics.bootstrap` can produce a reduced report on an
-interpreter where the Phase 1 runtime dependencies are not installed yet. That is
+interpreter where the core runtime dependencies are not installed yet. That is
 what lets ``py -3.12 -m mom_igd doctor`` answer usefully instead of raising
 ``ModuleNotFoundError``.
 
@@ -28,7 +28,7 @@ __all__ = [
 
 
 def run_doctor(*args, **kwargs):
-    """Full diagnostics. Requires the Phase 1 runtime dependencies."""
+    """Full diagnostics. Requires the core runtime dependencies."""
     from mom_igd.diagnostics.doctor import run_doctor as _run
 
     return _run(*args, **kwargs)

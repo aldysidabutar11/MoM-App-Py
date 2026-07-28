@@ -4,13 +4,16 @@ A fully offline desktop application for producing Minutes of Meeting from
 in-person meetings held in one physical room. Native Windows 11, CPU-first, no
 cloud API, no CUDA, no Docker in production.
 
-> **Status: Phase 1 — application foundation only.**
-> There is deliberately **no audio recording, no ASR, no diarization, no speaker
-> identification, no LLM, no MoM generation and no export** in this build. What
-> exists is the foundation those features will be built on: configuration, a
-> runtime path service, SQLite with migrations, a deterministic workflow state
-> machine, a loopback-only API, environment diagnostics, and a static desktop
-> shell. See [Phase boundaries](#phase-1-boundaries).
+> **Current phase: 2 — offline audio capture.**
+> The Phase 1 foundation (configuration, runtime paths, SQLite with migrations, a
+> workflow state machine, a loopback-only API, diagnostics, a static shell) is in
+> place, and this build **records audio**: device discovery, preflight and
+> calibration, chunked PCM16 recording with checksums and a manifest, crash
+> recovery, pause/resume, and a recording UI.
+>
+> There is still deliberately **no ASR, no diarization, no speaker
+> identification, no LLM, no MoM generation and no export**, and audio is **not
+> encrypted at rest** yet. See [Phase boundaries](#phase-boundaries).
 
 ---
 
@@ -74,13 +77,19 @@ py -3.12 -m venv .venv
 ```
 
 Both lock files pin exact versions. `requirements.txt` is the runtime closure
-(4 direct dependencies: `fastapi`, `uvicorn`, `psutil`, `pywebview`);
-`requirements-dev.txt` adds `pytest`, `pytest-cov` and `httpx`. Instructions for
-refreshing them are in the header of each file. A hash-pinned offline wheelhouse
-is deferred to Phase 11.
+(5 direct dependencies: `fastapi`, `uvicorn`, `psutil`, `pywebview`,
+`sounddevice`); `requirements-dev.txt` adds `pytest`, `pytest-cov`,
+`pytest-timeout` and `httpx`. Instructions for refreshing them are in the header
+of each file. A hash-pinned offline wheelhouse is deferred to Phase 11.
 
-**Nothing else may be installed.** No cloud SDK, no AI runtime, no audio
-library. `tests/test_offline_policy.py` fails the build if one appears.
+`sounddevice` arrived with Phase 2 and bundles PortAudio V19.7 — a self-contained
+DLL in the wheel, no system-wide install, no driver, no service. It is imported
+**lazily**, so every command still works on a machine without it.
+
+**Nothing else may be installed.** No cloud SDK, no AI runtime, and no NumPy,
+`soundfile` or `librosa` — the capture path uses raw bytes and the standard
+library on purpose ([ADR-0006](docs/adr/0006-capture-format-pcm16-device-native.md)).
+`tests/test_offline_policy.py` fails the build if one appears.
 
 ---
 
@@ -95,6 +104,7 @@ even when every future-phase dependency is missing.
 .\.venv\Scripts\python.exe -m mom_igd doctor
 .\.venv\Scripts\python.exe -m mom_igd doctor --json
 .\.venv\Scripts\python.exe -m mom_igd doctor --strict        # exit 2 on any WARN
+.\.venv\Scripts\python.exe -m mom_igd doctor --production    # USB mic + calibration gate
 
 # database (the only command that creates the runtime data tree)
 .\.venv\Scripts\python.exe -m mom_igd db init
@@ -108,12 +118,57 @@ even when every future-phase dependency is missing.
 # headless backend smoke test (no GUI, no microphone, no model, no network)
 .\.venv\Scripts\python.exe -m mom_igd smoke
 
+# audio capture (Phase 2)
+.\.venv\Scripts\python.exe -m mom_igd audio devices          # opens no stream
+.\.venv\Scripts\python.exe -m mom_igd audio devices --all     # + rejected, with reasons
+.\.venv\Scripts\python.exe -m mom_igd audio probe             # preflight only
+.\.venv\Scripts\python.exe -m mom_igd audio probe --open-test # OPENS THE MICROPHONE briefly
+.\.venv\Scripts\python.exe -m mom_igd audio calibrate         # OPENS THE MICROPHONE 10-15 s
+.\.venv\Scripts\python.exe -m mom_igd audio verify [UUID]     # chunk checksums + manifest chain
+.\.venv\Scripts\python.exe -m mom_igd audio recover           # salvage interrupted recordings
+.\.venv\Scripts\python.exe -m mom_igd audio smoke             # fake backend, no hardware
+.\.venv\Scripts\python.exe -m mom_igd audio bench --minutes 60 --speed 120
+
 # backend in the foreground, loopback only
 .\.venv\Scripts\python.exe -m mom_igd serve
 
 # desktop window (blocks until closed)
 .\.venv\Scripts\python.exe -m mom_igd shell
 ```
+
+### Recording a meeting
+
+The microphone is **never opened automatically** — not on import, not at startup,
+not by `doctor`, not by `audio devices`, and never in a test. Only `audio probe
+--open-test`, `audio calibrate` and an explicit Start open a stream.
+
+```powershell
+.\.venv\Scripts\python.exe -m mom_igd audio devices          # 1. see what is available
+.\.venv\Scripts\python.exe -m mom_igd shell                  # 2. panel: pick a device
+.\.venv\Scripts\python.exe -m mom_igd audio probe            # 3. disk, device, permission
+.\.venv\Scripts\python.exe -m mom_igd audio calibrate        # 4. speak; get a verdict
+```
+
+Then in the shell's recording panel: type a **meeting title**, run preflight, and
+press **Start**. There is deliberately no `audio select` subcommand — a device is
+chosen in the panel, or pinned for headless use by setting
+`audio.preferred_device_fingerprint` in `config/local.toml`.
+
+**You do not need to create a meeting first.** Meeting setup is a Phase 9 screen, so
+`Start` creates a minimal draft meeting for the recording — audited, in the same
+transaction — and a blank title becomes a UTC timestamp. Folders are always
+`<meeting-uuid>/<recording-uuid>/`, so a title may contain a participant's name
+without that name reaching the filesystem.
+
+Recording itself is driven from the UI (or the loopback API) rather than the CLI,
+because it needs a live level meter and a Stop button. The full operator protocol,
+the calibration-evidence rules, the Windows troubleshooting table and the recovery
+runbook are in
+[`docs/phase-2-audio-capture.md`](docs/phase-2-audio-capture.md).
+
+If a recording is interrupted — process killed, power lost, device unplugged —
+`audio recover` salvages every complete frame from the partial chunk, quarantines
+anything ambiguous rather than deleting it, and is safe to run repeatedly.
 
 ### `doctor` on an unprepared interpreter
 
@@ -123,18 +178,22 @@ py -3.12 -m mom_igd doctor
 
 This works from the repository root **even on a bare interpreter with none of the
 project dependencies installed** — which is the situation `doctor` is most useful
-in. When a Phase 1 runtime dependency is missing it falls back to a reduced,
+in. When a core runtime dependency is missing it falls back to a reduced,
 standard-library-only report that still checks the interpreter version, the Store
 shim, the OS, the CPU, the disk and the runtime data path, and then tells you
 exactly what is missing and how to install it:
 
 ```
-MoM-IGD 0.1.0 - environment diagnostics (REDUCED: runtime dependencies missing) ...
-[FAIL] runtime_dependencies   4 of 5 Phase 1 runtime dependencies are not
+MoM-IGD 0.2.0 - environment diagnostics (REDUCED: runtime dependencies missing) ...
+[FAIL] runtime_dependencies   4 of 5 core runtime dependencies are not
                               importable by this interpreter (pydantic, fastapi,
                               uvicorn, webview). ...
 Exit code: 1
 ```
+
+`sounddevice` is not in that gating set on purpose: it is imported lazily, so the
+full doctor still runs without it and reports the missing audio backend as a
+`FAIL` with an install hint — rather than discarding every other check.
 
 For everything else, use the `.venv` interpreter — it is the reproducible
 environment. Any other command run without the dependencies reports a clear
@@ -144,7 +203,7 @@ one-line diagnosis rather than a traceback.
 
 | Code | Meaning |
 |---|---|
-| 0 | success (`doctor`: no FAIL; warnings are expected in Phase 1) |
+| 0 | success (`doctor`: no FAIL; warnings are expected in Phase 2) |
 | 1 | a required check failed, or the command could not complete |
 | 2 | `doctor --strict` and at least one WARN (no FAIL) |
 | 3 | configuration is invalid |
@@ -179,13 +238,26 @@ produces at runtime is ever written into this repository.
 ```
 D:\MoM-IGD-Data\            <- default; override with MOM_IGD_DATA_DIR
 ├─ db\          mom_igd.db (+ -wal, -shm)
-├─ recordings\  audio masters and chunk manifests  (Phase 2)
+├─ recordings\  <meeting-uuid>\<recording-uuid>\
+│                 chunk_000001.wav      complete, checksummed
+│                 manifest.jsonl        append-only, one line per chunk
+│                 manifest.json         summary + hash chain
+│                 quarantine\           evidence, never deleted
 ├─ exports\     generated MoM documents            (Phase 10)
 ├─ logs\
 ├─ models\      model binaries                     (Phase 4A onwards)
-├─ temp\
+├─ temp\        recording.lock (single-recording guard)
 └─ backups\
 ```
+
+A visible `.wav` is by definition complete: audio is written to
+`chunk_NNNNNN.pcm.part`, `fsync`ed, hashed from disk and atomically renamed. A
+crash can leave a `.part` or a `.tmp`, never a half-written chunk
+([ADR-0007](docs/adr/0007-chunking-checksums-and-crash-recovery.md)).
+
+**Storage:** 345.6 MB per hour mono, 691.2 MB per hour stereo, at 48 kHz / 16-bit.
+Preflight refuses to start a recording without headroom for the planned duration
+plus a margin.
 
 The path service (`mom_igd/paths.py`) refuses a relative path, a bare drive
 root, the repository itself, anything inside the repository, and any parent
@@ -213,7 +285,8 @@ MoM-IGD/
 ├─ docs/
 │  ├─ architecture.md         full architecture and phase roadmap
 │  ├─ phase-0-summary.md      evidence-based summary of the Phase 0 audit
-│  └─ adr/                    architecture decision records 0001-0005
+│  ├─ phase-2-audio-capture.md  capture engine, runbook, manual acceptance
+│  └─ adr/                    architecture decision records 0001-0008
 ├─ models/
 │  ├─ registry.json           versioned model DECLARATION (empty in Phase 1)
 │  └─ README.md               schema and rules; binaries never live here
@@ -229,25 +302,46 @@ MoM-IGD/
 │  ├─ registry.py             model registry schema and validation
 │  ├─ smoke.py                headless backend smoke test
 │  ├─ api/                    loopback FastAPI app, routes, deps, server
-│  ├─ db/                     connection pragmas + migrations (0001_initial.sql)
+│  ├─ audio/                  Phase 2 capture engine (see below)
+│  ├─ db/                     connection pragmas + migrations (0001, 0002)
 │  ├─ diagnostics/            model.py (stdlib-only types) · doctor.py (full)
 │  │                          · bootstrap.py (reduced, no third-party import)
+│  │                          · audio_checks.py (Phase 2 device/capture checks)
 │  ├─ jobs/                   workflow state machine (declaration + persistence)
 │  └─ shell/                  pywebview launcher + static web/ assets
-├─ tests/                     the Phase 1 test suite
+├─ tests/                     the Phase 1 + Phase 2 test suite
 ├─ requirements.txt           pinned runtime closure
 ├─ requirements-dev.txt       pinned dev/test closure
 └─ pyproject.toml
 ```
 
-Future directories (capture engine, ASR/diarization/speaker providers,
-reconciliation, MoM extraction, exporters, review UI, evaluation datasets) are
-described in `docs/architecture.md` and are **not** scaffolded as empty
-placeholders. Each arrives with the phase that implements it.
+The capture engine, `mom_igd/audio/`:
+
+```
+backend.py            AudioBackend protocol · CaptureProfile · StreamStats
+  sounddevice_backend.py  the real device (lazy import, no NumPy)
+  fake_backend.py         deterministic PCM sources, no hardware needed
+devices.py            fingerprint identity · Windows endpoint evidence
+quality.py            RMS / peak / clipping meter with operator advice
+frame_queue.py        bounded queue, capacity in SECONDS of audio
+writer.py             exact chunk rotation · PCM .part → WAV → checksum
+manifest.py           JSON Lines records + summary with a hash chain
+recovery.py           salvage partials, quarantine the ambiguous
+preflight.py          disk / device / permission checks
+calibration.py        level check with an actionable verdict
+session.py            callback → queue → single writer thread
+service.py            lifecycle, single-recording lock, DB + job coupling
+bench.py              capture smoke and accelerated soak
+```
+
+Remaining future directories (ASR/diarization/speaker providers, reconciliation,
+MoM extraction, exporters, review UI, evaluation datasets) are described in
+`docs/architecture.md` and are **not** scaffolded as empty placeholders. Each
+arrives with the phase that implements it.
 
 ---
 
-## Security and privacy posture (Phase 1)
+## Security and privacy posture (Phase 2)
 
 * The API binds `127.0.0.1` only. A wildcard, LAN or public address is rejected
   by configuration validation, not merely discouraged.
@@ -269,6 +363,23 @@ placeholders. Each arrives with the phase that implements it.
 * **Data retention is not implemented yet.** Nothing is deleted automatically;
   retention, encryption at rest and the consent workflow are Phase 3 / Phase 11.
 
+### Recorded audio (read this before recording a real meeting)
+
+* **Audio is stored unencrypted.** A recording of a meeting is personal data;
+  under Indonesia's UU PDP No. 27/2022 it must be protected. Encryption at rest
+  (AES-256-GCM with the key held by Windows DPAPI) is Phase 11. Until then the
+  recordings directory is only as protected as the Windows account it sits under.
+  The UI states this in the recording panel rather than leaving it to be
+  discovered.
+* **The consent workflow does not exist yet** (Phase 3). Obtain and record consent
+  by your existing process before recording participants.
+* **Nothing is uploaded, and nothing is deleted automatically.** Audio is written
+  to the local runtime data directory and stays there until someone removes it.
+* **No speaker identity is derived in Phase 2.** No voiceprint, no biometric
+  template, no transcript — only audio, checksums and a manifest.
+* The microphone is opened only by an explicit operator action, and no device
+  setting (gain, AGC, enhancements, default status) is ever changed.
+
 Model binaries, meeting recordings, voiceprints, generated MoM documents,
 runtime databases and secrets are never committed. `.gitignore` and
 `.gitattributes` enforce this; `.gitattributes` also marks every binary format
@@ -276,28 +387,38 @@ so that `core.autocrlf=true` cannot corrupt an audio file, a model or a checksum
 
 ---
 
-## Phase 1 boundaries
+## Phase boundaries
 
-**Implemented:** configuration and validation · central runtime path service ·
-SQLite with WAL, foreign keys and versioned transactional migrations ·
+**Phase 1 — implemented:** configuration and validation · central runtime path
+service · SQLite with WAL, foreign keys and versioned transactional migrations ·
 nine foundational tables · deterministic workflow state machine with audit ·
 append-only hash-chained audit trail · loopback API with session token ·
 environment diagnostics · empty model registry · static desktop shell ·
 headless smoke test · test suite.
 
-**Not implemented, by design:** audio recording · audio device capture ·
-FLAC/WAV writing · VAD · ASR · diarization · voice enrollment · voice
-identification · LLM integration · MoM generation · PDF/Word/JSON/Markdown
-export · action tracking · encryption at rest · consent workflow · model
-download · OpenVINO installation or benchmarking · retention enforcement ·
-firewall configuration.
+**Phase 2 — implemented:** device discovery with fingerprint identity and
+registry-verified transport · explicit device selection with **no silent
+fallback** · preflight (disk, device, permission) and calibration with an
+actionable verdict · PCM16 chunked recording at the device's native rate ·
+bounded queue and a single writer thread · per-chunk SHA-256 · JSON-Lines
+manifest with a hash chain · explicit gap accounting · pause / resume / stop /
+abandon · crash recovery with quarantine · single-recording lock · recording API,
+UI panel and CLI · `doctor --production` gate · fake-backend test suite and soak
+tooling.
+
+**Still not implemented, by design:** VAD · ASR · diarization · voice enrollment ·
+voice identification · speaker labelling · LLM integration · MoM generation ·
+PDF/Word/JSON/Markdown export · action tracking · encryption at rest · consent
+workflow · model download · OpenVINO installation or benchmarking · retention
+enforcement · firewall configuration · resampling and the 16 kHz ASR working copy
+(Phase 4) · FLAC.
 
 **No AI provider or model has been selected.** ASR, diarization,
 speaker-embedding and LLM choices are deferred to a real-device benchmark in
 Phase 4A — see
 [ADR-0005](docs/adr/0005-ai-provider-selection-deferred-to-phase-4a.md).
 
-### Before Phase 2 production acceptance
+### Phase 2 production acceptance is not granted yet
 
 A **USB conference microphone** (omnidirectional, placed at the centre of the
 table) is required. The internal laptop array is an Intel Smart Sound digital
@@ -305,6 +426,25 @@ microphone array whose beamforming and noise suppression actively suppress
 non-dominant speakers — that destroys diarization for nine participants and
 makes voiceprints inconsistent. The internal microphone is acceptable for
 **early development only**.
+
+The development machine currently has **no verified USB capture device**, so the
+production gate has not been satisfied:
+
+```powershell
+.\.venv\Scripts\python.exe -m mom_igd audio devices          # confirm transport = USB
+.\.venv\Scripts\python.exe -m mom_igd audio calibrate        # record the evidence
+.\.venv\Scripts\python.exe -m mom_igd doctor --production     # must report 0 FAIL
+```
+
+`doctor --production` fails without a registry-verified USB device and a calibration
+that is `GOOD`, **taken on that same selected device**, and **less than 30 days old**.
+A stored `GOOD` verdict alone is not accepted — a stale reading of the laptop array
+must not vouch for a microphone plugged in this morning.
+
+The engine is complete and verified against a deterministic fake backend; what
+remains is measurement on real hardware — 3 × 60 minutes with no unrecorded frame
+loss, CPU below 5 % and RSS below 300 MB. Those numbers are reported as
+**NOT MEASURED** until then, never estimated.
 
 ---
 

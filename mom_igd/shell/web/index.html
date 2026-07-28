@@ -91,6 +91,112 @@
       </details>
     </section>
 
+    <!-- ================= RECORDING (Phase 2) ================= -->
+    <section aria-labelledby="recording-heading" id="recording-panel" hidden>
+      <div class="section-head">
+        <h2 id="recording-heading">Perekaman rapat</h2>
+        <p class="muted">
+          Satu microphone menangkap suara campuran seluruh peserta (maksimal sembilan
+          orang). Phase 2 <strong>belum</strong> mengetahui siapa yang berbicara, dan
+          belum menghasilkan transkrip atau MoM. Seluruh audio tetap di perangkat ini.
+        </p>
+      </div>
+
+      <div class="rec-grid">
+        <!-- device selection -->
+        <article class="status-card">
+          <header><h3>Microphone</h3></header>
+          <label class="field">
+            <span>Perangkat input</span>
+            <select id="device-select" aria-label="Pilih microphone"></select>
+          </label>
+          <p class="status-detail" id="device-evidence">Memuat daftar perangkat…</p>
+          <div class="btn-row">
+            <button type="button" class="btn" id="refresh-devices-btn">Refresh</button>
+            <button type="button" class="btn" id="select-device-btn">Gunakan perangkat ini</button>
+            <button type="button" class="btn" id="calibrate-btn">Tes microphone (10–15 s)</button>
+          </div>
+          <p class="hint">
+            Tes microphone membuka mikrofon sebentar. Audio tes tidak disimpan.
+          </p>
+        </article>
+
+        <!-- level meter -->
+        <article class="status-card">
+          <header>
+            <span class="status-pill" id="level-verdict" data-state="unknown">—</span>
+            <h3>Level input</h3>
+          </header>
+          <div class="meter" role="img" aria-label="Level meter input">
+            <div class="meter-fill" id="meter-rms"></div>
+            <div class="meter-peak" id="meter-peak"></div>
+          </div>
+          <dl class="kv" id="level-detail"></dl>
+          <p class="status-detail" id="level-advice">Belum ada pengukuran.</p>
+        </article>
+
+        <!-- preflight -->
+        <article class="status-card">
+          <header>
+            <span class="status-pill" id="preflight-pill" data-state="unknown">—</span>
+            <h3>Preflight</h3>
+          </header>
+          <ul class="checklist" id="preflight-list"></ul>
+          <div class="btn-row">
+            <button type="button" class="btn" id="preflight-btn">Jalankan preflight</button>
+          </div>
+          <p class="status-detail" id="storage-estimate"></p>
+        </article>
+
+        <!-- transport -->
+        <article class="status-card">
+          <header>
+            <span class="status-pill" id="rec-pill" data-state="unknown">IDLE</span>
+            <h3>Kontrol perekaman</h3>
+          </header>
+          <div class="field">
+            <label for="meeting-title">Judul rapat</label>
+            <input
+              type="text"
+              id="meeting-title"
+              maxlength="200"
+              autocomplete="off"
+              placeholder="Kosongkan untuk memakai stempel waktu UTC"
+            />
+            <p class="status-detail">
+              Judul dipakai hanya untuk pencatatan. Nama folder rekaman memakai UUID,
+              bukan judul, sehingga nama peserta tidak pernah masuk ke nama file.
+            </p>
+          </div>
+          <div class="btn-row">
+            <button type="button" class="btn btn-primary" id="start-btn" disabled>Start</button>
+            <button type="button" class="btn" id="pause-btn" disabled>Pause</button>
+            <button type="button" class="btn" id="resume-btn" disabled>Resume</button>
+            <button type="button" class="btn btn-danger" id="stop-btn" disabled>Stop</button>
+          </div>
+          <p class="elapsed" id="elapsed">00:00:00</p>
+          <dl class="kv" id="rec-detail"></dl>
+          <p class="warn-line" id="rec-warning" hidden></p>
+        </article>
+
+        <!-- integrity / recovery -->
+        <article class="status-card">
+          <header><h3>Integritas &amp; pemulihan</h3></header>
+          <dl class="kv" id="integrity-detail"></dl>
+          <div class="btn-row">
+            <button type="button" class="btn" id="verify-btn" disabled>Verifikasi manifest</button>
+            <button type="button" class="btn" id="recover-btn">Jalankan pemulihan</button>
+          </div>
+          <p class="status-detail" id="recovery-detail">Belum diperiksa.</p>
+        </article>
+      </div>
+
+      <p class="notice">
+        Audio disimpan <strong>tanpa enkripsi</strong> sampai phase keamanan dikerjakan.
+        Jangan memakai rekaman rapat sensitif sebagai data uji.
+      </p>
+    </section>
+
     <!-- ================= FUTURE FEATURES ================= -->
     <section aria-labelledby="features-heading">
       <div class="section-head">
@@ -112,13 +218,16 @@
           <p class="not-implemented">Belum diimplementasikan</p>
         </article>
 
-        <article class="feature-card" aria-disabled="true">
+        <article class="feature-card feature-card-enabled" id="card-recording">
           <div class="feature-head">
             <h3>Recording</h3>
-            <span class="phase-tag">Phase 2</span>
+            <span class="phase-tag phase-tag-live">Phase 2 · aktif</span>
           </div>
-          <p>Perekaman WASAPI, chunk lossless, manifest + checksum, dan pemulihan crash.</p>
-          <p class="not-implemented">Belum diimplementasikan</p>
+          <p>Perekaman WASAPI, chunk PCM16, manifest + checksum, dan pemulihan crash.</p>
+          <p class="implemented">Tersedia</p>
+          <button type="button" class="btn btn-primary" id="open-recording-btn">
+            Buka panel perekaman
+          </button>
         </article>
 
         <article class="feature-card" aria-disabled="true">

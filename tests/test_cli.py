@@ -241,7 +241,7 @@ def test_smoke_does_not_write_into_the_repository(tmp_path: Path) -> None:
 # ------------------------------------------------------ repository hygiene
 
 
-def test_no_license_file_was_created_in_phase_1() -> None:
+def test_no_license_file_was_created() -> None:
     for name in ("LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING"):
         assert not (REPO / name).exists(), f"{name} must not exist until a licence is chosen"
 
@@ -253,13 +253,79 @@ def test_required_documentation_exists() -> None:
         "AGENTS.md",
         "docs/architecture.md",
         "docs/phase-0-summary.md",
+        "docs/phase-2-audio-capture.md",
         "docs/adr/0001-native-windows-runtime.md",
         "docs/adr/0002-offline-runtime-definition.md",
         "docs/adr/0003-sqlite-and-external-runtime-data.md",
         "docs/adr/0004-single-heavy-worker-resource-policy.md",
         "docs/adr/0005-ai-provider-selection-deferred-to-phase-4a.md",
+        "docs/adr/0006-capture-format-pcm16-device-native.md",
+        "docs/adr/0007-chunking-checksums-and-crash-recovery.md",
+        "docs/adr/0008-device-identity-and-no-silent-fallback.md",
     ):
         assert (REPO / relative).is_file(), f"missing {relative}"
+
+
+def test_the_capture_versus_ai_separation_is_documented_and_cross_referenced() -> None:
+    """The rule spans two ADRs, so the link between them is what makes it findable.
+
+    No separate ADR was added for it: ADR-0004 already decides that the recorder
+    loads no model and never runs beside a worker, and ADR-0006 already decides
+    that capture never resamples or transcribes. What was missing was the pointer
+    between them.
+    """
+    adr = REPO / "docs/adr"
+    capture = (adr / "0006-capture-format-pcm16-device-native.md").read_text(
+        encoding="utf-8"
+    )
+    worker = (adr / "0004-single-heavy-worker-resource-policy.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Relationship to the capture / AI separation" in capture
+    assert "ADR-0004" in capture, "ADR-0006 must point at the worker-isolation rule"
+    assert "ADR-0006" in worker, "ADR-0004 must point back at the capture rule"
+    for rule in (
+        "never resamples",
+        "never run concurrently",
+        "normalize_audio",
+    ):
+        assert rule in capture, f"the separation table must state: {rule}"
+
+
+def test_the_packaged_version_matches_the_code() -> None:
+    """`pip show` and `--version` disagreeing is worse than having no version."""
+    import tomllib
+
+    from mom_igd.version import APP_VERSION
+
+    packaged = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    assert packaged["project"]["version"] == APP_VERSION, (
+        f"pyproject.toml says {packaged['project']['version']!r} but "
+        f"mom_igd/version.py says {APP_VERSION!r}"
+    )
+
+
+def test_the_default_config_declares_the_schema_version_this_build_accepts() -> None:
+    """`default.toml` is tracked, so a stale value here breaks every fresh clone."""
+    import tomllib
+
+    from mom_igd.version import CONFIG_SCHEMA_VERSION
+
+    declared = tomllib.loads((REPO / "config/default.toml").read_text(encoding="utf-8"))
+    assert declared["config_schema_version"] == CONFIG_SCHEMA_VERSION
+
+
+def test_the_documented_phase_matches_the_code() -> None:
+    """A stale README is how a reader learns the wrong boundary."""
+    from mom_igd.version import CURRENT_PHASE
+
+    for relative in ("README.md", "CLAUDE.md", "docs/architecture.md"):
+        text = (REPO / relative).read_text(encoding="utf-8")
+        assert f"phase: {CURRENT_PHASE}" in text.lower(), (
+            f"{relative} does not state 'phase: {CURRENT_PHASE}'; "
+            f"mom_igd/version.py says CURRENT_PHASE = {CURRENT_PHASE!r}"
+        )
 
 
 def test_dependency_lock_files_exist_and_are_pinned() -> None:
@@ -342,26 +408,64 @@ def test_gitattributes_protects_binary_formats() -> None:
     assert "tests/fixtures/binary/**  binary" in rules
 
 
-def test_no_phase_2_module_was_created() -> None:
-    """Phase 1 must not contain capture, ASR, diarization, LLM or export code."""
+def test_no_phase_3_or_later_module_was_created() -> None:
+    """Scope boundary, moved forward by one phase rather than removed.
+
+    Phase 1 asserted that no capture package existed. Phase 2 implements capture,
+    so ``mom_igd/audio`` is now expected -- but everything downstream of it must
+    still be absent. Deleting this test when ``audio`` appeared would have thrown
+    away the guard instead of advancing it.
+    """
     package = REPO / "mom_igd"
-    forbidden_names = {
-        "capture",
-        "audio",
-        "asr",
-        "diarization",
-        "speaker",
-        "voiceprint",
-        "llm",
-        "mom",
-        "exporters",
-        "reconciliation",
-        "providers",
-        "review",
+    allowed_now = {"api", "audio", "db", "diagnostics", "jobs", "shell"}
+    forbidden_until_later_phases = {
+        "asr",              # Phase 4
+        "vad",              # Phase 4 (model-based; Phase 2 has none)
+        "diarization",      # Phase 5
+        "speaker",          # Phase 6
+        "voiceprint",       # Phase 3
+        "enrollment",       # Phase 3
+        "consent",          # Phase 3
+        "reconciliation",   # Phase 7
+        "llm",              # Phase 8
+        "mom",              # Phase 8
+        "exporters",        # Phase 10
+        "review",           # Phase 9
+        "providers",        # Phase 4A onwards
+        "encryption",       # Phase 11
     }
     present = {p.name for p in package.iterdir() if p.is_dir() and not p.name.startswith("_")}
-    overlap = present & forbidden_names
-    assert overlap == set(), f"out-of-scope packages exist: {sorted(overlap)}"
+
+    overlap = present & forbidden_until_later_phases
+    assert overlap == set(), f"packages from a later phase exist: {sorted(overlap)}"
+    unexpected = present - allowed_now - forbidden_until_later_phases
+    assert unexpected == set(), (
+        f"unrecognised package(s) {sorted(unexpected)}: add them to `allowed_now` "
+        "with the phase that introduced them, so this boundary keeps meaning "
+        "something"
+    )
+
+
+def test_phase_2_capture_engine_contains_no_speech_or_ai_code() -> None:
+    """Phase 2 captures audio; it must not try to understand it.
+
+    Level metering is allowed (it measures signal quality). Anything that decides
+    *whether someone is speaking* or *who is speaking* is a later phase.
+    """
+    import re
+
+    audio_package = REPO / "mom_igd" / "audio"
+    forbidden = re.compile(
+        r"\b(?:import\s+(?:torch|openvino|onnxruntime|faster_whisper|ctranslate2|pyannote)"
+        r"|from\s+(?:torch|openvino|onnxruntime|faster_whisper|ctranslate2|pyannote)"
+        r"|transcrib\w*\s*\(|diariz\w*\s*\(|speaker_id\w*\s*\(|embed_speaker)",
+        re.IGNORECASE,
+    )
+    offenders: list[str] = []
+    for path in sorted(audio_package.rglob("*.py")):
+        for match in forbidden.finditer(path.read_text(encoding="utf-8")):
+            offenders.append(f"{path.name}: {match.group(0)}")
+    assert offenders == [], f"speech/AI code in the capture engine: {offenders}"
 
 
 def test_no_scratch_or_test_artefact_is_left_in_the_source_tree() -> None:

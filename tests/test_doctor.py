@@ -51,7 +51,11 @@ def test_report_covers_every_required_topic(report: DoctorReport) -> None:
         "offline_policy",       # offline mode + dependency audit
         "model_registry",
         "optional_dependencies",  # AI dependencies as future requirement
-        "audio_devices",          # microphone readiness as future requirement
+        "audio_backend",          # Phase 2: sounddevice / PortAudio
+        "audio_input_devices",    # Phase 2: at least one usable capture device
+        "audio_capture_profile",
+        "usb_conference_microphone",
+        "audio_stale_recordings",
         "docker_wsl_presence",
         "docker_wsl_memory",
     }
@@ -149,12 +153,34 @@ def test_malformed_model_registry_is_a_failure(config: AppConfig, tmp_path: Path
 # ------------------------- 19. future-phase items are WARN, never FAIL
 
 
-def test_missing_ai_and_audio_dependencies_are_only_warnings(report: DoctorReport) -> None:
+def test_missing_ai_dependencies_are_only_warnings(report: DoctorReport) -> None:
     result = _by_key(report)["optional_dependencies"]
     assert result.status is Status.WARN
     missing = {item["module"] for item in result.data["missing"]}
-    # None of these are installed in Phase 1, and none may cause a failure.
-    assert {"sounddevice", "soundfile", "faster_whisper", "torch", "openvino"} <= missing
+    # None of these is installed yet, and none may cause a failure.
+    assert {"faster_whisper", "ctranslate2", "torch", "openvino", "onnxruntime"} <= missing
+    # sounddevice graduated to a real Phase 2 dependency with its own check, so it
+    # must no longer appear as a missing "future" dependency.
+    assert "sounddevice" not in missing
+    assert "sounddevice" not in {item["module"] for item in result.data["missing"]}
+
+
+def test_audio_backend_is_a_phase_2_requirement(report: DoctorReport) -> None:
+    result = _by_key(report)["audio_backend"]
+    assert result.status is Status.PASS
+    assert result.required_in_phase == "2"
+    assert "PortAudio" in result.detail
+
+
+def test_audio_devices_are_enumerated_without_opening_a_stream(
+    report: DoctorReport,
+) -> None:
+    result = _by_key(report)["audio_input_devices"]
+    assert result.status is Status.PASS, result.detail
+    assert "No stream was opened" in result.detail
+    assert result.data["usable_count"] >= 1
+    # Enumeration must also explain what it excluded and why.
+    assert all(entry["reason"] for entry in result.data["rejected"])
 
 
 def test_missing_openvino_is_a_warning(report: DoctorReport) -> None:
@@ -164,11 +190,62 @@ def test_missing_openvino_is_a_warning(report: DoctorReport) -> None:
     assert result.status is not Status.FAIL
 
 
-def test_audio_device_readiness_is_informational_only(report: DoctorReport) -> None:
-    result = _by_key(report)["audio_devices"]
-    assert result.status is Status.WARN
-    assert result.required_in_phase == "2"
-    assert "USB conference microphone" in result.detail
+def test_usb_microphone_is_a_warning_in_development(report: DoctorReport) -> None:
+    """Development tolerates the built-in array; production does not."""
+    result = _by_key(report)["usb_conference_microphone"]
+    assert result.status in {Status.PASS, Status.WARN}
+    if result.status is Status.WARN:
+        assert "No USB capture device verified by Windows" in result.detail
+        assert "before Phase 2 production acceptance" in result.detail
+        assert result.required_in_phase is None, "not a development requirement"
+        assert result.data["verified_usb"] == []
+
+
+def test_usb_microphone_becomes_a_failure_under_the_production_gate(
+    config: AppConfig,
+) -> None:
+    production = run_doctor(config=config, production=True)
+    result = _by_key(production)["usb_conference_microphone"]
+    development = _by_key(run_doctor(config=config))["usb_conference_microphone"]
+
+    if development.status is Status.WARN:
+        assert result.status is Status.FAIL, (
+            "without a verified USB conference microphone the production gate must "
+            "fail rather than warn"
+        )
+        assert production.ok is False
+        assert production.exit_code() == 1
+    else:
+        assert result.status is Status.PASS
+
+
+def test_production_gate_requires_calibration_evidence(config: AppConfig) -> None:
+    report = run_doctor(config=config, production=True)
+    result = _by_key(report)["audio_calibration_evidence"]
+    # No database and no calibration exist in a temporary data root.
+    assert result.status is Status.FAIL
+    assert "calibrate" in result.detail
+
+
+def test_calibration_evidence_is_not_checked_in_development(config: AppConfig) -> None:
+    assert "audio_calibration_evidence" not in _by_key(run_doctor(config=config))
+
+
+def test_stale_recording_is_a_warning_in_development(config: AppConfig, paths) -> None:
+    from mom_igd.audio.writer import partial_path
+
+    directory = paths.recordings_dir / "meeting" / "recording"
+    directory.mkdir(parents=True)
+    partial_path(directory, 0).write_bytes(b"\x00\x00\x00\x00")
+
+    development = _by_key(run_doctor(config=config))["audio_stale_recordings"]
+    production = _by_key(run_doctor(config=config, production=True))[
+        "audio_stale_recordings"
+    ]
+    assert development.status is Status.WARN
+    assert production.status is Status.FAIL
+    assert development.data["pending_count"] == 1
+    assert "audio recover" in development.detail
 
 
 def test_empty_model_registry_is_a_warning(report: DoctorReport) -> None:

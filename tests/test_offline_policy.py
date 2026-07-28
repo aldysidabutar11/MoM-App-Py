@@ -32,8 +32,10 @@ EXPECTED_DIRECT_DEPENDENCIES = {
     "uvicorn",
     "psutil",
     "pywebview",
+    "sounddevice",     # Phase 2: PortAudio/WASAPI capture
     "pytest",
     "pytest-cov",
+    "pytest-timeout",  # Phase 2: turns a wedged writer thread into a stack trace
     "httpx",
 }
 
@@ -92,7 +94,7 @@ def test_the_legacy_projects_sdk_is_specifically_denied() -> None:
 
 def test_deferred_dependencies_are_classified_separately_from_cloud() -> None:
     findings = audit_distribution_names(
-        ["faster-whisper", "torch", "openvino", "onnxruntime", "sounddevice", "pyannote.audio"]
+        ["faster-whisper", "torch", "openvino", "onnxruntime", "pyannote.audio"]
     )
     assert findings["cloud"] == []
     assert set(findings["deferred"]) == {
@@ -100,9 +102,37 @@ def test_deferred_dependencies_are_classified_separately_from_cloud() -> None:
         "torch",
         "openvino",
         "onnxruntime",
-        "sounddevice",
         "pyannote-audio",
     }
+
+
+def test_sounddevice_became_an_allowed_dependency_in_phase_2() -> None:
+    """It is the PortAudio/WASAPI binding the capture engine is built on.
+
+    Every other audio library stays deferred: Phase 2 writes WAV with the
+    standard-library ``wave`` module and needs no codec, resampler, DSP library
+    or NumPy.
+    """
+    assert "sounddevice" not in DEFERRED_HEAVY_DISTRIBUTIONS
+    assert "sounddevice" not in CLOUD_SDK_DENYLIST
+    assert audit_distribution_names(["sounddevice"]) == {
+        "cloud": [],
+        "deferred": [],
+        "network_capable": [],
+    }
+    still_deferred = audit_distribution_names(
+        ["soundfile", "pyaudio", "librosa", "numpy", "av", "webrtcvad", "silero-vad", "soxr"]
+    )["deferred"]
+    assert sorted(still_deferred) == [
+        "av",
+        "librosa",
+        "numpy",
+        "pyaudio",
+        "silero-vad",
+        "soundfile",
+        "soxr",
+        "webrtcvad",
+    ]
 
 
 def test_prefix_denylist_catches_whole_families() -> None:

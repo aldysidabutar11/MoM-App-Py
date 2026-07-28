@@ -17,6 +17,7 @@ ourselves would be gratuitous, and ``httpx`` stays a test-only dependency.
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 from typing import Any, Final
@@ -33,11 +34,42 @@ __all__ = ["ALLOWED_PROXY_PATHS", "ShellApi", "manual_launch_command", "run_shel
 _LOG = get_logger("shell")
 
 ALLOWED_PROXY_PATHS: Final[frozenset[str]] = frozenset(
-    {"/health", "/version", "/doctor", "/internal/ready"}
+    {
+        "/health",
+        "/version",
+        "/doctor",
+        "/internal/ready",
+        # Phase 2, read-only. None of these opens the microphone.
+        "/audio/devices",
+        "/audio/preflight",
+        "/audio/recordings/status",
+        "/audio/quality",
+        "/audio/recovery/pending",
+    }
 )
-"""Explicit allowlist. The page cannot ask the proxy to call an arbitrary path."""
+"""Explicit GET allowlist. The page cannot ask the proxy to call an arbitrary path."""
 
-_PROXY_TIMEOUT_S: Final[float] = 30.0
+ALLOWED_POST_PATHS: Final[frozenset[str]] = frozenset(
+    {
+        "/audio/devices/select",
+        "/audio/open-test",
+        "/audio/calibrate",
+        "/audio/recordings/start",
+        "/audio/recordings/pause",
+        "/audio/recordings/resume",
+        "/audio/recordings/stop",
+        "/audio/recovery/run",
+    }
+)
+"""Explicit POST allowlist. ``calibrate``, ``open-test`` and ``start`` engage the
+microphone, which is why they are reachable only from a button press."""
+
+_VERIFY_PATH_RE: Final[re.Pattern[str]] = re.compile(
+    r"^/audio/recordings/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/verify$"
+)
+"""The one templated path the page may call, matched exactly rather than by prefix."""
+
+_PROXY_TIMEOUT_S: Final[float] = 60.0
 
 
 class ShellApi:
@@ -60,39 +92,70 @@ class ShellApi:
             "proxy_available": True,
         }
 
-    def api_get(self, path: str) -> dict[str, Any]:
+    def api_get(self, path: str, query: dict[str, Any] | None = None) -> dict[str, Any]:
         """Perform an authenticated loopback GET on behalf of the page.
 
-        Returns a envelope ``{"ok": bool, "status": int, "data"|"error": ...}``
+        Returns an envelope ``{"ok": bool, "status": int, "data"|"error": ...}``
         rather than raising, so the page can render a degraded state instead of
         breaking on an exception crossing the bridge.
         """
-        if path not in ALLOWED_PROXY_PATHS:
+        if path not in ALLOWED_PROXY_PATHS and not _VERIFY_PATH_RE.match(path):
             return {
                 "ok": False,
                 "status": 0,
                 "error": f"Path {path!r} is not in the shell proxy allowlist.",
             }
+        url = f"{self._base_url}{path}"
+        if query:
+            from urllib.parse import urlencode
+
+            # Only scalar values, and never a credential: the token travels in a
+            # header, and the API rejects a credential in a query string outright.
+            safe = {k: v for k, v in query.items() if isinstance(v, (str, int, float, bool))}
+            if safe:
+                url = f"{url}?{urlencode(safe)}"
+        return self._send(url, method="GET")
+
+    def api_post(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Perform an authenticated loopback POST on behalf of the page.
+
+        Separate from :meth:`api_get` and separately allowlisted, because these are
+        the calls that change state or engage the microphone.
+        """
+        if path not in ALLOWED_POST_PATHS:
+            return {
+                "ok": False,
+                "status": 0,
+                "error": f"Path {path!r} is not in the shell proxy POST allowlist.",
+            }
+        body = json.dumps(payload or {}).encode("utf-8")
+        return self._send(url=f"{self._base_url}{path}", method="POST", body=body)
+
+    def _send(self, url: str, *, method: str, body: bytes | None = None) -> dict[str, Any]:
+        headers = {
+            **self._token.header(),
+            "Accept": "application/json",
+            # Explicit loopback Host so the LoopbackHostMiddleware accepts it.
+            "Host": self._base_url.split("//", 1)[-1],
+        }
+        if body is not None:
+            headers["Content-Type"] = "application/json"
         request = urllib.request.Request(  # noqa: S310 - loopback URL, fixed scheme
-            url=f"{self._base_url}{path}",
-            method="GET",
-            headers={
-                **self._token.header(),
-                "Accept": "application/json",
-                # Explicit loopback Host so the LoopbackHostMiddleware accepts it.
-                "Host": self._base_url.split("//", 1)[-1],
-            },
+            url=url, method=method, headers=headers, data=body
         )
         try:
             with urllib.request.urlopen(request, timeout=_PROXY_TIMEOUT_S) as response:  # noqa: S310
-                payload = json.loads(response.read().decode("utf-8"))
+                raw = response.read().decode("utf-8")
+                payload = json.loads(raw) if raw else {}
                 return {"ok": True, "status": int(response.status), "data": payload}
         except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
+            raw = exc.read().decode("utf-8", errors="replace")
             try:
-                detail: Any = json.loads(body)
+                detail: Any = json.loads(raw)
             except json.JSONDecodeError:
-                detail = body[:500]
+                detail = raw[:500]
+            if isinstance(detail, dict) and "detail" in detail:
+                detail = detail["detail"]
             return {"ok": False, "status": int(exc.code), "error": detail}
         except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
             return {"ok": False, "status": 0, "error": f"{type(exc).__name__}: {exc}"}

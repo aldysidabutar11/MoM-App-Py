@@ -139,9 +139,27 @@ def test_protected_data_is_fetched_through_the_python_bridge(sources: dict[str, 
 
 
 def test_the_shell_proxy_allowlist_is_closed() -> None:
+    """The page may reach exactly these paths through the token-bearing proxy.
+
+    Phase 2 added the read-only capture endpoints. The list stays explicit rather
+    than becoming a prefix rule, so a new endpoint is never reachable from the page
+    by accident.
+    """
     assert ALLOWED_PROXY_PATHS == frozenset(
-        {"/health", "/version", "/doctor", "/internal/ready"}
+        {
+            "/health",
+            "/version",
+            "/doctor",
+            "/internal/ready",
+            "/audio/devices",
+            "/audio/preflight",
+            "/audio/recordings/status",
+            "/audio/quality",
+            "/audio/recovery/pending",
+        }
     )
+    assert "/openapi.json" not in ALLOWED_PROXY_PATHS
+    assert "/docs" not in ALLOWED_PROXY_PATHS
 
 
 def test_the_proxy_refuses_a_path_outside_the_allowlist() -> None:
@@ -171,6 +189,7 @@ def test_manual_launch_command_is_documented() -> None:
 
 
 def test_future_features_are_shown_as_not_implemented(sources: dict[str, str]) -> None:
+    """Recording went live in Phase 2; the five later-phase cards stay disabled."""
     html = sources["index.html"]
     for feature in (
         "Meeting setup",
@@ -181,8 +200,10 @@ def test_future_features_are_shown_as_not_implemented(sources: dict[str, str]) -
         "Export",
     ):
         assert feature in html, f"the {feature} card must be present"
-    assert html.count('aria-disabled="true"') == 6
-    assert html.count("Belum diimplementasikan") == 6
+    assert html.count('aria-disabled="true"') == 5
+    assert html.count("Belum diimplementasikan") == 5
+    assert 'id="card-recording"' in html, "Recording is implemented and must be enabled"
+    assert "feature-card-enabled" in html
 
 
 def test_offline_mode_is_displayed(sources: dict[str, str]) -> None:

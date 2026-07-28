@@ -2,7 +2,7 @@
 
 **Standard library only.** This module is imported by
 :mod:`mom_igd.diagnostics.bootstrap`, which has to work on an interpreter where
-the Phase 1 runtime dependencies are not installed yet. Adding a third-party
+the core runtime dependencies are not installed yet. Adding a third-party
 import here would break `py -3.12 -m mom_igd doctor` on a fresh machine, which is
 exactly the case the doctor exists to diagnose.
 

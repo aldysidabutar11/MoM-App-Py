@@ -12,6 +12,9 @@ checklist and the boundaries that must never be crossed.
    propose a new ADR instead.
 4. The current phase is stated in `mom_igd/version.py` (`CURRENT_PHASE`) and in
    `README.md`.
+5. The capture engine has its own document,
+   **`docs/phase-2-audio-capture.md`**, plus ADR-0006, ADR-0007 and ADR-0008.
+   Read those before changing anything under `mom_igd/audio/`.
 
 ## Before editing
 
@@ -32,12 +35,16 @@ work. Do not build on a broken foundation.
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\python.exe -m mom_igd doctor
 .\.venv\Scripts\python.exe -m mom_igd smoke
+.\.venv\Scripts\python.exe -m mom_igd audio smoke     # capture engine, fake backend
 git diff --check
 git status --short
 ```
 
-All three must pass before reporting work complete. Report the actual output —
+All four must pass before reporting work complete. Report the actual output —
 never summarise a failure away.
+
+Never pipe pytest through `2>&1 | Select-Object`: PowerShell turns each stderr log
+line into an `ErrorRecord` and the run looks like it has hung.
 
 ## Hard boundaries
 
@@ -61,14 +68,25 @@ never summarise a failure away.
 | Create a `LICENSE` file | No licence has been chosen |
 | Implement a later phase, or scaffold it as empty placeholders | Scope discipline |
 | Weaken a test to turn it green | Requirements decide, not convenience |
+| Open the microphone without an explicit user action | Import, startup, `doctor`, tests and device discovery must all stay silent |
+| Change a device's gain, AGC, enhancements or default status | Not ours to touch; advise the operator instead |
+| Do file I/O, logging or DB work inside the audio callback | A blocked callback loses real audio |
+| Fabricate silence to cover a gap | Every downstream timestamp would be wrong (ADR-0007) |
+| Fall back to another microphone when the selected one is gone | Silently records the wrong room (ADR-0008) |
+| Claim `USB` without registry evidence | The production gate would become meaningless |
+| Add NumPy, `soundfile`, `librosa` or `audioop` to the capture path | ADR-0006; `audioop` is gone in 3.13 |
+| Edit `mom_igd/db/migrations/0001_initial.sql` | Applied and checksummed — add `000N_*.sql` |
+| Unanchor a runtime-data pattern in `.gitignore` | A bare `audio/` silently ignored `mom_igd/audio/` once |
 
-## Phase 1 scope, in one line
+## Phase 2 scope, in one line
 
-Foundation only: configuration · runtime paths · SQLite + migrations · workflow
-state machine · audit trail · loopback API + session token · diagnostics · empty
-model registry · static shell · headless smoke test · tests · docs.
+Foundation (Phase 1) **plus** offline audio capture: device discovery and explicit
+selection · preflight and calibration · PCM16 chunked recording with checksums, a
+manifest and crash recovery · pause/resume/stop · recording API, UI panel and CLI
+· fake-backend tests and soak tooling.
 
-Everything audio-, AI-, export- or encryption-related belongs to a later phase.
+Everything ASR-, diarization-, speaker-, export- or encryption-related still
+belongs to a later phase — including resampling and the 16 kHz working copy.
 
 ## When blocked
 

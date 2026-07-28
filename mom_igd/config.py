@@ -22,7 +22,14 @@ import tomllib
 from pathlib import Path
 from typing import Any, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from mom_igd import offline_policy
 from mom_igd.paths import (
@@ -53,7 +60,11 @@ __all__ = [
 ]
 
 SUPPORTED_RUNTIME_MODES: Final[frozenset[str]] = frozenset({"offline"})
-"""Runtime modes this build supports. Phase 1 supports offline only."""
+"""Runtime modes this build supports.
+
+``offline`` is the only one, and not merely for now: there is no cloud or hybrid
+mode and no cloud fallback (ADR-0002).
+"""
 
 MAX_HEAVY_WORKERS: Final[int] = 1
 """Hard ceiling from ADR-0004: at most one heavy model in one worker process."""
@@ -167,12 +178,116 @@ class UiConfig(BaseModel):
     window_title: str = f"{APP_NAME} - Offline Minutes of Meeting"
 
 
+class AudioConfig(BaseModel):
+    """Phase 2 capture settings.
+
+    ``preferred_device_fingerprint`` is intentionally empty in the tracked
+    ``default.toml``: a fingerprint identifies one physical microphone on one
+    machine, so committing one would make every other machine start with a
+    selection it cannot resolve. It belongs in ``config/local.toml`` or in the
+    database, written by an explicit device selection.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    preferred_device_fingerprint: str = ""
+    preferred_sample_rate: int | None = None
+    max_channels: int = Field(default=2, ge=1, le=2)
+    sample_format: Literal["int16"] = "int16"
+
+    chunk_seconds: int = Field(default=30, ge=10, le=120)
+    queue_seconds: float = Field(default=5.0, ge=0.25, le=60.0)
+    writer_shutdown_timeout_s: float = Field(default=15.0, gt=0, le=120)
+
+    min_free_disk_gb: float = Field(default=5.0, ge=0.0)
+    """Recording refuses to start below this, and warns when it is approached."""
+
+    low_disk_abort_gb: float = Field(default=1.0, ge=0.0)
+    """A running recording finalises and stops cleanly below this."""
+
+    calibration_seconds: int = Field(default=12, ge=10, le=15)
+
+    too_quiet_dbfs: float = Field(default=-45.0, le=0.0)
+    too_loud_peak_dbfs: float = Field(default=-1.0, le=0.0)
+    clipping_percent_threshold: float = Field(default=0.01, ge=0.0, le=100.0)
+    silence_dbfs_threshold: float = Field(default=-60.0, le=0.0)
+
+    status_poll_hz: float = Field(default=3.0, ge=1.0, le=4.0)
+    meter_stride: int = Field(default=1, ge=1, le=64)
+
+    auto_recover_on_start: bool = True
+    quarantine_ambiguous_partials: bool = True
+    production_requires_usb: bool = True
+
+    @field_validator("preferred_sample_rate")
+    @classmethod
+    def _supported_rate(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        from mom_igd.audio.backend import SUPPORTED_SAMPLE_RATES
+
+        if value not in SUPPORTED_SAMPLE_RATES:
+            raise ValueError(
+                f"audio.preferred_sample_rate={value} is not supported. Allowed: "
+                f"{list(SUPPORTED_SAMPLE_RATES)}. Leave it unset to use the "
+                "device's native rate, which avoids resampling entirely."
+            )
+        return value
+
+    @field_validator("preferred_device_fingerprint")
+    @classmethod
+    def _fingerprint_shape(cls, value: str) -> str:
+        text = (value or "").strip().lower()
+        if not text:
+            return ""
+        if len(text) != 32 or any(c not in "0123456789abcdef" for c in text):
+            raise ValueError(
+                f"audio.preferred_device_fingerprint={value!r} is not a 32-character "
+                "hex fingerprint. Obtain one from `python -m mom_igd audio devices`; "
+                "a PortAudio index is not a device identity."
+            )
+        return text
+
+    @model_validator(mode="after")
+    def _thresholds_are_ordered(self) -> AudioConfig:
+        if self.low_disk_abort_gb > self.min_free_disk_gb:
+            raise ValueError(
+                f"audio.low_disk_abort_gb={self.low_disk_abort_gb} must not exceed "
+                f"audio.min_free_disk_gb={self.min_free_disk_gb}: a recording cannot "
+                "abort at a level above the one it refuses to start at."
+            )
+        if self.silence_dbfs_threshold >= self.too_quiet_dbfs:
+            raise ValueError(
+                f"audio.silence_dbfs_threshold={self.silence_dbfs_threshold} must be "
+                f"below audio.too_quiet_dbfs={self.too_quiet_dbfs}, otherwise every "
+                "quiet signal is reported as no signal at all."
+            )
+        if self.too_quiet_dbfs >= self.too_loud_peak_dbfs:
+            raise ValueError(
+                f"audio.too_quiet_dbfs={self.too_quiet_dbfs} must be below "
+                f"audio.too_loud_peak_dbfs={self.too_loud_peak_dbfs}."
+            )
+        return self
+
+    def capture_profile(self, *, sample_rate: int, channels: int):
+        """Build a validated capture profile from this configuration."""
+        from mom_igd.audio.backend import CaptureProfile, SampleFormat
+
+        return CaptureProfile(
+            sample_rate=self.preferred_sample_rate or sample_rate,
+            channels=min(channels, self.max_channels),
+            sample_format=SampleFormat.INT16,
+            chunk_seconds=self.chunk_seconds,
+        )
+
+
 class ProvidersConfig(BaseModel):
     """Future AI provider endpoints.
 
-    Empty in Phase 1: no ASR, diarization, speaker-embedding or LLM provider has
-    been selected (ADR-0005). Any value present must be a local filesystem path
-    or a loopback URL.
+    Still empty in Phase 2, and correctly so: no ASR, diarization,
+    speaker-embedding or LLM provider has been selected, and the choice is
+    deferred to the Phase 4A benchmark (ADR-0005). Capture needs no provider. Any
+    value present must be a local filesystem path or a loopback URL.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -213,6 +328,7 @@ class AppConfig(BaseModel):
     resources: ResourceConfig = Field(default_factory=ResourceConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     ui: UiConfig = Field(default_factory=UiConfig)
+    audio: AudioConfig = Field(default_factory=AudioConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
 
     # -- validators ---------------------------------------------------------
@@ -312,6 +428,20 @@ class AppConfig(BaseModel):
                 "busy_timeout_ms": self.database.busy_timeout_ms,
             },
             "ui": {"startup_timeout_s": self.ui.startup_timeout_s},
+            "audio": {
+                "preferred_device_fingerprint": self.audio.preferred_device_fingerprint,
+                "preferred_sample_rate": self.audio.preferred_sample_rate,
+                "max_channels": self.audio.max_channels,
+                "sample_format": self.audio.sample_format,
+                "chunk_seconds": self.audio.chunk_seconds,
+                "queue_seconds": self.audio.queue_seconds,
+                "min_free_disk_gb": self.audio.min_free_disk_gb,
+                "low_disk_abort_gb": self.audio.low_disk_abort_gb,
+                "calibration_seconds": self.audio.calibration_seconds,
+                "status_poll_hz": self.audio.status_poll_hz,
+                "auto_recover_on_start": self.audio.auto_recover_on_start,
+                "production_requires_usb": self.audio.production_requires_usb,
+            },
             "providers": {"endpoints": dict(self.providers.endpoints)},
         }
 

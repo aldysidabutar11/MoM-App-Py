@@ -50,7 +50,11 @@ short-lived worker process that is terminated when its stage completes.**
 5. **The recorder never loads a heavy model**, and **the recorder and a worker
    never run concurrently** (enforced by the state machine, not by convention).
    Optional VAD during recording is limited to a tiny ONNX model (~2 MB) and must
-   be switchable off.
+   be switchable off. Phase 2 implements this rule and ships **no** VAD at all;
+   the capture side of the separation — no resampling, no ASR, no model in the
+   audio callback — is tabulated in
+   [ADR-0006](0006-capture-format-pcm16-device-native.md), "Relationship to the
+   capture / AI separation".
 6. **Stage-level checkpoints and resume metadata** are persisted, so an interrupted
    run continues instead of restarting. A failed stage is the resume point, not the
    stage after it.

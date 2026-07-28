@@ -226,6 +226,39 @@ def is_terminal(state: JobState | str) -> bool:
     return JobState(state) in TERMINAL_STATES
 
 
+def transition_path(
+    current: JobState | str, target: JobState | str
+) -> list[JobState] | None:
+    """Shortest legal sequence of states from ``current`` to ``target``.
+
+    Callers that know where a job must end up but not the intermediate steps use
+    this instead of hardcoding a route. The capture service, for example, knows
+    that a successful start means the job is ``RECORDING``; it should not also have
+    to know that Phase 1 routes that through ``READY``.
+
+    Returns the states to move *through*, excluding ``current``, or ``None`` when
+    no legal route exists -- which is a real answer, not an error to be worked
+    around by writing the state directly.
+    """
+    source = JobState(current)
+    destination = JobState(target)
+    if source is destination:
+        return []
+    frontier: list[tuple[JobState, list[JobState]]] = [(source, [])]
+    seen = {source}
+    while frontier:
+        state, route = frontier.pop(0)
+        for candidate in sorted(ALLOWED_TRANSITIONS[state], key=lambda s: s.value):
+            if candidate in seen:
+                continue
+            extended = [*route, candidate]
+            if candidate is destination:
+                return extended
+            seen.add(candidate)
+            frontier.append((candidate, extended))
+    return None
+
+
 def validate_transition_graph() -> None:
     """Self-check the transition tables.
 

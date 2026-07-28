@@ -6,16 +6,22 @@ Classification rules -- these are the whole point of the command:
 * ``WARN``  -- optional, informational, or required only in a *future* phase.
 * ``FAIL``  -- required for the current phase, and not satisfied.
 
-Consequences of that contract in Phase 1: a missing audio library, a missing AI
-library, a missing microphone, a missing model and a missing OpenVINO
-installation are all ``WARN``. None of them can fail the build, because Phase 1
-implements none of those features. Conversely a non-loopback API host, a data
-root inside the repository, a broken database or an installed cloud SDK are
-``FAIL``, because they violate an invariant that already applies.
+Consequences of that contract in Phase 2: a missing AI library, a missing model and
+a missing OpenVINO installation are still ``WARN`` -- none of them can fail the
+build, because Phase 2 implements none of those features. What *changed* in Phase 2
+is that the audio backend and a usable capture device are now required by the
+current phase, so their absence is a ``FAIL``. A non-loopback API host, a data root
+inside the repository, a broken database or an installed cloud SDK remain ``FAIL``,
+because they violate an invariant that already applies.
+
+A missing *USB conference microphone* is the one check that is deliberately
+graded twice: ``WARN`` in the default run, because the built-in array is fine for
+development, and ``FAIL`` under ``--production``, because it is not fine for
+recording nine people. See :mod:`mom_igd.diagnostics.audio_checks`.
 
 Exit codes (deterministic, tested):
 
-* ``0`` -- no ``FAIL``. Warnings are expected during Phase 1.
+* ``0`` -- no ``FAIL``. Warnings are expected: they name future-phase work.
 * ``1`` -- at least one ``FAIL``.
 * ``2`` -- ``--strict`` was requested and there is at least one ``WARN`` (no ``FAIL``).
 
@@ -60,8 +66,10 @@ _STORE_SHIM_MARKERS: Final[tuple[str, ...]] = (
 
 # Dependencies that belong to a later phase. Missing => WARN, never FAIL.
 _FUTURE_OPTIONAL_MODULES: Final[tuple[tuple[str, str, str], ...]] = (
-    ("sounddevice", "PortAudio/WASAPI capture", "2"),
-    ("soundfile", "lossless FLAC/WAV writing", "2"),
+    # `sounddevice` moved out of this list in Phase 2: it is now a real runtime
+    # dependency with its own check (see mom_igd/diagnostics/audio_checks.py).
+    # `soundfile` is not listed at all -- Phase 2 writes WAV with the standard
+    # library, so it is not a future dependency, it is simply not needed.
     ("faster_whisper", "ASR (candidate, pending Phase 4A benchmark)", "4"),
     ("ctranslate2", "ASR inference backend (candidate)", "4"),
     ("openvino", "Intel acceleration (benchmark candidate only)", "4A"),
@@ -206,7 +214,7 @@ def _check_cpu() -> CheckResult:
         import psutil
 
         physical = psutil.cpu_count(logical=False)
-    except Exception:  # pragma: no cover - psutil is a Phase 1 dependency
+    except Exception:  # pragma: no cover - psutil is a required dependency
         pass
     processor = platform.processor() or "unknown"
     return CheckResult(
@@ -250,7 +258,7 @@ def _check_ram(config: AppConfig) -> CheckResult:
             status=Status.WARN,
             detail=(
                 f"{available_mb} MB available of {total_mb} MB total, below the "
-                f"{threshold} MB warning threshold. Phase 1 does not need it, but "
+                f"{threshold} MB warning threshold. Capture does not need it, but "
                 "a heavy stage from Phase 4 onwards will page. Close browsers and "
                 "stop Docker Desktop before processing."
             ),
@@ -600,51 +608,6 @@ def _check_docker_wsl_memory() -> CheckResult:
     )
 
 
-def _check_audio_devices() -> CheckResult:
-    """Report input-device availability without any audio dependency.
-
-    Uses the Windows multimedia API through ctypes, so it needs no audio library
-    and installs nothing. Phase 1 implements no capture, so the result is always
-    informational.
-    """
-    if platform.system() != "Windows":
-        return CheckResult(
-            key="audio_devices",
-            title="Audio input devices (informational)",
-            status=Status.WARN,
-            detail="Not applicable on this platform; capture arrives in Phase 2.",
-            required_in_phase="2",
-            data={"input_device_count": None},
-        )
-    try:
-        import ctypes
-
-        count = int(ctypes.WinDLL("winmm").waveInGetNumDevs())
-    except Exception as exc:
-        return CheckResult(
-            key="audio_devices",
-            title="Audio input devices (informational)",
-            status=Status.WARN,
-            detail=f"Could not query audio devices ({exc}); capture arrives in Phase 2.",
-            required_in_phase="2",
-            data={"input_device_count": None},
-        )
-    return CheckResult(
-        key="audio_devices",
-        title="Audio input devices (informational)",
-        status=Status.WARN,
-        detail=(
-            f"{count} audio input device(s) reported by the OS. Phase 1 implements "
-            "no capture, so this is informational. Before Phase 2 production "
-            "acceptance a USB conference microphone is required: the internal "
-            "laptop array applies beamforming and noise suppression that suppress "
-            "non-dominant speakers and degrade diarization."
-        ),
-        required_in_phase="2",
-        data={"input_device_count": count},
-    )
-
-
 def _check_optional_dependencies() -> CheckResult:
     present: list[str] = []
     missing: list[dict[str, str]] = []
@@ -675,9 +638,9 @@ def _check_optional_dependencies() -> CheckResult:
         status=Status.WARN,
         detail=(
             f"{len(missing)} of {len(_FUTURE_OPTIONAL_MODULES)} future dependencies "
-            f"are not installed: {listed}. This is the expected Phase 1 state -- "
-            "each is installed by the phase that needs it, and the AI provider "
-            "choice is still pending the Phase 4A benchmark."
+            f"are not installed: {listed}. This is the expected Phase "
+            f"{CURRENT_PHASE} state -- each is installed by the phase that needs "
+            "it, and the AI provider choice is still pending the Phase 4A benchmark."
         ),
         required_in_phase=None,
         data=data,
@@ -706,8 +669,8 @@ def _check_model_registry(config: AppConfig, paths: RuntimePaths) -> CheckResult
             detail=(
                 f"Registry at {config.model_registry_path} is valid (schema v"
                 f"{registry.registry_schema_version}) and declares 0 models. That "
-                "is the correct Phase 1 state: no provider has been selected and "
-                "no model has been downloaded."
+                f"is the correct Phase {CURRENT_PHASE} state: no provider has been "
+                "selected and no model has been downloaded."
             ),
             required_in_phase=None,
             data=data,
@@ -800,6 +763,7 @@ def run_doctor(
     *,
     data_root: str | os.PathLike[str] | None = None,
     ensure_dirs: bool = False,
+    production: bool = False,
 ) -> DoctorReport:
     """Run every diagnostic and return the report.
 
@@ -809,6 +773,10 @@ def run_doctor(
         ensure_dirs: When ``True``, create the runtime tree before checking. The
             default is ``False`` so that diagnosing a machine never has a side
             effect on the filesystem.
+        production: Apply the production gate. A built-in microphone, an
+            unrecovered recording and a missing calibration are warnings in the
+            default run and failures here, because a laptop array cannot record a
+            nine-person meeting usefully. No audio stream is opened either way.
     """
     results: list[CheckResult] = [_check_application(), _check_python(), _check_store_shim()]
 
@@ -860,7 +828,12 @@ def run_doctor(
         _check_offline_configuration(resolved),
         _check_model_registry(resolved, paths),
         _check_optional_dependencies(),
-        _check_audio_devices(),
+    ]
+
+    from mom_igd.diagnostics.audio_checks import audio_checks
+
+    results += audio_checks(resolved, paths, production=production)
+    results += [
         _check_docker_wsl_presence(),
         _check_docker_wsl_memory(),
     ]

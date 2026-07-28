@@ -13,7 +13,9 @@
 
 # Configuration schema version. A build refuses to load a schema it does not
 # understand instead of guessing.
-config_schema_version = 1
+#   1 = Phase 1 foundation
+#   2 = Phase 2 adds the [audio] section below
+config_schema_version = 2
 
 # Runtime mode. Only "offline" is supported: there is no cloud or hybrid mode
 # and no cloud fallback (ADR-0002).
@@ -94,11 +96,67 @@ window_width = 1180
 window_height = 780
 
 # ---------------------------------------------------------------------------
+# Offline audio capture (Phase 2)
+#
+# `preferred_device_fingerprint` is deliberately EMPTY here. A fingerprint
+# identifies one physical microphone on one machine, so committing one would make
+# every other machine start with a selection it cannot resolve. Put it in
+# `config/local.toml`, or let an explicit device selection store it.
+#
+# Storage, uncompressed PCM16 (decimal MB):
+#   48 kHz mono   ~= 345.6 MB/h
+#   48 kHz stereo ~= 691.2 MB/h
+# ---------------------------------------------------------------------------
+[audio]
+preferred_device_fingerprint = ""
+# Unset means "use the device's native rate", which avoids resampling entirely.
+# preferred_sample_rate = 48000
+max_channels = 2
+sample_format = "int16"
+
+# Chunk length. Shorter loses less to a crash but multiplies file count; longer
+# risks the 4 GiB WAV limit and loses more when a file is damaged.
+chunk_seconds = 30
+
+# Bounded hand-off between the audio callback and the writer thread. About five
+# seconds of headroom absorbs a disk hiccup; anything beyond it is counted as lost
+# audio rather than buffered without limit.
+queue_seconds = 5.0
+writer_shutdown_timeout_s = 15.0
+
+# Disk safety. Recording refuses to start below min_free_disk_gb and finalises
+# cleanly if free space falls below low_disk_abort_gb while running.
+min_free_disk_gb = 5.0
+low_disk_abort_gb = 1.0
+
+# Microphone test length, 10-15 s.
+calibration_seconds = 12
+
+# Level judgement thresholds (dBFS). Must satisfy
+# silence < too_quiet < too_loud_peak.
+silence_dbfs_threshold = -60.0
+too_quiet_dbfs = -45.0
+too_loud_peak_dbfs = -1.0
+clipping_percent_threshold = 0.01
+
+# UI polling. 2-4 Hz is enough for a level meter and keeps the API cheap.
+status_poll_hz = 3.0
+# 1 = exact RMS. Raise it to trade a little accuracy for CPU on the live meter.
+meter_stride = 1
+
+auto_recover_on_start = true
+quarantine_ambiguous_partials = true
+# Production acceptance requires a USB conference microphone verified by Windows;
+# the built-in array is development only.
+production_requires_usb = true
+
+# ---------------------------------------------------------------------------
 # AI providers
 #
-# EMPTY BY DESIGN IN PHASE 1. No ASR, diarization, speaker-embedding or LLM
-# provider has been selected; the choice is deferred to the Phase 4A benchmark
-# (ADR-0005).
+# STILL EMPTY BY DESIGN IN PHASE 2. No ASR, diarization, speaker-embedding or
+# LLM provider has been selected; the choice is deferred to the Phase 4A
+# benchmark (ADR-0005). Audio capture needs no provider, so an empty block here
+# is the correct state for this build, not an oversight.
 #
 # When entries are added they must be either:
 #   * an absolute filesystem path, or a path containing a separator
@@ -111,6 +169,6 @@ window_height = 780
 [providers]
 
 [providers.endpoints]
-# Examples (commented out; Phase 1 selects nothing):
+# Examples (commented out; no phase up to and including 2 selects anything):
 # asr = 'D:\MoM-IGD-Data\models\asr\model.bin'
 # llm = "http://127.0.0.1:8080"

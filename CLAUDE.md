@@ -9,8 +9,9 @@ A **fully offline** desktop application that turns a recording of an in-person
 meeting (one room, up to nine registered participants, Indonesian with English
 technical terms) into a reviewed, structured Minutes of Meeting.
 
-**Current phase: 1 — application foundation.** See `docs/architecture.md` for the
-full roadmap and `README.md` for what exists.
+**Current phase: 2 — offline audio capture.** See `docs/architecture.md` for the
+full roadmap, `docs/phase-2-audio-capture.md` for the capture engine, and
+`README.md` for what exists.
 
 ## Non-negotiable constraints
 
@@ -41,15 +42,26 @@ full roadmap and `README.md` for what exists.
    MoM documents, runtime databases, logs or secrets.
 10. **Do not print or echo** the contents of `.env`, key, token or certificate
     files.
+11. **Never open the microphone without an explicit user action.** Not on import,
+    not at application startup, not in `doctor`, not in a test, and not during
+    device discovery. Enumerating devices must not open a stream. The one
+    deliberate exception is `audio probe`/`audio calibrate`, which exist *because*
+    the operator asked to test the microphone.
+12. **Never change an audio device's settings.** No gain, no AGC, no
+    enhancements, no default-device change, no registry write. The Windows
+    endpoint registry is read **read-only**, for transport evidence only. When a
+    level is wrong, tell the operator which setting to adjust.
 
 ## Scope discipline
 
 The single most important rule: **do not implement a future phase.**
 
-Phase 1 must not contain audio capture, device enumeration, FLAC/WAV writing,
-VAD, ASR, diarization, voice enrollment, voice identification, LLM calls, MoM
-generation, exporters, action tracking, encryption at rest, a consent workflow,
-model downloads, or OpenVINO installation/benchmarking.
+Phase 2 must not contain VAD, ASR, diarization, voice enrollment, voice
+identification, speaker labelling, LLM calls, MoM generation, exporters, action
+tracking, encryption at rest, a consent workflow, retention enforcement, model
+downloads, or OpenVINO installation/benchmarking. It must not resample, produce
+a 16 kHz working copy, or write FLAC — those belong to Phase 4
+(`normalize_audio`).
 
 Do not scaffold future modules as empty placeholders either. An empty package
 invites a half-implementation. Future structure belongs in
@@ -86,28 +98,73 @@ quietly widening scope.
   third-party import to either, or `py -3.12 -m mom_igd doctor` breaks on a fresh
   machine. Heavy imports belong inside the subcommand that needs them.
 
+### Phase 2 invariants (`mom_igd/audio/`)
+
+* **The device callback copies and enqueues. Nothing else.** No file I/O, no
+  logging, no database access, no lock it can wait on, and no exception may reach
+  PortAudio. A blocked callback is a dropped frame in real audio.
+* **One writer thread owns `ChunkWriter` and `QualityMeter`.** Any other thread
+  that touches them takes `_writer_lock` and waits for `_writer_idle` first. "The
+  queue is empty" does not mean "the writer has finished" — it pops, then writes.
+* **A gap is recorded, never filled.** Never synthesise silence to cover dropped
+  frames or a pause. An invisible gap shifts every downstream timestamp and breaks
+  the evidence chain that Phase 8 depends on.
+* **The manifest is authoritative; the database mirrors it.** `audio verify`
+  reports a divergence — it never silently reconciles one.
+* **Never overwrite or delete audio.** The writer refuses to replace an existing
+  final chunk; recovery quarantines anything ambiguous instead of deleting it. The
+  durability order in ADR-0007 is a contract: metadata before audio, `fsync`
+  before hashing, hash from disk, atomic rename, partial removed last.
+* **Identify a device by fingerprint, never by PortAudio index.** Indices move
+  when a device is replugged. If the selected device is absent, **raise** — never
+  fall back to another microphone (ADR-0008).
+* **Never assert a transport you have not verified.** `USB` comes from the Windows
+  endpoint registry or the answer is `UNKNOWN`.
+* **`sounddevice` is imported lazily**, inside the function that needs it, so
+  `doctor` and the CLI still work when PortAudio is missing. **NumPy is not a
+  dependency** — `RawInputStream` gives bytes, and the meter uses `array`.
+* **`audioop` is banned.** It was removed in Python 3.13; using it would block the
+  next interpreter upgrade.
+
 ## Doctor classification contract
 
 * `PASS` — required by the current phase, and satisfied.
 * `WARN` — optional, informational, or required only in a **future** phase.
 * `FAIL` — required by the current phase, and not satisfied.
 
-In Phase 1 a missing microphone, audio library, AI library, model or OpenVINO
-installation is **always `WARN`, never `FAIL`**. Docker/WSL presence and memory
-use are **informational only**.
+In Phase 2 a missing AI library, model or OpenVINO installation is still **always
+`WARN`, never `FAIL`**. Docker/WSL presence and memory use are **informational
+only**.
+
+What changed in Phase 2: the audio backend and a usable capture device are now
+**required by the current phase**, so their absence is a `FAIL` in the default
+run. A missing *USB* microphone is a `WARN` in the default run and a `FAIL` under
+`doctor --production` — that flag is the production gate, and it also requires
+recorded calibration evidence.
 
 Exit codes: `0` no FAIL · `1` any FAIL · `2` `--strict` with a WARN.
 
 ## Testing rules
 
 * Tests must not require the internet, a microphone, an AI model, Docker or
-  OpenVINO, and must not depend on execution order.
+  OpenVINO, and must not depend on execution order. Audio tests use
+  `FakeAudioBackend`; **no test fixture may contain a human voice recording** —
+  PCM is generated deterministically.
 * Tests must use temporary directories only. The real runtime data directory
   (`D:\MoM-IGD-Data`) is guarded by a session fixture; touching it fails the run.
 * Use `use_local_file=False` when loading configuration in a test, so a
   developer's `config/local.toml` cannot change the outcome.
 * **Do not weaken a test to make it pass.** If a test and the implementation
-  disagree, the Phase 1 requirements decide which one is wrong.
+  disagree, the current phase's requirements decide which one is wrong.
+* **A test that starts a capture session must stop it.** Use the `make_session`
+  fixture, which stops every session and asserts no writer thread leaked. One
+  leaked thread cascades into unrelated failures several tests later.
+* **Pace `FakeStream.pump()`.** Pumping in one burst delivers audio faster than
+  real time and legitimately overflows the queue — that is the queue working, not
+  a bug. Use the `_pump`/`_await_chunks` helpers: reaching a frame count happens
+  before the chunk is finalised.
+* `pytest-timeout` is configured (`--timeout=60 --timeout-method=thread`) so a
+  deadlock produces a stack trace instead of a hung run. It found a real one.
 * Avoid `importlib.reload` on project modules in tests: it rebuilds exception
   classes and breaks `pytest.raises` in unrelated tests later in the session.
   Use a child process instead.
@@ -125,11 +182,18 @@ Exit codes: `0` no FAIL · `1` any FAIL · `2` `--strict` with a WARN.
 
 ```powershell
 .\.venv\Scripts\python.exe -m mom_igd doctor
+.\.venv\Scripts\python.exe -m mom_igd doctor --production   # USB mic + calibration gate
 .\.venv\Scripts\python.exe -m mom_igd db init
 .\.venv\Scripts\python.exe -m mom_igd smoke
+.\.venv\Scripts\python.exe -m mom_igd audio devices
+.\.venv\Scripts\python.exe -m mom_igd audio smoke           # fake backend, no hardware
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\python.exe -m pytest --cov=mom_igd --cov-report=term-missing
 ```
+
+Do **not** pipe pytest through `2>&1 | Select-Object` in PowerShell: it wraps every
+stderr log line in an `ErrorRecord` and the run appears to hang. Use
+`Start-Process` with `-RedirectStandardOutput` if you need the output in a file.
 
 ## Style
 

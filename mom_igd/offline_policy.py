@@ -11,7 +11,7 @@ inspectable application logic:
 3. **Bind policy.** The API may only bind to a loopback address.
 4. **Environment flags.** The environment variables that put future offline
    model libraries into offline mode, provided now so worker processes inherit
-   them later. Those libraries are *not* installed in Phase 1.
+   them later. None of those libraries is installed yet.
 
 Deliberate non-goals (ADR-0002):
 
@@ -126,8 +126,10 @@ CLOUD_SDK_PREFIX_DENYLIST: Final[tuple[str, ...]] = (
 
 DEFERRED_HEAVY_DISTRIBUTIONS: Final[frozenset[str]] = frozenset(
     {
-        # Not forbidden forever -- forbidden in Phase 1. Each arrives in its own
-        # phase after the Phase 4A benchmark selects a provider.
+        # Not forbidden forever -- forbidden until the phase that needs it. Each
+        # arrives in its own phase after the Phase 4A benchmark selects a
+        # provider. `sounddevice` left this list in Phase 2, when it became a
+        # required runtime dependency.
         "faster-whisper",
         "ctranslate2",
         "openai-whisper",
@@ -150,7 +152,11 @@ DEFERRED_HEAVY_DISTRIBUTIONS: Final[frozenset[str]] = frozenset(
         "onnxruntime-gpu",
         "sherpa-onnx",
         "nemo-toolkit",
-        "sounddevice",
+        # NOTE: `sounddevice` is deliberately NOT listed here. It became a real
+        # runtime dependency in Phase 2 (PortAudio/WASAPI capture) and is
+        # declared in requirements.txt. Everything below is still deferred:
+        # Phase 2 writes WAV with the standard-library `wave` module and needs no
+        # third-party audio codec, resampler or VAD.
         "soundfile",
         "pyaudio",
         "librosa",
@@ -158,6 +164,9 @@ DEFERRED_HEAVY_DISTRIBUTIONS: Final[frozenset[str]] = frozenset(
         "av",
         "webrtcvad",
         "silero-vad",
+        # numpy is not needed: capture uses sounddevice.RawInputStream (bytes),
+        # and the quality meter uses array.array from the standard library.
+        "numpy",
         "llama-cpp-python",
         "sentence-transformers",
         "transformers",

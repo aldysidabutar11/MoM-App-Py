@@ -114,6 +114,19 @@ def create_app(
         try:
             yield
         finally:
+            # A recording in progress must be finalised, not dropped: whatever
+            # reached the writer is already on disk, and stopping cleanly turns the
+            # open partial into a verified chunk instead of leaving it for recovery.
+            service = getattr(app.state, "recording_service", None)
+            if service is not None:
+                try:
+                    if service.status().get("recording_active"):
+                        _LOG.warning(
+                            "Shutting down with a recording in progress; finalising it."
+                        )
+                        service.stop()
+                except Exception as exc:  # noqa: BLE001 - shutdown must not raise
+                    _LOG.error("Could not finalise the recording on shutdown: %s", exc)
             _LOG.info("%s shutting down cleanly", APP_NAME)
 
     app = FastAPI(
@@ -134,6 +147,12 @@ def create_app(
 
     app.include_router(public_router)
     app.include_router(protected_router)
+
+    # Phase 2 capture endpoints. Imported here rather than at module level so that
+    # building the app does not pull in the audio stack until it is routed.
+    from mom_igd.api.audio_routes import audio_router
+
+    app.include_router(audio_router)
 
     @app.get("/", include_in_schema=False)
     def _root() -> RedirectResponse:

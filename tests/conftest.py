@@ -64,6 +64,33 @@ def production_data_dir_guard() -> Iterator[tuple[Any, ...]]:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True, scope="session")
+def quiet_application_logging() -> Iterator[None]:
+    """Keep the application's log records out of the test runner's stderr.
+
+    Without a handler, ``logging`` falls back to writing WARNING and above
+    straight to stderr. The Phase 2 capture engine legitimately logs warnings
+    (dropped frames, quarantined partials, a stream that failed to stop), so a
+    run would emit thousands of stderr lines. That is noise in the report, and on
+    Windows it makes any shell that post-processes stderr pathologically slow.
+
+    A ``NullHandler`` silences the fallback without suppressing ``caplog``, which
+    attaches its own handler when a test asks for it.
+    """
+    import logging
+
+    logger = logging.getLogger("mom_igd")
+    handler = logging.NullHandler()
+    logger.addHandler(handler)
+    previous = logger.propagate
+    logger.propagate = False
+    try:
+        yield
+    finally:
+        logger.removeHandler(handler)
+        logger.propagate = previous
+
+
 @pytest.fixture(autouse=True)
 def isolated_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """Strip MOM_IGD_* from the environment and point the data root at tmp_path."""

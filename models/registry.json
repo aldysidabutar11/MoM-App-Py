@@ -1,5 +1,5 @@
 {
   "registry_schema_version": 1,
-  "description": "Declaration of model artefacts this build is allowed to load. EMPTY BY DESIGN in Phase 1: no ASR, diarization, speaker-embedding or LLM provider has been selected yet; the choice is deferred to the Phase 4A benchmark (see docs/adr/0005-ai-provider-selection-deferred-to-phase-4a.md). This file is tracked in Git because it is a reviewable declaration. The binaries it describes live under <data_root>/models and are never committed.",
+  "description": "Declaration of model artefacts this build is allowed to load. STILL EMPTY BY DESIGN in Phase 2: no ASR, diarization, speaker-embedding or LLM provider has been selected yet, and the choice is deferred to the Phase 4A benchmark (see docs/adr/0005-ai-provider-selection-deferred-to-phase-4a.md). Phase 2 is audio capture, which loads no model at all, so an empty registry is the correct state for this build rather than an oversight. This file is tracked in Git because it is a reviewable declaration. The binaries it describes live under <data_root>/models and are never committed.",
   "models": []
 }

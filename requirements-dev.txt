@@ -21,9 +21,14 @@
 -r requirements.txt
 
 # --- direct ---------------------------------------------------------------
+# pytest-timeout arrived with Phase 2: the capture engine runs a writer thread
+# behind a bounded queue, so a locking mistake presents as a suite that never
+# finishes. A per-test timeout (configured in pyproject.toml) turns that into a
+# stack trace instead.
 httpx==0.28.1
 pytest==8.4.2
 pytest-cov==7.1.0
+pytest-timeout==2.4.0
 
 # --- transitive -----------------------------------------------------------
 certifi==2026.7.22

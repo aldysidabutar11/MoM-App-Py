@@ -1,7 +1,7 @@
 """Reduced, standard-library-only diagnostics.
 
 **Why this exists.** The most useful moment to run `doctor` is on a machine that is
-*not* set up yet — and on such a machine the Phase 1 runtime dependencies
+*not* set up yet — and on such a machine the core runtime dependencies
 (pydantic, psutil, ...) are missing, so the full doctor cannot even be imported.
 A traceback is a poor answer to "why doesn't this work?".
 
@@ -54,7 +54,14 @@ REQUIRED_RUNTIME_MODULES: Final[tuple[tuple[str, str], ...]] = (
     ("uvicorn", "ASGI server for the local API"),
     ("webview", "desktop shell (pywebview)"),
 )
-"""Phase 1 runtime imports, with what each is needed for."""
+"""Imports the *full* doctor needs, with what each is needed for.
+
+``sounddevice`` is deliberately absent even though it is a required runtime
+dependency from Phase 2 onwards: it is imported lazily, so the full doctor runs
+without it and reports the missing backend as a proper ``FAIL`` with an install
+hint. Listing it here would drop the whole run down to this reduced report and
+lose every other check.
+"""
 
 _INSTALL_HINT: Final[str] = (
     r".venv\Scripts\python.exe -m pip install -r requirements.txt"
@@ -67,7 +74,7 @@ def _looks_like_store_shim(path: str) -> bool:
 
 
 def missing_runtime_modules() -> list[tuple[str, str]]:
-    """Return the Phase 1 runtime modules that cannot be imported here."""
+    """Return the core runtime modules that cannot be imported here."""
     missing: list[tuple[str, str]] = []
     for module, purpose in REQUIRED_RUNTIME_MODULES:
         try:
@@ -83,7 +90,7 @@ def _check_dependencies(missing: list[tuple[str, str]]) -> CheckResult:
     in_venv = sys.prefix != sys.base_prefix
     names = ", ".join(module for module, _ in missing)
     detail = (
-        f"{len(missing)} of {len(REQUIRED_RUNTIME_MODULES)} Phase 1 runtime "
+        f"{len(missing)} of {len(REQUIRED_RUNTIME_MODULES)} core runtime "
         f"dependencies are not importable by this interpreter ({names}). "
     )
     if in_venv:
@@ -95,7 +102,7 @@ def _check_dependencies(missing: list[tuple[str, str]]) -> CheckResult:
         )
     return CheckResult(
         key="runtime_dependencies",
-        title="Phase 1 runtime dependencies",
+        title="Core runtime dependencies",
         status=Status.FAIL,
         detail=detail,
         required_in_phase="1",
@@ -298,9 +305,9 @@ def run_bootstrap_doctor(
 def _all_present() -> CheckResult:  # pragma: no cover - bootstrap implies absence
     return CheckResult(
         key="runtime_dependencies",
-        title="Phase 1 runtime dependencies",
+        title="Core runtime dependencies",
         status=Status.PASS,
-        detail="All Phase 1 runtime dependencies are importable.",
+        detail="All core runtime dependencies are importable.",
         required_in_phase="1",
         data={"missing": []},
     )

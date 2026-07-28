@@ -111,13 +111,16 @@ def test_foreign_keys_pragma_is_on(conn: sqlite3.Connection) -> None:
 def test_foreign_key_violation_is_actually_rejected(conn: sqlite3.Connection) -> None:
     with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
         conn.execute(
-            "INSERT INTO recordings (meeting_id, relative_dir) VALUES (424242, 'x')"
+            "INSERT INTO recordings (meeting_id, recording_uuid, relative_dir) "
+            "VALUES (424242, 'u-orphan', 'x')"
         )
 
 
 def test_cascade_delete_removes_dependent_rows(conn: sqlite3.Connection, meeting_id: int) -> None:
     conn.execute(
-        "INSERT INTO recordings (meeting_id, relative_dir) VALUES (?, 'm1')", (meeting_id,)
+        "INSERT INTO recordings (meeting_id, recording_uuid, relative_dir) "
+        "VALUES (?, 'u-cascade', 'm1')",
+        (meeting_id,),
     )
     recording_id = conn.execute("SELECT id FROM recordings").fetchone()["id"]
     conn.execute(
@@ -161,7 +164,9 @@ def test_recording_relative_dir_must_stay_relative(conn: sqlite3.Connection, mee
 
 def test_chunk_filename_must_be_bare(conn: sqlite3.Connection, meeting_id: int) -> None:
     conn.execute(
-        "INSERT INTO recordings (meeting_id, relative_dir) VALUES (?, 'm1')", (meeting_id,)
+        "INSERT INTO recordings (meeting_id, recording_uuid, relative_dir) "
+        "VALUES (?, 'u-bare', 'm1')",
+        (meeting_id,),
     )
     recording_id = conn.execute("SELECT id FROM recordings").fetchone()["id"]
     with pytest.raises(sqlite3.IntegrityError):

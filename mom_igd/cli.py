@@ -1,9 +1,11 @@
 """Command-line interface.
 
 Import weight matters here. ``doctor``, ``db`` and ``config`` must work on a
-machine where only the Phase 1 runtime dependencies are installed, and they must
-not pay for importing FastAPI, uvicorn or pywebview. Every heavy import is
-therefore performed *inside* the subcommand that needs it, never at module level.
+machine where only the core runtime dependencies are installed, and they must not
+pay for importing FastAPI, uvicorn, pywebview or the audio stack. Every heavy
+import is therefore performed *inside* the subcommand that needs it, never at
+module level -- including ``sounddevice``, so ``audio devices`` can still explain
+that PortAudio is missing instead of failing to start.
 
 Exit codes:
 
@@ -46,8 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             f"{APP_NAME} {APP_VERSION} - fully offline Minutes of Meeting "
             f"application (roadmap phase {CURRENT_PHASE}). "
-            "Phase 1 implements the foundation only: no audio capture, no ASR, "
-            "no diarization, no LLM, no export."
+            "Phase 2 implements the foundation and offline audio capture: still "
+            "no ASR, no diarization, no speaker identification, no LLM, no export."
         ),
         epilog=(
             "Runtime data lives outside this repository (default "
@@ -92,15 +94,25 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Environment diagnostics. PASS = required by the current phase and "
             "satisfied. WARN = optional, informational, or required only in a "
-            "future phase (missing microphone, audio library, AI library, model "
-            "or OpenVINO are all WARN in Phase 1). FAIL = required now and not "
-            "satisfied. Exit 0 when there is no FAIL; 1 on any FAIL; 2 with "
-            "--strict when there is a WARN. Creates nothing and changes nothing."
+            "future phase (a missing AI library, model or OpenVINO is always a "
+            "WARN). FAIL = required now and not satisfied -- in Phase 2 that "
+            "includes the audio backend and a usable capture device. Exit 0 when "
+            "there is no FAIL; 1 on any FAIL; 2 with --strict when there is a "
+            "WARN. Creates nothing, changes nothing, opens no microphone."
         ),
     )
     doctor.add_argument("--json", action="store_true", help="Machine-readable output on stdout.")
     doctor.add_argument(
         "--strict", action="store_true", help="Exit 2 when any check reports WARN."
+    )
+    doctor.add_argument(
+        "--production",
+        action="store_true",
+        help=(
+            "Apply the production gate: a built-in microphone, an unrecovered "
+            "recording or a missing calibration become FAIL instead of WARN. "
+            "Opens no audio stream."
+        ),
     )
 
     # -- db ----------------------------------------------------------------
@@ -142,6 +154,81 @@ def build_parser() -> argparse.ArgumentParser:
         "show", parents=[common], help="Validate and summarise models/registry.json."
     )
     registry_show.add_argument("--json", action="store_true")
+
+    # -- audio -------------------------------------------------------------
+    audio = sub.add_parser(
+        "audio",
+        parents=[common],
+        help="Offline audio capture: devices, calibration, verification, recovery.",
+        description=(
+            "Phase 2 capture tooling. `devices`, `verify`, `recover` and `smoke` "
+            "never open the microphone. `probe` and `calibrate` do, and only when "
+            "you run them."
+        ),
+    )
+    audio_sub = audio.add_subparsers(dest="audio_command", metavar="SUBCOMMAND")
+
+    audio_devices = audio_sub.add_parser(
+        "devices", parents=[common], help="List capture devices. Opens no stream."
+    )
+    audio_devices.add_argument("--json", action="store_true")
+    audio_devices.add_argument(
+        "--all", action="store_true", help="Include rejected devices and why."
+    )
+
+    audio_probe = audio_sub.add_parser(
+        "probe",
+        parents=[common],
+        help="Preflight, plus an optional brief microphone open test.",
+    )
+    audio_probe.add_argument("--json", action="store_true")
+    audio_probe.add_argument(
+        "--open-test",
+        action="store_true",
+        help="Briefly OPEN THE MICROPHONE to prove it delivers audio.",
+    )
+    audio_probe.add_argument("--minutes", type=float, default=120.0)
+
+    audio_cal = audio_sub.add_parser(
+        "calibrate",
+        parents=[common],
+        help="Microphone level test. OPENS THE MICROPHONE for 10-15 s.",
+    )
+    audio_cal.add_argument("--json", action="store_true")
+    audio_cal.add_argument("--seconds", type=float, default=None)
+
+    audio_verify = audio_sub.add_parser(
+        "verify", parents=[common], help="Verify a recording's chunks and manifest."
+    )
+    audio_verify.add_argument("recording_uuid", nargs="?", default=None)
+    audio_verify.add_argument("--json", action="store_true")
+
+    audio_recover = audio_sub.add_parser(
+        "recover",
+        parents=[common],
+        help="Recover interrupted recordings. Idempotent; opens no stream.",
+    )
+    audio_recover.add_argument("--json", action="store_true")
+
+    audio_smoke = audio_sub.add_parser(
+        "smoke",
+        parents=[common],
+        help="Fake-backend capture + recovery smoke test. No microphone, no GUI.",
+    )
+    audio_smoke.add_argument("--json", action="store_true")
+
+    audio_bench = audio_sub.add_parser(
+        "bench",
+        parents=[common],
+        help="Accelerated fake-backend capture benchmark. No microphone.",
+    )
+    audio_bench.add_argument("--json", action="store_true")
+    audio_bench.add_argument(
+        "--minutes", type=float, default=10.0, help="Simulated audio minutes."
+    )
+    audio_bench.add_argument(
+        "--speed", type=float, default=60.0, help="Times faster than real time."
+    )
 
     # -- serve -------------------------------------------------------------
     serve = sub.add_parser(
@@ -259,13 +346,20 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             print(f"\nConfiguration error: {exc}", file=sys.stderr)
         return EXIT_FAILURE
 
-    report = run_doctor(config=config, ensure_dirs=False)
+    production = bool(getattr(args, "production", False))
+    report = run_doctor(config=config, ensure_dirs=False, production=production)
     if args.json:
         payload = report.to_dict()
+        payload["production_gate"] = production
         payload["exit_code"] = report.exit_code(strict=args.strict)
         print(json.dumps(payload, indent=2, sort_keys=True, default=str))
     else:
         print(format_report(report, strict=args.strict))
+        if production:
+            print(
+                "\nProduction gate applied: a built-in microphone, an unrecovered "
+                "recording or a missing calibration is a FAIL here."
+            )
     return report.exit_code(strict=args.strict)
 
 
@@ -444,14 +538,223 @@ def _cmd_registry_show(args: argparse.Namespace) -> int:
     if registry.is_empty:
         lines += [
             "",
-            "The registry is empty. That is the correct Phase 1 state: no ASR, "
-            "diarization,",
+            f"The registry is empty. That is the correct Phase {CURRENT_PHASE} "
+            "state: no ASR, diarization,",
             "speaker-embedding or LLM provider has been selected and no model has "
             "been downloaded.",
             "Provider selection is deferred to the Phase 4A benchmark.",
         ]
     _emit(payload, as_json=args.json, text="\n".join(lines))
     return EXIT_OK
+
+
+def _audio_service(args: argparse.Namespace, *, ensure: bool = False):
+    """Build a recording service. Imports the audio stack lazily."""
+    from mom_igd.audio.service import RecordingService
+
+    config = _load(args)
+    paths = config.runtime_paths()
+    if ensure:
+        paths.ensure()
+    return config, paths, RecordingService(config, paths)
+
+
+def _cmd_audio_devices(args: argparse.Namespace) -> int:
+    from mom_igd.audio.devices import format_device_table
+
+    _config, _paths, service = _audio_service(args)
+    payload = service.list_devices(refresh=True)
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+        return EXIT_OK if payload["devices"] else EXIT_FAILURE
+
+    devices = service._discovery.input_devices(refresh=False)  # noqa: SLF001
+    print(format_device_table(devices))
+    if args.all:
+        print("\nExcluded devices:")
+        for entry in payload["rejected"]:
+            print(f"  {entry['name']!r} [{entry['host_api']}]\n      {entry['reason']}")
+    print()
+    if payload["selected_fingerprint"]:
+        print(f"Selected: {payload['selected_fingerprint']}")
+    else:
+        print("No device selected yet. Pick one in the desktop shell, or set")
+        print("audio.preferred_device_fingerprint in config/local.toml.")
+    if not payload["verified_usb_available"]:
+        print(
+            "\nNo USB conference microphone verified by Windows. The built-in array is\n"
+            "development only: its beamforming suppresses speakers who are not facing\n"
+            "the laptop, which loses voices in a nine-person meeting."
+        )
+    return EXIT_OK if payload["devices"] else EXIT_FAILURE
+
+
+def _cmd_audio_probe(args: argparse.Namespace) -> int:
+    _config, _paths, service = _audio_service(args, ensure=True)
+    report = service.preflight(planned_minutes=args.minutes)
+    payload = report.to_dict()
+    if args.open_test:
+        try:
+            payload["open_test"] = service.open_test()
+        except Exception as exc:  # noqa: BLE001 - reported, not raised
+            payload["open_test"] = {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
+
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    else:
+        print(f"Preflight for a {args.minutes:.0f}-minute meeting\n")
+        for item in report.items:
+            print(f"[{item.status.value:<4}] {item.key:<20} {item.detail}")
+        if "open_test" in payload:
+            test = payload["open_test"]
+            print(f"\n[{'ok  ' if test.get('ok') else 'FAIL'}] open_test           {test.get('detail')}")
+        print()
+        print("READY TO RECORD" if report.can_start else "NOT READY -- fix the FAIL items above")
+    ok = report.can_start and payload.get("open_test", {}).get("ok", True)
+    return EXIT_OK if ok else EXIT_FAILURE
+
+
+def _cmd_audio_calibrate(args: argparse.Namespace) -> int:
+    _config, _paths, service = _audio_service(args, ensure=True)
+    print(
+        "Opening the microphone. Speak normally from where people will sit, or let "
+        "the room be quiet to measure the noise floor.",
+        file=sys.stderr,
+    )
+    result = service.calibrate(seconds=args.seconds)
+    payload = result.to_dict()
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    else:
+        levels = result.snapshot
+        print(f"Device      : {result.device.get('name')} [{result.device.get('transport')}]")
+        print(f"Format      : {result.profile['sample_rate']} Hz / "
+              f"{result.profile['channels']} ch / {result.profile['sample_format']}")
+        print(f"Duration    : {result.seconds:.1f} s ({result.frames} frames)")
+        print(f"RMS         : {levels.rms_dbfs:.1f} dBFS")
+        print(f"Peak        : {levels.peak_dbfs:.1f} dBFS")
+        print(f"Clipping    : {levels.clipping_percent:.3f} %")
+        print(f"Silence     : {levels.silence_percent:.1f} %")
+        print(f"Noise floor : {levels.noise_floor_dbfs:.1f} dBFS")
+        for channel in levels.channels:
+            state = "active" if channel.active else "INACTIVE"
+            print(f"Channel {channel.channel}   : {channel.rms_dbfs:.1f} dBFS rms, {state}")
+        print(f"xruns       : {result.xrun_callbacks}")
+        print(f"\nVerdict     : {result.verdict.value}")
+        print(f"             {result.verdict.advice}")
+        if result.error:
+            print(f"\nError: {result.error}", file=sys.stderr)
+    return EXIT_OK if result.ok else EXIT_FAILURE
+
+
+def _cmd_audio_verify(args: argparse.Namespace) -> int:
+    from mom_igd.audio.manifest import verify_manifest
+
+    config, paths, service = _audio_service(args)
+    if args.recording_uuid:
+        payload = service.verify(args.recording_uuid.lower())
+        reports = [payload]
+    else:
+        reports = []
+        root = paths.recordings_dir
+        for manifest in sorted(root.rglob("manifest.jsonl")):
+            report = verify_manifest(manifest.parent)
+            entry = report.to_dict()
+            entry["recording"] = f"{manifest.parent.parent.name}/{manifest.parent.name}"
+            reports.append(entry)
+        payload = {"recordings": len(reports), "reports": reports}
+
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    else:
+        if not reports:
+            print("No recordings found.")
+            return EXIT_OK
+        for entry in reports:
+            label = entry.get("recording", entry.get("directory", "?"))
+            mark = "ok  " if entry.get("ok") else "FAIL"
+            print(
+                f"[{mark}] {label}  chunks={entry.get('verified_chunks')}/"
+                f"{entry.get('chunk_count')}  frames={entry.get('total_frames')}  "
+                f"chain={str(entry.get('chain_sha256'))[:12]}"
+            )
+            for problem in entry.get("problems", []):
+                print(f"        {problem}")
+            for problem in entry.get("database_mismatches", []):
+                print(f"        DB: {problem}")
+    return EXIT_OK if all(r.get("ok") for r in reports) else EXIT_FAILURE
+
+
+def _cmd_audio_recover(args: argparse.Namespace) -> int:
+    _config, _paths, service = _audio_service(args, ensure=True)
+    payload = service.recover_all()
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    else:
+        print(f"Scanned            : {payload['scanned']} interrupted recording(s)")
+        print(f"Chunks recovered   : {payload['recovered_chunks']}")
+        print(f"Chunks quarantined : {payload['quarantined_chunks']}")
+        for report in payload["reports"]:
+            print(f"\n  {report['directory']}")
+            for chunk in report["chunks"]:
+                detail = chunk.get("reason") or (
+                    f"{chunk['frames_recovered']} frames, "
+                    f"{chunk['trailing_bytes_discarded']} trailing byte(s) discarded"
+                )
+                print(f"    chunk {chunk['seq']}: {chunk['outcome']} -- {detail}")
+            for problem in report["problems"]:
+                print(f"    problem: {problem}")
+        if payload["quarantined_chunks"]:
+            print(
+                "\nQuarantined files are kept as evidence under each recording's "
+                "quarantine/ directory; nothing was deleted."
+            )
+    return EXIT_OK if all(r["ok"] for r in payload["reports"]) else EXIT_FAILURE
+
+
+def _cmd_audio_smoke(args: argparse.Namespace) -> int:
+    from mom_igd.audio.bench import run_capture_smoke
+
+    config = _load(args)
+    result = run_capture_smoke(config)
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True, default=str))
+    else:
+        for step in result["steps"]:
+            print(f"[{'ok  ' if step['ok'] else 'FAIL'}] {step['name']}: {step['detail']}")
+        print()
+        print(
+            f"Audio capture smoke: {'PASS' if result['ok'] else 'FAIL'} "
+            f"({result['passed']}/{result['total']} steps)"
+        )
+    return EXIT_OK if result["ok"] else EXIT_FAILURE
+
+
+def _cmd_audio_bench(args: argparse.Namespace) -> int:
+    from mom_igd.audio.bench import run_capture_benchmark
+
+    config = _load(args)
+    result = run_capture_benchmark(
+        config, audio_minutes=args.minutes, speed=args.speed
+    )
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True, default=str))
+    else:
+        print(f"Fake-backend capture benchmark ({args.minutes:g} simulated minutes "
+              f"at {args.speed:g}x)\n")
+        for key, value in result["measured"].items():
+            print(f"  {key:<26} {value}")
+        print("\n  Targets:")
+        for key, verdict in result["targets"].items():
+            print(f"  {key:<26} {verdict}")
+        print()
+        # Print the note the benchmark actually produced, rather than a fixed
+        # sentence: it is the only place an incomplete run announces itself.
+        print(f"NOTE: {result['note']}")
+        if not result.get("coverage_complete", True):
+            print()
+            print("Coverage was incomplete, so this run is not a full-length soak.")
+    return EXIT_OK if result["ok"] else EXIT_FAILURE
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
@@ -526,6 +829,13 @@ _DISPATCH: dict[tuple[str, str | None], Any] = {
     ("db", "verify"): _cmd_db_verify,
     ("config", "show"): _cmd_config_show,
     ("registry", "show"): _cmd_registry_show,
+    ("audio", "devices"): _cmd_audio_devices,
+    ("audio", "probe"): _cmd_audio_probe,
+    ("audio", "calibrate"): _cmd_audio_calibrate,
+    ("audio", "verify"): _cmd_audio_verify,
+    ("audio", "recover"): _cmd_audio_recover,
+    ("audio", "smoke"): _cmd_audio_smoke,
+    ("audio", "bench"): _cmd_audio_bench,
     ("serve", None): _cmd_serve,
     ("smoke", None): _cmd_smoke,
     ("shell", None): _cmd_shell,
@@ -548,8 +858,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         sub_name = getattr(args, "config_command", None)
     elif args.command == "registry":
         sub_name = getattr(args, "registry_command", None)
+    elif args.command == "audio":
+        sub_name = getattr(args, "audio_command", None)
 
-    if args.command in {"db", "config", "registry"} and not sub_name:
+    if args.command in {"db", "config", "registry", "audio"} and not sub_name:
         print(f"`{_PROG} {args.command}` requires a subcommand.", file=sys.stderr)
         print(f"Try `{_PROG} {args.command} --help`.", file=sys.stderr)
         return EXIT_FAILURE
@@ -581,7 +893,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_FAILURE
     except ModuleNotFoundError as exc:
         print(
-            f"Missing dependency: {exc.name}. This command needs the Phase 1 "
+            f"Missing dependency: {exc.name}. This command needs the project's "
             "runtime dependencies. Install them into the project virtual "
             "environment:\n"
             r"    py -3.12 -m venv .venv" "\n"
