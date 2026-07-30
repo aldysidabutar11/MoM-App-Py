@@ -53,26 +53,35 @@ def _columns(connection: sqlite3.Connection, table: str) -> dict[str, sqlite3.Ro
 # ------------------------------------------------------------------ discovery
 
 
-def test_0004_ships_and_is_the_head(migrations) -> None:
-    last = migrations[-1]
-    assert last.version == 4 == SCHEMA_VERSION_HEAD
-    assert last.name == "meeting_participant_capacity"
+@pytest.fixture()
+def migration_0004(migrations):
+    """0004 itself, found by version rather than by being last.
+
+    It was the head when Phase 3's corrective pass shipped it; Phase 4 added 0005. What
+    these tests are about is the content of 0004, so they address it directly.
+    """
+    return next(m for m in migrations if m.version == 4)
 
 
-def test_0004_does_not_use_executescript(migrations) -> None:
+def test_0004_ships_with_the_expected_name(migration_0004) -> None:
+    assert migration_0004.name == "meeting_participant_capacity"
+    assert SCHEMA_VERSION_HEAD >= 4
+
+
+def test_0004_does_not_use_executescript(migration_0004) -> None:
     """`executescript` issues an implicit COMMIT, defeating the transaction."""
-    text = migrations[-1].path.read_text(encoding="utf-8")
+    text = migration_0004.path.read_text(encoding="utf-8")
     assert "executescript" not in text
 
 
-def test_0004_leaves_the_business_ceiling_out_of_the_schema(migrations) -> None:
+def test_0004_leaves_the_business_ceiling_out_of_the_schema(migration_0004) -> None:
     """The DB invariant is `>= 1`, and only that.
 
     A CHECK of `<= 50` would force a full table rebuild -- foreign keys, indexes and
     cascades -- the first time an operator legitimately needs a larger room. The
     ceiling belongs in configuration, where it is one edited value.
     """
-    text = migrations[-1].path.read_text(encoding="utf-8")
+    text = migration_0004.path.read_text(encoding="utf-8")
     assert "participant_capacity >= 1" in text
     assert "<= 50" not in text
     assert "participant_capacity <=" not in text
@@ -83,8 +92,8 @@ def test_0004_leaves_the_business_ceiling_out_of_the_schema(migrations) -> None:
 
 def test_a_fresh_database_reaches_schema_four(db, migrations) -> None:
     applied = apply_migrations(db, migrations)
-    assert [m.version for m in applied] == [1, 2, 3, 4]
-    assert current_schema_version(db) == 4
+    assert [m.version for m in applied] == list(range(1, SCHEMA_VERSION_HEAD + 1))
+    assert current_schema_version(db) == SCHEMA_VERSION_HEAD
 
 
 def test_a_new_meeting_gets_the_default_capacity(db, migrations) -> None:
@@ -205,7 +214,9 @@ def test_the_upgrade_preserves_every_row(db, migrations, populated_schema_3) -> 
         for table in TABLES
     }
     applied = apply_migrations(db, migrations)
-    assert [m.version for m in applied] == [4], "only 0004 should still be pending"
+    assert [m.version for m in applied] == list(
+        range(4, SCHEMA_VERSION_HEAD + 1)
+    ), "0004 and every later migration should still be pending"
     after = {
         table: db.execute(f"SELECT count(*) AS n FROM {table}").fetchone()["n"]
         for table in TABLES
@@ -265,7 +276,7 @@ def test_the_upgrade_keeps_foreign_keys_intact(
 def test_the_upgrade_is_idempotent(db, migrations, populated_schema_3) -> None:
     apply_migrations(db, migrations)
     assert apply_migrations(db, migrations) == []
-    assert current_schema_version(db) == 4
+    assert current_schema_version(db) == SCHEMA_VERSION_HEAD
 
 
 def test_the_upgrade_advances_user_version(db, migrations, populated_schema_3) -> None:

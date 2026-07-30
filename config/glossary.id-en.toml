@@ -1,0 +1,223 @@
+# ===========================================================================
+# MoM-IGD terminology glossary -- Indonesian meetings with English technical terms
+#
+# WHAT THIS IS FOR
+#
+# Whisper transcribes Indonesian speech containing English technical vocabulary by
+# ear, and it spells what it hears. "deploy" comes back as "deploi", "server" as
+# "serper", "database" as "data base". None of those are wrong as phonetic
+# transcriptions and all of them are wrong as terms, because a reader searching a
+# minute for "deploy" will not find "deploi".
+#
+# This file fixes spelling and casing for terms the team actually uses. It does
+# NOT translate, paraphrase, expand or summarise. A replacement here is a
+# spelling correction and nothing more.
+#
+# TWO PLACES IT IS USED, AND THE DIFFERENCE MATTERS
+#
+# 1. As an *initial prompt* to the decoder, so the model has the correct spellings
+#    in context before it decodes. This influences the model, changes nothing
+#    after the fact, and is bounded by `[asr].initial_prompt_max_chars` -- a long
+#    prompt evicts the audio context it is meant to help and can be echoed into
+#    the transcript.
+# 2. As a *post-decode normaliser*, which rewrites whole words in the transcript.
+#    That is a transformation of evidence, so the original text is kept beside the
+#    normalised one in `transcript_segments.text_raw` and every replacement is
+#    counted. Nothing is silently rewritten.
+#
+# RULES FOR ADDING A TERM
+#
+# * Whole words only. Variants match on word boundaries, so "api" never fires
+#   inside "apik". A variant shorter than three characters is rejected by the
+#   loader, because a two-letter variant will hit an ordinary Indonesian word.
+# * Never add a person's name, a company name, a project code name that identifies
+#   a client, or anything else that would make this file sensitive. It is
+#   committed to the repository and read by anybody with the source.
+# * Never add a variant that is also a normal Indonesian word. "bug" is safe;
+#   "kode" is not, because it is correct Indonesian for "code" and rewriting it to
+#   "code" would corrupt Indonesian prose.
+# * A variant may not equal another term's canonical form, or the two rules would
+#   fight and the outcome would depend on dictionary order. The loader refuses it.
+#
+# `version` is recorded on every transcript this glossary normalised, so a
+# transcript produced under an older glossary is identifiable. Raise it whenever
+# the term list changes in a way that would alter output.
+# ===========================================================================
+
+version = "1"
+
+# ---------------------------------------------------------------------------
+# Software delivery and infrastructure
+# ---------------------------------------------------------------------------
+[[terms]]
+canonical = "deploy"
+variants = ["deploi", "deplo", "diploy", "deploid"]
+
+[[terms]]
+canonical = "deployment"
+variants = ["deploiment", "deploymen", "deploymant"]
+
+[[terms]]
+canonical = "server"
+variants = ["serper", "serfer", "sever", "servel"]
+
+[[terms]]
+canonical = "database"
+variants = ["data base", "databes", "database-nya", "detabase"]
+
+[[terms]]
+canonical = "backend"
+variants = ["bekend", "back end", "beckend", "bakend"]
+
+[[terms]]
+canonical = "frontend"
+variants = ["front end", "frontent", "fronend"]
+
+[[terms]]
+canonical = "endpoint"
+variants = ["end point", "endpoin", "endpont"]
+
+[[terms]]
+canonical = "API"
+variants = ["ei pi ai", "a p i", "epi ai"]
+
+[[terms]]
+canonical = "staging"
+variants = ["stejing", "steging", "stagging"]
+
+[[terms]]
+canonical = "production"
+variants = ["prodaksen", "produksen", "prodaction"]
+
+[[terms]]
+canonical = "rollback"
+variants = ["roll back", "rolbek", "rollbek"]
+
+[[terms]]
+canonical = "downtime"
+variants = ["down time", "dauntaim", "dountime"]
+
+[[terms]]
+canonical = "firewall"
+variants = ["fire wall", "fayerwol", "firewol"]
+
+[[terms]]
+canonical = "offline"
+variants = ["of line", "oflain", "ofline"]
+
+[[terms]]
+canonical = "onsite"
+variants = ["on site", "onsait"]
+
+# ---------------------------------------------------------------------------
+# Process and delivery
+# ---------------------------------------------------------------------------
+[[terms]]
+canonical = "sprint"
+variants = ["sprin", "sprint-nya", "seprint"]
+
+[[terms]]
+canonical = "backlog"
+variants = ["back log", "beklog", "baklog"]
+
+[[terms]]
+canonical = "milestone"
+variants = ["mile stone", "mailston", "maelstone"]
+
+[[terms]]
+canonical = "timeline"
+variants = ["time line", "taimlain", "taimline"]
+
+[[terms]]
+canonical = "deadline"
+variants = ["dead line", "dedlain", "dedline"]
+
+[[terms]]
+canonical = "meeting"
+variants = ["miting", "mitting", "meting"]
+
+[[terms]]
+canonical = "review"
+variants = ["ripiu", "rivyu", "revieuw"]
+
+[[terms]]
+canonical = "approval"
+variants = ["aprupal", "aproval", "approfal"]
+
+[[terms]]
+canonical = "follow up"
+variants = ["folow up", "folap", "folloup"]
+
+[[terms]]
+canonical = "update"
+variants = ["apdet", "updet", "apdate"]
+
+[[terms]]
+canonical = "issue"
+variants = ["isyu", "issu", "isu teknis"]
+
+[[terms]]
+canonical = "bug"
+variants = ["bag teknis", "bugs"]
+
+[[terms]]
+canonical = "feature"
+variants = ["fitur teknis", "ficer", "fitcher"]
+
+# ---------------------------------------------------------------------------
+# Data and reporting
+# ---------------------------------------------------------------------------
+[[terms]]
+canonical = "dashboard"
+variants = ["dasboard", "dash board", "desbord"]
+
+[[terms]]
+canonical = "report"
+variants = ["riport", "repot", "reportnya"]
+
+[[terms]]
+canonical = "backup"
+variants = ["back up", "bekap", "bekup"]
+
+[[terms]]
+canonical = "export"
+variants = ["ekspor data", "exsport", "eksport"]
+
+[[terms]]
+canonical = "template"
+variants = ["templet", "tempalte", "templat"]
+
+# ---------------------------------------------------------------------------
+# Healthcare operations -- the deployment domain (Intra Medika)
+# ---------------------------------------------------------------------------
+[[terms]]
+canonical = "rawat inap"
+variants = ["rawatinap"]
+
+[[terms]]
+canonical = "rawat jalan"
+variants = ["rawatjalan"]
+
+[[terms]]
+canonical = "BPJS"
+variants = ["bpjs", "be pe je es", "bejeis"]
+
+[[terms]]
+canonical = "SIMRS"
+variants = ["sim rs", "es i em er es", "simers"]
+
+[[terms]]
+canonical = "rekam medis"
+variants = ["rekammedis", "rekam medik"]
+
+[[terms]]
+canonical = "farmasi"
+variants = ["farmacy", "pharmasi"]
+
+[[terms]]
+canonical = "radiologi"
+variants = ["radiology", "radiologie"]
+
+[[terms]]
+canonical = "laboratorium"
+variants = ["laboratory", "labor", "lab klinik"]

@@ -124,7 +124,10 @@ def test_derived_locations_all_live_under_the_root(data_root: Path) -> None:
 def test_expected_subdirectories_are_exactly_the_documented_set() -> None:
     # Pinned on purpose: a new runtime directory is a deliberate decision, so it has
     # to be made here as well as in paths.py. `voiceprints` and `keys` arrived with
-    # Phase 3 (encrypted biometric templates and the DPAPI-protected master key).
+    # Phase 3 (encrypted biometric templates and the DPAPI-protected master key);
+    # `working` arrived with Phase 4 and holds 16 kHz mono derivatives of recordings,
+    # deliberately outside `recordings` so a backup of the evidence carries no
+    # duplicate of it.
     assert RUNTIME_SUBDIRS == (
         "db",
         "recordings",
@@ -135,6 +138,7 @@ def test_expected_subdirectories_are_exactly_the_documented_set() -> None:
         "backups",
         "voiceprints",
         "keys",
+        "working",
     )
 
 

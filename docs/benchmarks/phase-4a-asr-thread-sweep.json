@@ -1,0 +1,373 @@
+{
+  "generated_at": "2026-07-30T11:56:34Z",
+  "phase": "4A-ASR-thread-sweep",
+  "machine": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 154 Stepping 3, GenuineIntel",
+    "python": "3.12.10",
+    "logical_cpus": 16,
+    "start_method": "spawn",
+    "physical_cpus": 12,
+    "total_ram_bytes": 16890978304,
+    "available_ram_bytes": 7505620992,
+    "ctranslate2_version": "4.8.1",
+    "cpu_compute_types": [
+      "float32",
+      "int16",
+      "int8",
+      "int8_float32"
+    ]
+  },
+  "thermal": {
+    "available": false,
+    "detail": "N/A -- sensor unavailable on Windows"
+  },
+  "method": "Five benchmark sweeps run strictly sequentially on an otherwise idle machine, on the same deterministic 60 s synthetic audio. Three covered 4/8/12 threads and two covered 12/14/16, so 12 has five samples and the others two or three. An earlier set of sweeps was discarded because two ran concurrently and contended for CPU -- and one deleted the other's synthetic audio, which is the defect that led to per-process temp filenames.",
+  "caveat": "Synthetic audio measures engine throughput, never accuracy. WER is absent from this file because no reference transcript exists on this machine, and it is never derived from the model's own output.",
+  "configurations": [
+    {
+      "model_key": "asr-pass1",
+      "model_name": "faster-whisper-small",
+      "cpu_threads": 4,
+      "beam_size": 1,
+      "runs": 3,
+      "rtf": {
+        "min": 0.1685,
+        "median": 0.1749,
+        "max": 0.1788,
+        "spread_percent": 6.1
+      },
+      "peak_rss_mib": {
+        "min": 533.8,
+        "median": 548.4,
+        "max": 637.5,
+        "spread_percent": 19.4
+      },
+      "load_seconds": {
+        "min": 1.147,
+        "median": 1.177,
+        "max": 1.37,
+        "spread_percent": 19.4
+      },
+      "cpu_seconds": {
+        "min": 36.53,
+        "median": 36.94,
+        "max": 37.23,
+        "spread_percent": 1.9
+      },
+      "zero_network_egress_every_run": true,
+      "errors": 0
+    },
+    {
+      "model_key": "asr-pass1",
+      "model_name": "faster-whisper-small",
+      "cpu_threads": 8,
+      "beam_size": 1,
+      "runs": 3,
+      "rtf": {
+        "min": 0.1597,
+        "median": 0.1601,
+        "max": 0.1601,
+        "spread_percent": 0.3
+      },
+      "peak_rss_mib": {
+        "min": 545.8,
+        "median": 546.6,
+        "max": 669.5,
+        "spread_percent": 22.7
+      },
+      "load_seconds": {
+        "min": 1.247,
+        "median": 1.256,
+        "max": 1.364,
+        "spread_percent": 9.4
+      },
+      "cpu_seconds": {
+        "min": 68.42,
+        "median": 69.25,
+        "max": 69.27,
+        "spread_percent": 1.2
+      },
+      "zero_network_egress_every_run": true,
+      "errors": 0
+    },
+    {
+      "model_key": "asr-pass1",
+      "model_name": "faster-whisper-small",
+      "cpu_threads": 12,
+      "beam_size": 1,
+      "runs": 5,
+      "rtf": {
+        "min": 0.1379,
+        "median": 0.142,
+        "max": 0.152,
+        "spread_percent": 10.2
+      },
+      "peak_rss_mib": {
+        "min": 558.0,
+        "median": 560.4,
+        "max": 693.3,
+        "spread_percent": 24.2
+      },
+      "load_seconds": {
+        "min": 1.218,
+        "median": 1.257,
+        "max": 1.411,
+        "spread_percent": 15.8
+      },
+      "cpu_seconds": {
+        "min": 86.95,
+        "median": 88.88,
+        "max": 89.78,
+        "spread_percent": 3.3
+      },
+      "zero_network_egress_every_run": true,
+      "errors": 0
+    },
+    {
+      "model_key": "asr-pass1",
+      "model_name": "faster-whisper-small",
+      "cpu_threads": 14,
+      "beam_size": 1,
+      "runs": 2,
+      "rtf": {
+        "min": 0.1507,
+        "median": 0.1527,
+        "max": 0.1546,
+        "spread_percent": 2.6
+      },
+      "peak_rss_mib": {
+        "min": 562.7,
+        "median": 573.1,
+        "max": 583.5,
+        "spread_percent": 3.7
+      },
+      "load_seconds": {
+        "min": 1.263,
+        "median": 1.2785,
+        "max": 1.294,
+        "spread_percent": 2.5
+      },
+      "cpu_seconds": {
+        "min": 103.14,
+        "median": 105.46,
+        "max": 107.78,
+        "spread_percent": 4.5
+      },
+      "zero_network_egress_every_run": true,
+      "errors": 0
+    },
+    {
+      "model_key": "asr-pass1",
+      "model_name": "faster-whisper-small",
+      "cpu_threads": 16,
+      "beam_size": 1,
+      "runs": 2,
+      "rtf": {
+        "min": 0.1493,
+        "median": 0.1537,
+        "max": 0.158,
+        "spread_percent": 5.8
+      },
+      "peak_rss_mib": {
+        "min": 561.3,
+        "median": 592.05,
+        "max": 622.8,
+        "spread_percent": 11.0
+      },
+      "load_seconds": {
+        "min": 1.322,
+        "median": 1.332,
+        "max": 1.342,
+        "spread_percent": 1.5
+      },
+      "cpu_seconds": {
+        "min": 110.69,
+        "median": 113.19,
+        "max": 115.69,
+        "spread_percent": 4.5
+      },
+      "zero_network_egress_every_run": true,
+      "errors": 0
+    },
+    {
+      "model_key": "asr-pass2",
+      "model_name": "faster-whisper-large-v3-turbo",
+      "cpu_threads": 4,
+      "beam_size": 5,
+      "runs": 3,
+      "rtf": {
+        "min": 0.367,
+        "median": 0.372,
+        "max": 0.3947,
+        "spread_percent": 7.5
+      },
+      "peak_rss_mib": {
+        "min": 1608.9,
+        "median": 1759.3,
+        "max": 1851.0,
+        "spread_percent": 15.0
+      },
+      "load_seconds": {
+        "min": 3.087,
+        "median": 3.269,
+        "max": 4.562,
+        "spread_percent": 47.8
+      },
+      "cpu_seconds": {
+        "min": 80.83,
+        "median": 81.47,
+        "max": 84.86,
+        "spread_percent": 5.0
+      },
+      "zero_network_egress_every_run": true,
+      "errors": 0
+    },
+    {
+      "model_key": "asr-pass2",
+      "model_name": "faster-whisper-large-v3-turbo",
+      "cpu_threads": 8,
+      "beam_size": 5,
+      "runs": 3,
+      "rtf": {
+        "min": 0.3164,
+        "median": 0.3178,
+        "max": 0.3222,
+        "spread_percent": 1.8
+      },
+      "peak_rss_mib": {
+        "min": 1536.9,
+        "median": 1586.9,
+        "max": 1639.2,
+        "spread_percent": 6.7
+      },
+      "load_seconds": {
+        "min": 3.171,
+        "median": 3.468,
+        "max": 3.564,
+        "spread_percent": 12.4
+      },
+      "cpu_seconds": {
+        "min": 134.25,
+        "median": 135.94,
+        "max": 136.83,
+        "spread_percent": 1.9
+      },
+      "zero_network_egress_every_run": true,
+      "errors": 0
+    },
+    {
+      "model_key": "asr-pass2",
+      "model_name": "faster-whisper-large-v3-turbo",
+      "cpu_threads": 12,
+      "beam_size": 5,
+      "runs": 5,
+      "rtf": {
+        "min": 0.2753,
+        "median": 0.2843,
+        "max": 0.297,
+        "spread_percent": 7.9
+      },
+      "peak_rss_mib": {
+        "min": 1576.5,
+        "median": 1610.8,
+        "max": 1909.7,
+        "spread_percent": 21.1
+      },
+      "load_seconds": {
+        "min": 3.178,
+        "median": 3.301,
+        "max": 3.954,
+        "spread_percent": 24.4
+      },
+      "cpu_seconds": {
+        "min": 171.73,
+        "median": 176.58,
+        "max": 181.41,
+        "spread_percent": 5.6
+      },
+      "zero_network_egress_every_run": true,
+      "errors": 0
+    },
+    {
+      "model_key": "asr-pass2",
+      "model_name": "faster-whisper-large-v3-turbo",
+      "cpu_threads": 14,
+      "beam_size": 5,
+      "runs": 2,
+      "rtf": {
+        "min": 0.287,
+        "median": 0.2913,
+        "max": 0.2957,
+        "spread_percent": 3.0
+      },
+      "peak_rss_mib": {
+        "min": 1539.3,
+        "median": 1612.1,
+        "max": 1684.9,
+        "spread_percent": 9.5
+      },
+      "load_seconds": {
+        "min": 3.343,
+        "median": 3.477,
+        "max": 3.611,
+        "spread_percent": 8.0
+      },
+      "cpu_seconds": {
+        "min": 197.42,
+        "median": 200.97,
+        "max": 204.52,
+        "spread_percent": 3.6
+      },
+      "zero_network_egress_every_run": true,
+      "errors": 0
+    },
+    {
+      "model_key": "asr-pass2",
+      "model_name": "faster-whisper-large-v3-turbo",
+      "cpu_threads": 16,
+      "beam_size": 5,
+      "runs": 2,
+      "rtf": {
+        "min": 0.2999,
+        "median": 0.3024,
+        "max": 0.3048,
+        "spread_percent": 1.6
+      },
+      "peak_rss_mib": {
+        "min": 1609.3,
+        "median": 1620.3,
+        "max": 1631.3,
+        "spread_percent": 1.4
+      },
+      "load_seconds": {
+        "min": 3.734,
+        "median": 3.737,
+        "max": 3.74,
+        "spread_percent": 0.2
+      },
+      "cpu_seconds": {
+        "min": 214.61,
+        "median": 217.94,
+        "max": 221.27,
+        "spread_percent": 3.1
+      },
+      "zero_network_egress_every_run": true,
+      "errors": 0
+    }
+  ],
+  "conclusion": {
+    "selected_cpu_threads": {
+      "pass1": 12,
+      "pass2": 12
+    },
+    "reason": "RTF improves monotonically to 12 threads for both models and reverses beyond it (14 and 16 were measured and are consistently worse). 12 is the machine physical core count. An earlier single sweep suggested 8 was optimal for the small model with 12 worse than 8; that did not reproduce and was within run-to-run variance.",
+    "worst_pass1_peak_rss_mib": 693.3,
+    "worst_pass2_peak_rss_mib": 1909.7,
+    "co_resident_worst_case_mib": 2603.0,
+    "co_resident_within_2_5gb_budget": false,
+    "projected_total_rtf_at_25_percent_pass2_budget": 0.213,
+    "projection_is_arithmetic_not_an_end_to_end_run": true,
+    "accuracy_measured": false
+  }
+}

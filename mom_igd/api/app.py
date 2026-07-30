@@ -179,6 +179,14 @@ def create_app(
 
     app.include_router(enrollment_router)
 
+    # Phase 4 transcription. Imported here for the same reason again, and with more
+    # force: importing the ASR package must not pull in faster-whisper, CTranslate2 or
+    # onnxruntime, and routing it must not either. The engine loads inside a spawned
+    # worker, and only when a run actually starts.
+    from mom_igd.api.asr_routes import asr_router
+
+    app.include_router(asr_router)
+
     @app.get("/", include_in_schema=False)
     def _root() -> RedirectResponse:
         return RedirectResponse(url="/ui/")

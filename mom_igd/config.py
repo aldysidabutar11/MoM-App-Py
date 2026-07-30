@@ -324,13 +324,106 @@ class ParticipantsConfig(BaseModel):
         return self
 
 
+class AsrConfig(BaseModel):
+    """Offline transcription: thread counts, decode settings and the pass-2 policy.
+
+    Every default here was **measured** on the target device in the Phase 4A sweep
+    (``docs/benchmarks.md``), not guessed. The thread counts in particular are
+    machine-specific: a different CPU has a different knee, and the honest way to
+    retune is to re-run ``asr bench`` rather than to reason about core counts.
+
+    ``pass2_budget_ratio`` is the fraction of detected *speech* time pass 2 may
+    re-transcribe. It exists because pass 2 costs roughly twice pass 1 per second of
+    audio, so an unbounded pass 2 would put total RTF over the target on a long
+    meeting. Selection spends the budget on the least confident regions first.
+
+    No key here selects a provider implementation, and none can enable a fake one.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    language: str = "id"
+    """Primary language hint. Indonesian, with English technical terms mixed in --
+    Whisper handles the code-switching within one language setting better than it
+    handles being told the language is English."""
+
+    pass1_cpu_threads: int = Field(default=12, ge=0, le=256)
+    pass2_cpu_threads: int = Field(default=12, ge=0, le=256)
+    """0 lets CTranslate2 choose. 12 is the measured optimum on the i7-1260P: RTF
+    improves monotonically to 12 and then flattens (14 and 16 were measured and are
+    not better)."""
+
+    pass1_beam_size: int = Field(default=1, ge=1, le=16)
+    pass2_beam_size: int = Field(default=5, ge=1, le=16)
+    """Beam size dominates throughput -- a 2.5x swing between 1 and 5 on identical
+    audio. Pass 1 runs over every region and needs the speed; pass 2 runs over a
+    budgeted subset where quality is the entire point. **This split is provisional:
+    it trades accuracy for speed on pass 1 and no accuracy measurement exists yet to
+    say whether that trade is acceptable.**"""
+
+    compute_type: Literal["int8", "int8_float32", "int16", "float32"] = "int8"
+
+    initial_prompt_max_chars: int = Field(default=400, ge=0, le=2000)
+    """Cap on the terminology prompt handed to the decoder. Whisper's prompt window
+    is finite and a long prompt evicts the audio context it is meant to help; it can
+    also be echoed into the transcript, which is why this is bounded rather than
+    "as many terms as we have"."""
+
+    pass2_enabled: bool = True
+    pass2_budget_ratio: float = Field(default=0.25, ge=0.0, le=1.0)
+
+    pass2_min_avg_logprob: float = Field(default=-1.0, le=0.0)
+    pass2_max_no_speech_prob: float = Field(default=0.6, ge=0.0, le=1.0)
+    pass2_min_word_probability: float = Field(default=0.45, ge=0.0, le=1.0)
+    pass2_max_compression_ratio: float = Field(default=2.4, gt=0.0)
+    """Selection thresholds. ``2.4`` is Whisper's own repetition heuristic, kept
+    rather than invented so a well-understood number is not replaced by a new one."""
+
+    vad_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    vad_min_speech_ms: int = Field(default=250, ge=0, le=10_000)
+    vad_min_silence_ms: int = Field(default=500, ge=0, le=10_000)
+    vad_speech_pad_ms: int = Field(default=200, ge=0, le=5_000)
+    vad_merge_gap_ms: int = Field(default=150, ge=0, le=10_000)
+    vad_max_region_seconds: float = Field(default=30.0, gt=0.0, le=120.0)
+
+    glossary_enabled: bool = True
+    glossary_filename: str = "glossary.id-en.toml"
+
+    worker_timeout_seconds: float = Field(default=3 * 60 * 60, gt=0.0)
+    """Wall-clock ceiling for one heavy stage. Three hours is generous on purpose:
+    the measured RTF is about 0.15, so this only fires on something genuinely stuck."""
+
+    @field_validator("glossary_filename")
+    @classmethod
+    def _glossary_is_a_bare_filename(cls, value: str) -> str:
+        text = value.strip()
+        if not text or "/" in text or "\\" in text or ".." in text or ":" in text:
+            raise ValueError(
+                f"glossary_filename must be a bare file name inside config/, got "
+                f"{value!r}. A path here would let configuration read a file from "
+                "anywhere on the machine."
+            )
+        return text
+
+    @model_validator(mode="after")
+    def _pass2_must_be_worth_running(self) -> AsrConfig:
+        if self.pass2_enabled and self.pass2_budget_ratio == 0.0:
+            raise ValueError(
+                "pass2_enabled is true but pass2_budget_ratio is 0.0, so pass 2 "
+                "could never transcribe anything. Set pass2_enabled=false to turn "
+                "it off, or give it a budget -- a stage that is enabled and can "
+                "never run is a configuration that lies about what happens."
+            )
+        return self
+
+
 class ProvidersConfig(BaseModel):
     """Future AI provider endpoints.
 
-    Still empty in Phase 2, and correctly so: no ASR, diarization,
-    speaker-embedding or LLM provider has been selected, and the choice is
-    deferred to the Phase 4A benchmark (ADR-0005). Capture needs no provider. Any
-    value present must be a local filesystem path or a loopback URL.
+    Empty by default, and correctly so. The ASR provider is **not** selected here:
+    it is a code-level decision recorded in ADR-0014, loaded from a hash-verified
+    local model directory, precisely so that no configuration value can redirect it.
+    Any value present must be a local filesystem path or a loopback URL.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -373,6 +466,7 @@ class AppConfig(BaseModel):
     ui: UiConfig = Field(default_factory=UiConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
     participants: ParticipantsConfig = Field(default_factory=ParticipantsConfig)
+    asr: AsrConfig = Field(default_factory=AsrConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
 
     # -- validators ---------------------------------------------------------

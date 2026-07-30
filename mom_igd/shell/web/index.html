@@ -478,6 +478,91 @@
       </div>
     </div>
 
+    <!-- ================= TRANSCRIPTION (Phase 4) ================= -->
+    <section aria-labelledby="transcript-heading" id="transcript-panel" hidden>
+      <div class="section-head">
+        <h2 id="transcript-heading">Transkripsi offline</h2>
+        <p class="muted">
+          Seluruh proses berjalan di perangkat ini: normalisasi audio ke salinan kerja
+          16 kHz mono, deteksi wicara, transkripsi, lalu transkripsi ulang selektif
+          pada bagian yang paling tidak yakin dalam batas anggaran waktu. Audio master
+          <strong>tidak pernah diubah</strong>. Tidak ada unduhan model dan tidak ada
+          koneksi keluar.
+        </p>
+        <p class="warn-line" id="transcript-accuracy-note">
+          Phase 4 <strong>belum</strong> menetapkan siapa yang berbicara — setiap
+          segmen bertanda <code>UNASSIGNED</code>. Akurasi juga
+          <strong>belum diukur</strong>: belum ada transkrip pembanding, dan akurasi
+          tidak pernah dihitung dari keluaran model itu sendiri.
+        </p>
+      </div>
+
+      <div class="rec-grid">
+        <article class="status-card">
+          <header><h3>Model</h3></header>
+          <dl class="kv" id="asr-model-kv"></dl>
+          <p class="notice" id="asr-model-missing" hidden>
+            Model belum tersedia. Provisioning dilakukan sekali dari terminal:
+            <code>python -m mom_igd asr provision all</code>. Aplikasi ini tidak
+            mengunduh model sendiri.
+          </p>
+        </article>
+
+        <article class="status-card">
+          <header><h3>Jalankan transkripsi</h3></header>
+          <label class="field">
+            <span>Recording UUID</span>
+            <input type="text" id="asr-recording-uuid" maxlength="36"
+                   placeholder="mis. 3f2c…" autocomplete="off" />
+          </label>
+          <p class="muted" id="asr-uuid-hint">
+            UUID rekaman diperoleh dari panel perekaman setelah rekaman berhenti.
+          </p>
+          <div class="btn-row">
+            <button type="button" class="btn btn-primary" id="asr-run-btn" disabled>
+              Transkripsikan
+            </button>
+            <button type="button" class="btn" id="asr-cancel-btn" disabled>
+              Batalkan
+            </button>
+            <button type="button" class="btn" id="asr-load-btn">
+              Muat transkrip tersimpan
+            </button>
+          </div>
+          <p class="warn-line" id="asr-error" hidden></p>
+        </article>
+
+        <article class="status-card">
+          <header><h3>Progres &amp; biaya</h3></header>
+          <span class="pill" id="asr-pill">Idle</span>
+          <dl class="kv" id="asr-cost-kv"></dl>
+          <ul class="plain" id="asr-stage-list"></ul>
+        </article>
+
+        <article class="status-card">
+          <header><h3>Pass 2 — transkripsi ulang selektif</h3></header>
+          <dl class="kv" id="asr-pass2-kv"></dl>
+          <table class="participant-table" id="asr-flagged-table">
+            <caption class="muted">
+              Alasan setiap bagian dipilih untuk pass 2. Bagian yang tidak terpilih
+              tetap memakai hasil pass 1.
+            </caption>
+            <thead>
+              <tr><th>Region</th><th>Mulai</th><th>Pass</th><th>Terpilih</th><th>Alasan</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </article>
+      </div>
+
+      <article class="status-card" id="asr-transcript-card">
+        <header><h3>Transkrip</h3></header>
+        <dl class="kv" id="asr-transcript-kv"></dl>
+        <ul class="plain" id="asr-segment-list"></ul>
+        <p class="muted" id="asr-transcript-empty">Belum ada transkrip yang dimuat.</p>
+      </article>
+    </section>
+
     <!-- ================= FUTURE FEATURES ================= -->
     <section aria-labelledby="features-heading">
       <div class="section-head">
@@ -526,12 +611,28 @@
           </button>
         </article>
 
+        <article class="feature-card feature-card-enabled" id="card-transcription">
+          <div class="feature-head">
+            <h3>Transcription</h3>
+            <span class="phase-tag phase-tag-live">Phase 4 · aktif</span>
+          </div>
+          <p>
+            Normalisasi audio, VAD, transkripsi dua tahap dengan anggaran waktu, dan
+            normalisasi istilah teknis. Satu model berat pada satu waktu, di proses
+            terpisah. Diarization, voice ID, dan MoM menyusul di Phase 5–8.
+          </p>
+          <p class="implemented">Tersedia</p>
+          <button type="button" class="btn btn-primary" id="open-transcript-btn">
+            Buka panel transkripsi
+          </button>
+        </article>
+
         <article class="feature-card" aria-disabled="true">
           <div class="feature-head">
-            <h3>Processing</h3>
-            <span class="phase-tag">Phase 4–8</span>
+            <h3>Diarization &amp; voice ID</h3>
+            <span class="phase-tag">Phase 5–6</span>
           </div>
-          <p>VAD, ASR, diarization, voice ID, rekonsiliasi, dan ekstraksi MoM — satu model berat pada satu waktu.</p>
+          <p>Memisahkan pembicara dan mencocokkannya dengan voiceprint peserta; suara di luar roster menjadi <code>UNKNOWN</code>, tidak pernah dibuang.</p>
           <p class="not-implemented">Belum diimplementasikan</p>
         </article>
 

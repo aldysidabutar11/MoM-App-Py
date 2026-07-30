@@ -29,6 +29,7 @@ from mom_igd.config import AppConfig, ConfigError, ParticipantsConfig, load_conf
 from mom_igd.db import initialize_database
 from mom_igd.db.connection import connect
 from mom_igd.security import SESSION_TOKEN_HEADER, SessionToken
+from mom_igd.version import CONFIG_SCHEMA_VERSION
 
 CUSTOM_DEFAULT = 15
 CUSTOM_MAXIMUM = 25
@@ -356,7 +357,7 @@ def test_the_cli_honours_a_configured_ceiling(tmp_path: Path, data_root: Path) -
 
     config_file = tmp_path / "custom.toml"
     config_file.write_text(
-        "config_schema_version = 3\n"
+        f"config_schema_version = {CONFIG_SCHEMA_VERSION}\n"
         "[participants]\n"
         f"default_meeting_participant_capacity = {CUSTOM_DEFAULT}\n"
         f"maximum_meeting_participant_capacity = {CUSTOM_MAXIMUM}\n",

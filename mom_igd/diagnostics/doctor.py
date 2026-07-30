@@ -701,6 +701,88 @@ def _check_model_registry(config: AppConfig, paths: RuntimePaths) -> CheckResult
     )
 
 
+def _check_asr_models(config: AppConfig, paths: RuntimePaths) -> CheckResult:
+    """Whether transcription can run, answered without loading anything.
+
+    Reads the installed-model registry, which records only models that passed a
+    load-and-decode probe -- so this cannot report a byte-perfect model that cannot
+    actually decode as ready (ADR-0015).
+
+    **Always a WARN when absent, never a FAIL.** Provisioning is a deliberate one-off
+    command that needs network access, and an operator on a fresh machine has not done
+    anything wrong. It becomes a `FAIL` only when accuracy acceptance is granted and
+    `CURRENT_PHASE` advances to 4.
+    """
+    from mom_igd.asr.installed import load_index
+
+    index = load_index(paths.models_dir)
+    ready = {entry.role: entry for entry in index.ready(paths.models_dir)}
+    data = {
+        "models_dir": str(paths.models_dir),
+        "index_readable": index.readable,
+        "problem": index.problem,
+        "pass1_ready": "pass1" in ready,
+        "pass2_ready": "pass2" in ready,
+        "ready_models": sorted(
+            f"{entry.role}:{entry.model_name}@{entry.revision[:12]}"
+            for entry in ready.values()
+        ),
+    }
+    if not index.readable:
+        return CheckResult(
+            key="asr_models",
+            title="Transcription models",
+            status=Status.WARN,
+            detail=(
+                f"The installed-model registry could not be read: {index.problem}. "
+                "Nothing is treated as ready, which is the intended fail-closed "
+                "behaviour. Re-run `asr provision all` to rebuild it."
+            ),
+            required_in_phase="4",
+            data=data,
+        )
+    if "pass1" not in ready:
+        return CheckResult(
+            key="asr_models",
+            title="Transcription models",
+            status=Status.WARN,
+            detail=(
+                "No transcription model is provisioned, so `asr transcribe` will answer "
+                "MODEL_UNAVAILABLE. Provision once, with network access: "
+                "`python -m mom_igd asr provision all`. Nothing else in this "
+                "application ever downloads a model."
+            ),
+            required_in_phase="4",
+            data=data,
+        )
+    if "pass2" not in ready:
+        return CheckResult(
+            key="asr_models",
+            title="Transcription models",
+            status=Status.WARN,
+            detail=(
+                f"Pass 1 is ready ({ready['pass1'].model_name}) and pass 2 is not. "
+                "Transcription will run and record PASS2_MODEL_UNAVAILABLE, keeping the "
+                "first-pass result. Provision it with `asr provision asr-pass2`."
+            ),
+            required_in_phase="4",
+            data=data,
+        )
+    return CheckResult(
+        key="asr_models",
+        title="Transcription models",
+        status=Status.PASS,
+        detail=(
+            f"pass 1 {ready['pass1'].model_name}@{ready['pass1'].revision[:12]} and "
+            f"pass 2 {ready['pass2'].model_name}@{ready['pass2'].revision[:12]} are "
+            "verified and probe-passed. Accuracy is not measured by this check and is "
+            "not claimed anywhere."
+        ),
+        required_in_phase="4",
+        data=data,
+    )
+
+
 def _check_offline_configuration(config: AppConfig) -> CheckResult:
     audit = offline_policy.audit_installed_distributions()
     endpoints = dict(config.providers.endpoints)
@@ -827,6 +909,7 @@ def run_doctor(
         _check_api_configuration(resolved),
         _check_offline_configuration(resolved),
         _check_model_registry(resolved, paths),
+        _check_asr_models(resolved, paths),
         _check_optional_dependencies(),
     ]
 

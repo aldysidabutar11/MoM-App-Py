@@ -231,6 +231,161 @@ def build_parser() -> argparse.ArgumentParser:
         "--speed", type=float, default=60.0, help="Times faster than real time."
     )
 
+    # -- asr ---------------------------------------------------------------
+    asr = sub.add_parser(
+        "asr",
+        parents=[common],
+        help="Offline ASR: model provisioning, verification and transcription.",
+        description=(
+            "Phase 4 tooling. `provision` is the ONLY command in this application "
+            "that downloads anything, and it is the only place network access is "
+            "expected -- nothing else, including transcription, ever fetches a "
+            "model. A missing model fails closed as MODEL_UNAVAILABLE."
+        ),
+    )
+    asr_sub = asr.add_subparsers(dest="asr_command", metavar="SUBCOMMAND")
+
+    asr_models = asr_sub.add_parser(
+        "models",
+        parents=[common],
+        help="List the model catalogue and what is provisioned. Offline.",
+    )
+    asr_models.add_argument("--json", action="store_true")
+
+    asr_provision = asr_sub.add_parser(
+        "provision",
+        parents=[common],
+        help="DOWNLOAD and verify a catalogue model. Requires network; run once.",
+        description=(
+            "Downloads into a staging directory, verifies every file's size and "
+            "SHA-256, writes a manifest, then promotes atomically and re-verifies "
+            "from the promoted path. Idempotent: an already-verified model is left "
+            "alone. Takes a catalogue KEY, never a repository id, so an unreviewed "
+            "artefact cannot be introduced from the command line."
+        ),
+    )
+    asr_provision.add_argument(
+        "key",
+        nargs="?",
+        default="all",
+        help="Catalogue key (`asr-pass1`, `asr-pass2`) or `all`.",
+    )
+    asr_provision.add_argument("--json", action="store_true")
+    asr_provision.add_argument(
+        "--force", action="store_true", help="Re-download even if already verified."
+    )
+    asr_provision.add_argument(
+        "--yes",
+        action="store_true",
+        help="Proceed without the interactive confirmation of size and licence.",
+    )
+
+    asr_verify = asr_sub.add_parser(
+        "verify",
+        parents=[common],
+        help="Deep-verify provisioned models against their manifests. Offline.",
+    )
+    asr_verify.add_argument("--json", action="store_true")
+
+    asr_smoke = asr_sub.add_parser(
+        "smoke",
+        parents=[common],
+        help="Load the real local model and transcribe local audio. Offline.",
+        description=(
+            "Proves the provisioned model loads from a local path and transcribes "
+            "without any network access. With no --audio it uses deterministic "
+            "synthetic audio, which needs no microphone and no corpus but proves only "
+            "the plumbing -- a tone is not speech. Pass --audio with your own "
+            "16 kHz mono PCM16 WAV to exercise the real speech path. Neither mode "
+            "measures accuracy; that needs a reference transcript and the consent "
+            "metadata 'asr bench --manifest' requires."
+        ),
+    )
+    asr_smoke.add_argument("--json", action="store_true")
+    asr_smoke.add_argument(
+        "--seconds", type=float, default=8.0, help="Synthetic audio duration."
+    )
+    asr_smoke.add_argument(
+        "--audio",
+        default=None,
+        help=(
+            "Path to a local 16 kHz mono PCM16 WAV to transcribe instead of generated "
+            "audio. Read only: never converted, moved or deleted."
+        ),
+    )
+
+    asr_bench = asr_sub.add_parser(
+        "bench",
+        parents=[common],
+        help="Phase 4A benchmark harness. Real models, real timings.",
+    )
+    asr_bench.add_argument("--json", action="store_true")
+    asr_bench.add_argument(
+        "--manifest", default=None, help="Evaluation corpus manifest (JSON)."
+    )
+    asr_bench.add_argument(
+        "--threads",
+        default=None,
+        help="Comma-separated CPU thread counts to sweep, e.g. 4,6,8,10,12.",
+    )
+    asr_bench.add_argument(
+        "--models", default=None, help="Comma-separated catalogue keys to benchmark."
+    )
+    asr_bench.add_argument(
+        "--seconds",
+        type=float,
+        default=None,
+        help="Synthetic audio duration when no corpus manifest is supplied.",
+    )
+    asr_bench.add_argument(
+        "--out", default=None, help="Write the machine-readable result to this path."
+    )
+
+    asr_transcribe = asr_sub.add_parser(
+        "transcribe",
+        parents=[common],
+        help="Run the offline pipeline over one recorded meeting.",
+        description=(
+            "Normalises the master to a 16 kHz mono working copy, detects speech "
+            "regions, transcribes every region, re-transcribes the least confident "
+            "ones under a budget, corrects technical spellings, and writes a new "
+            "transcript revision. Each heavy stage runs in its own worker process "
+            "that exits before the next starts. The master audio is never modified. "
+            "A missing model is MODEL_UNAVAILABLE -- nothing is downloaded."
+        ),
+    )
+    asr_transcribe.add_argument("recording_uuid", help="Recording UUID to transcribe.")
+    asr_transcribe.add_argument("--json", action="store_true")
+    asr_transcribe.add_argument(
+        "--no-pass2",
+        action="store_true",
+        help="Skip the second pass for this run only. Configuration is unchanged.",
+    )
+
+    asr_transcript = asr_sub.add_parser(
+        "transcript",
+        parents=[common],
+        help="Show a stored transcript revision. Loads no model.",
+    )
+    asr_transcript.add_argument("recording_uuid")
+    asr_transcript.add_argument("--json", action="store_true")
+    asr_transcript.add_argument(
+        "--revision", type=int, default=None, help="Defaults to the active revision."
+    )
+    asr_transcript.add_argument(
+        "--flagged",
+        action="store_true",
+        help="Show only regions a pass-2 selection rule fired on, with the reasons.",
+    )
+
+    asr_revisions = asr_sub.add_parser(
+        "revisions",
+        parents=[common],
+        help="List every transcript revision for a recording, newest first.",
+    )
+    asr_revisions.add_argument("recording_uuid")
+    asr_revisions.add_argument("--json", action="store_true")
+
     # -- participant -------------------------------------------------------
     participant = sub.add_parser(
         "participant",
@@ -1422,6 +1577,457 @@ def _cmd_participant_cleanup_retry(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# ---------------------------------------------------------------------------
+# asr -- Phase 4 offline speech recognition
+#
+# `provision` is the only command in this application that reaches the network.
+# Everything else here is offline, and `models`/`verify` are import-light enough to
+# run before any heavy dependency is installed.
+# ---------------------------------------------------------------------------
+
+
+def _asr_paths(args: argparse.Namespace):
+    config = _load(args)
+    return config, config.runtime_paths()
+
+
+def _cmd_asr_models(args: argparse.Namespace) -> int:
+    from mom_igd.asr.provision import MODEL_CATALOGUE, promoted_models
+
+    _config, paths = _asr_paths(args)
+    promoted = promoted_models(paths.models_dir)
+    by_name = {(e["model_name"], e["revision"]): e for e in promoted}
+
+    if getattr(args, "json", False):
+        print(
+            json.dumps(
+                {
+                    "models_dir": str(paths.models_dir),
+                    "catalogue": [
+                        {
+                            "key": s.key,
+                            "provider_slot": s.provider_slot,
+                            "model_name": s.model_name,
+                            "source_repo": s.repo_id,
+                            "license": s.license_name,
+                            "hardware_profile": s.hardware_profile,
+                            "role": s.role,
+                            "approximate_bytes": s.approximate_bytes,
+                        }
+                        for s in MODEL_CATALOGUE.values()
+                    ],
+                    "provisioned": promoted,
+                },
+                indent=2,
+            )
+        )
+        return EXIT_OK
+
+    print(f"Model store        : {paths.models_dir}")
+    print("\nCatalogue (what this build is willing to provision):")
+    for spec in MODEL_CATALOGUE.values():
+        print(f"  {spec.key:11} {spec.model_name:34} {spec.license_name:4} "
+              f"~{spec.approximate_mib:7.0f} MiB  role={spec.role}")
+        print(f"              source {spec.repo_id}")
+    if not promoted:
+        print("\nProvisioned        : none")
+        print("Transcription will answer MODEL_UNAVAILABLE until a model is provisioned.")
+        print(f"Provision with     : {_PROG} asr provision all")
+        return EXIT_OK
+    print("\nProvisioned:")
+    for entry in promoted:
+        mark = "OK  " if entry.get("ok") else "BAD "
+        size = entry.get("total_bytes") or 0
+        print(f"  {mark}{entry['model_name']:34} rev {entry['revision'][:12]}  "
+              f"{size / 2**20:7.0f} MiB  role={entry.get('role')}")
+        if entry.get("problem"):
+            print(f"       problem: {entry['problem']}")
+    del by_name
+    return EXIT_OK if all(e.get("ok") for e in promoted) else EXIT_FAILURE
+
+
+def _cmd_asr_provision(args: argparse.Namespace) -> int:
+    from mom_igd.asr.provision import (
+        MODEL_CATALOGUE,
+        ProvisionError,
+        catalogue_entry,
+        provision_model,
+    )
+
+    _config, paths = _asr_paths(args)
+    paths.ensure()
+
+    key = getattr(args, "key", "all") or "all"
+    keys = list(MODEL_CATALOGUE) if key == "all" else [key]
+    try:
+        specs = [catalogue_entry(k) for k in keys]
+    except ProvisionError as exc:
+        print(f"{exc}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    total = sum(s.approximate_bytes for s in specs)
+    print("This command DOWNLOADS model artefacts. It is the only part of this")
+    print("application that uses the network; the runtime never does.\n")
+    for spec in specs:
+        print(f"  {spec.key:11} {spec.repo_id}")
+        print(f"              licence {spec.license_name}  ~{spec.approximate_mib:.0f} MiB"
+              f"  profile {spec.hardware_profile}")
+    print(f"\n  destination  {paths.models_dir}")
+    print(f"  total        ~{total / 2**30:.2f} GiB")
+    print("  no access token is used, and no gated artefact is accepted\n")
+
+    if not getattr(args, "yes", False) and sys.stdin is not None and sys.stdin.isatty():
+        try:
+            answer = input("Proceed with the download? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer not in {"y", "yes"}:
+            print("Nothing was downloaded.", file=sys.stderr)
+            return EXIT_FAILURE
+
+    results = []
+    for spec in specs:
+        print(f"\n--- {spec.key} ---")
+        try:
+            result = provision_model(
+                spec.key,
+                paths.models_dir,
+                force=getattr(args, "force", False),
+                progress=lambda message: print(f"  {message}"),
+            )
+        except ProvisionError as exc:
+            print(f"  FAILED: {exc}", file=sys.stderr)
+            return EXIT_FAILURE
+        results.append(result)
+        print(f"  {'already present' if result.already_present else 'provisioned'}: "
+              f"{result.spec.model_name} rev {result.revision[:12]}")
+        print(f"  files {len(result.manifest.files)}  "
+              f"{result.total_bytes / 2**20:.0f} MiB  "
+              f"manifest sha256 {result.manifest_digest[:16]}...")
+
+    if getattr(args, "json", False):
+        print(json.dumps([r.describe() for r in results], indent=2))
+        return EXIT_OK
+
+    print("\nAll requested models are provisioned and verified.")
+    print(f"Declare them in the registry with : {_PROG} asr models --json")
+    print(f"Re-verify at any time with        : {_PROG} asr verify")
+    return EXIT_OK
+
+
+def _cmd_asr_verify(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from mom_igd.asr.manifest import ManifestError
+    from mom_igd.asr.provision import promoted_models, verify_model
+
+    _config, paths = _asr_paths(args)
+    promoted = promoted_models(paths.models_dir)
+    if not promoted:
+        message = "No model is provisioned, so there is nothing to verify."
+        if getattr(args, "json", False):
+            print(json.dumps({"models": [], "ok": False, "detail": message}, indent=2))
+        else:
+            print(message)
+            print(f"Provision with: {_PROG} asr provision all")
+        return EXIT_FAILURE
+
+    report = []
+    ok_all = True
+    for entry in promoted:
+        row = {k: entry[k] for k in ("provider_slot", "model_name", "revision")}
+        try:
+            manifest = verify_model(Path(entry["directory"]))
+        except ManifestError as exc:
+            ok_all = False
+            row.update(ok=False, problem=str(exc))
+        else:
+            row.update(
+                ok=True,
+                problem=None,
+                files=len(manifest.files),
+                total_bytes=manifest.total_bytes,
+                license=manifest.license_name,
+                source_repo=manifest.source_repo,
+            )
+        report.append(row)
+
+    if getattr(args, "json", False):
+        print(json.dumps({"models": report, "ok": ok_all}, indent=2))
+        return EXIT_OK if ok_all else EXIT_FAILURE
+
+    for row in report:
+        mark = "OK  " if row["ok"] else "FAIL"
+        print(f"  {mark}{row['model_name']:34} rev {row['revision'][:12]}")
+        if row["ok"]:
+            print(f"       {row['files']} file(s), {row['total_bytes'] / 2**20:.0f} MiB, "
+                  f"{row['license']}, from {row['source_repo']}")
+        else:
+            print(f"       {row['problem']}")
+    print("\nEvery byte was re-hashed from disk." if ok_all
+          else "\nAt least one model failed verification and will not be loaded.")
+    return EXIT_OK if ok_all else EXIT_FAILURE
+
+
+def _cmd_asr_smoke(args: argparse.Namespace) -> int:
+    from mom_igd.asr.smoke import run_asr_smoke
+
+    config, paths = _asr_paths(args)
+    result = run_asr_smoke(
+        config,
+        paths,
+        seconds=float(getattr(args, "seconds", 8.0) or 8.0),
+        audio_path=getattr(args, "audio", None),
+    )
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2))
+        return EXIT_OK if result["ok"] else EXIT_FAILURE
+
+    for step in result["steps"]:
+        mark = "ok  " if step["ok"] else "FAIL"
+        print(f"[{mark}] {step['name']}: {step['detail']}")
+    total = len(result["steps"])
+    passed = sum(1 for s in result["steps"] if s["ok"])
+    print(f"\nASR offline smoke: {'PASS' if result['ok'] else 'FAIL'} ({passed}/{total} steps)")
+    print(f"Mode: {result.get('mode', 'synthetic')} -- {result.get('claim', '')}")
+    if not result["ok"] and result.get("error"):
+        print(f"Reason: {result['error']}", file=sys.stderr)
+    return EXIT_OK if result["ok"] else EXIT_FAILURE
+
+
+def _cmd_asr_bench(args: argparse.Namespace) -> int:
+    from mom_igd.asr.benchmark import BenchmarkError, run_benchmark
+
+    config, paths = _asr_paths(args)
+    threads = None
+    if getattr(args, "threads", None):
+        try:
+            threads = [int(t) for t in str(args.threads).split(",") if t.strip()]
+        except ValueError:
+            print("--threads must be a comma-separated list of integers", file=sys.stderr)
+            return EXIT_FAILURE
+    models = None
+    if getattr(args, "models", None):
+        models = [m.strip() for m in str(args.models).split(",") if m.strip()]
+
+    try:
+        report = run_benchmark(
+            config,
+            paths,
+            corpus_manifest=getattr(args, "manifest", None),
+            thread_counts=threads,
+            model_keys=models,
+            synthetic_seconds=getattr(args, "seconds", None),
+            progress=lambda message: print(f"  {message}", flush=True),
+        )
+    except BenchmarkError as exc:
+        print(f"Benchmark refused: {exc}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    out = getattr(args, "out", None)
+    if out:
+        from pathlib import Path
+
+        target = Path(out)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        print(f"\nMachine-readable result written to {target}")
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2))
+        return EXIT_OK
+
+    print("\n" + report["table"])
+    for note in report.get("notes", []):
+        print(f"\nNOTE: {note}")
+    return EXIT_OK
+
+
+def _asr_service(args: argparse.Namespace, *, no_pass2: bool = False):
+    """Build the transcription service for a CLI run.
+
+    ``--no-pass2`` rewrites the loaded configuration for this process only, through
+    pydantic's own copy so validation still applies. It never touches a file: a
+    command-line flag that edited configuration would change the next run too.
+    """
+    from mom_igd.asr.service import AsrService
+    from mom_igd.db.connection import connect
+
+    config, paths = _asr_paths(args)
+    if no_pass2:
+        config = config.model_copy(
+            update={"asr": config.asr.model_copy(update={"pass2_enabled": False})}
+        )
+
+    def _connect():
+        return connect(
+            paths.database_path(config.database.filename),
+            busy_timeout_ms=config.database.busy_timeout_ms,
+        )
+
+    return AsrService(_connect, config=config, paths=paths), config, paths
+
+
+def _format_stamp(ms: int) -> str:
+    total = max(0, int(ms)) // 1000
+    return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
+
+
+def _cmd_asr_transcribe(args: argparse.Namespace) -> int:
+    from mom_igd.asr.service import AsrServiceError
+
+    service, config, _paths = _asr_service(args, no_pass2=bool(args.no_pass2))
+    models = service.status()["models"]
+    if not models["pass1_ready"]:
+        print(
+            "MODEL_UNAVAILABLE: no pass-1 model is provisioned and verified.\n"
+            "  Provision one with: python -m mom_igd asr provision asr-pass1\n"
+            "  Transcription never downloads a model by itself.",
+            file=sys.stderr,
+        )
+        return EXIT_FAILURE
+
+    try:
+        result = service.transcribe(
+            args.recording_uuid, progress=lambda message: print(f"  {message}", flush=True)
+        )
+    except AsrServiceError as exc:
+        print(f"Refused: {exc}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    payload = result.to_dict()
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2))
+        return EXIT_OK if result.ok else EXIT_FAILURE
+
+    print()
+    for stage in result.stages:
+        print(f"[{'ok  ' if stage['ok'] else 'FAIL'}] {stage['name']}: {stage['detail']}")
+    print()
+    if not result.ok:
+        print(f"Transcription FAILED: {result.error}", file=sys.stderr)
+        return EXIT_FAILURE
+    print(
+        f"Transcript revision {result.revision}: {result.segment_count} segment(s), "
+        f"{result.word_count} word(s) over {result.audio_ms / 1000:.1f}s of audio "
+        f"({result.speech_ms / 1000:.1f}s of speech in {result.region_count} region(s))"
+    )
+    print(
+        f"Cost: {result.wall_ms / 1000:.1f}s wall, RTF {result.rtf}, peak worker "
+        f"{payload['peak_rss_mib']} MiB"
+    )
+    if result.pass2_skipped_reason:
+        print(f"Pass 2: skipped -- {result.pass2_skipped_reason}")
+    else:
+        print(
+            f"Pass 2: {result.pass2_region_count} region(s), "
+            f"{result.pass2_selected_ms / 1000:.1f}s of a "
+            f"{result.pass2_budget_ms / 1000:.1f}s budget"
+            + (" (budget exhausted)" if result.pass2_budget_exhausted else "")
+        )
+    print(
+        "Accuracy is NOT measured by this command. No reference transcript exists, and "
+        "accuracy is never derived from the model's own output."
+    )
+    return EXIT_OK
+
+
+def _cmd_asr_transcript(args: argparse.Namespace) -> int:
+    from mom_igd.asr.service import AsrServiceError
+
+    service, _config, _paths = _asr_service(args)
+    try:
+        if getattr(args, "flagged", False):
+            payload: Any = {"flagged": service.flagged_regions(args.recording_uuid)}
+        else:
+            payload = service.get_transcript(
+                args.recording_uuid, revision=getattr(args, "revision", None)
+            )
+    except AsrServiceError as exc:
+        print(f"{exc}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, default=str))
+        return EXIT_OK
+
+    if getattr(args, "flagged", False):
+        rows = payload["flagged"]
+        if not rows:
+            print("No region tripped a pass-2 selection rule.")
+            return EXIT_OK
+        print(f"{'region':>6} {'pass':>4} {'start':>9} {'sel':>4} {'rank':>4}  reasons")
+        for row in rows:
+            print(
+                f"{row['region_seq']!s:>6} {row['asr_pass']:>4} "
+                f"{_format_stamp(row['start_ms']):>9} "
+                f"{'yes' if row['selected_for_pass2'] else 'no':>4} "
+                f"{row['rank'] if row['rank'] is not None else '-':>4}  "
+                f"{', '.join(row['reason_codes'])}"
+            )
+        return EXIT_OK
+
+    transcript = payload["transcript"]
+    print(
+        f"Revision {transcript['revision']} ({transcript['status']}"
+        f"{', active' if transcript['is_active'] else ''}) -- "
+        f"{transcript['segment_count']} segment(s), {transcript['word_count']} word(s)"
+    )
+    print(
+        f"  pass 1: {transcript['pass1_model_name']} @ "
+        f"{str(transcript['pass1_model_revision'] or '')[:12]} "
+        f"(beam {transcript['pass1_beam_size']})"
+    )
+    if transcript["pass2_model_name"]:
+        print(
+            f"  pass 2: {transcript['pass2_model_name']} @ "
+            f"{str(transcript['pass2_model_revision'] or '')[:12]} "
+            f"(beam {transcript['pass2_beam_size']}, "
+            f"{transcript['pass2_region_count']} region(s))"
+        )
+    else:
+        print(f"  pass 2: not run -- {transcript['pass2_skipped_reason']}")
+    if transcript["glossary_version"]:
+        print(
+            f"  glossary v{transcript['glossary_version']}: "
+            f"{transcript['glossary_replacements']} correction(s)"
+        )
+    print()
+    for segment in payload["segments"]:
+        marker = "*" if segment["asr_pass"] == 2 else " "
+        print(
+            f"{marker}[{_format_stamp(segment['start_ms'])}] "
+            f"({segment['speaker_status']}) {segment['text']}"
+        )
+    if any(segment["asr_pass"] == 2 for segment in payload["segments"]):
+        print("\n* = re-transcribed by the second pass")
+    return EXIT_OK
+
+
+def _cmd_asr_revisions(args: argparse.Namespace) -> int:
+    from mom_igd.asr.service import AsrServiceError
+
+    service, _config, _paths = _asr_service(args)
+    try:
+        rows = service.list_revisions(args.recording_uuid)
+    except AsrServiceError as exc:
+        print(f"{exc}", file=sys.stderr)
+        return EXIT_FAILURE
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2, default=str))
+        return EXIT_OK
+    if not rows:
+        print("No transcript revision exists for this recording yet.")
+        return EXIT_OK
+    print(f"{'rev':>4} {'status':>10} {'active':>6} {'segs':>5} {'words':>6}  created")
+    for row in rows:
+        print(
+            f"{row['revision']:>4} {row['status']:>10} "
+            f"{'yes' if row['is_active'] else '':>6} {row['segment_count']:>5} "
+            f"{row['word_count']:>6}  {row['created_at']}"
+        )
+    return EXIT_OK
+
+
 _DISPATCH: dict[tuple[str, str | None], Any] = {
     ("doctor", None): _cmd_doctor,
     ("db", "init"): _cmd_db_init,
@@ -1436,6 +2042,14 @@ _DISPATCH: dict[tuple[str, str | None], Any] = {
     ("audio", "recover"): _cmd_audio_recover,
     ("audio", "smoke"): _cmd_audio_smoke,
     ("audio", "bench"): _cmd_audio_bench,
+    ("asr", "models"): _cmd_asr_models,
+    ("asr", "provision"): _cmd_asr_provision,
+    ("asr", "verify"): _cmd_asr_verify,
+    ("asr", "smoke"): _cmd_asr_smoke,
+    ("asr", "bench"): _cmd_asr_bench,
+    ("asr", "transcribe"): _cmd_asr_transcribe,
+    ("asr", "transcript"): _cmd_asr_transcript,
+    ("asr", "revisions"): _cmd_asr_revisions,
     ("participant", "list"): _cmd_participant_list,
     ("participant", "create"): _cmd_participant_create,
     ("participant", "update"): _cmd_participant_update,
@@ -1470,8 +2084,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         sub_name = getattr(args, "audio_command", None)
     elif args.command == "participant":
         sub_name = getattr(args, "participant_command", None)
+    elif args.command == "asr":
+        sub_name = getattr(args, "asr_command", None)
 
-    if args.command in {"db", "config", "registry", "audio", "participant"} and not sub_name:
+    if (
+        args.command in {"db", "config", "registry", "audio", "participant", "asr"}
+        and not sub_name
+    ):
         print(f"`{_PROG} {args.command}` requires a subcommand.", file=sys.stderr)
         print(f"Try `{_PROG} {args.command} --help`.", file=sys.stderr)
         return EXIT_FAILURE

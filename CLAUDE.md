@@ -15,10 +15,15 @@ product. The participant directory itself is not size-limited, and the default
 safety ceiling is 50 participants per meeting. The system is never described as
 "unlimited".
 
-**Current phase: 3 — participants, biometric consent, voice enrollment.** See
-`docs/architecture.md` for the full roadmap, `docs/phase-2-audio-capture.md` for
-the capture engine, `docs/phase-3-participants-enrollment.md` for enrollment, and
-`README.md` for what exists.
+**Phase 4 — offline ASR — is implemented and tested.** The build nevertheless still
+reports `phase: 3`, deliberately: advancing `CURRENT_PHASE` changes what `doctor` calls a
+`FAIL` rather than a `WARN`, and **accuracy acceptance is PENDING** because no reference
+transcript exists on this machine. Raising it would assert a validated capability that has
+not been validated. Do not raise it without an accuracy measurement.
+
+See `docs/architecture.md` for the full roadmap, `docs/phase-2-audio-capture.md` for the
+capture engine, `docs/phase-3-participants-enrollment.md` for enrollment,
+`docs/phase-4-offline-asr.md` for transcription, and `README.md` for what exists.
 
 ## Non-negotiable constraints
 
@@ -63,12 +68,11 @@ the capture engine, `docs/phase-3-participants-enrollment.md` for enrollment, an
 
 The single most important rule: **do not implement a future phase.**
 
-Phase 2 must not contain VAD, ASR, diarization, voice enrollment, voice
-identification, speaker labelling, LLM calls, MoM generation, exporters, action
-tracking, encryption at rest, a consent workflow, retention enforcement, model
-downloads, or OpenVINO installation/benchmarking. It must not resample, produce
-a 16 kHz working copy, or write FLAC — those belong to Phase 4
-(`normalize_audio`).
+Phase 4 must not contain diarization, voice identification, speaker labelling, LLM
+calls, MoM generation, exporters, action tracking, transcript search, encryption of
+transcripts at rest, retention enforcement, or OpenVINO installation/benchmarking. It
+must not add a `speaker` column anywhere — Phase 5 and Phase 6 own that, and a column
+sitting NULL for two phases invites something to write a guess into it.
 
 Do not scaffold future modules as empty placeholders either. An empty package
 invites a half-implementation. Future structure belongs in
@@ -171,6 +175,56 @@ quietly widening scope.
   screen swallowing every click. The `!important` rule at the top of the file is load
   bearing.
 
+### Phase 4 invariants (`mom_igd/asr/`)
+
+* **`asr provision` is the only thing that downloads.** Nothing on a runtime path --
+  not the pipeline, not an endpoint, not the shell, not `doctor` -- may fetch a model.
+  A missing model is `MODEL_UNAVAILABLE`, never a download and never a fall back to
+  whichever other model is present (ADR-0015).
+* **Byte verification is necessary and not sufficient.** A model is ready only after a
+  **load-and-decode probe** in an isolated worker. A manifest-valid model that cannot
+  decode has happened: `preprocessor_config.json` was missing and the mel-bin count was
+  wrong. Never let a directory scan decide readiness -- the resolver reads the installed
+  registry (ADR-0015 §1).
+* **`assert_offline_environment()` uses assignment, never `setdefault`.** An operator
+  shell carrying `HF_HUB_OFFLINE=0` must not be able to put a worker online. Inherited
+  Hugging Face tokens are deleted, not tolerated.
+* **The master audio is read-only to this phase.** Normalisation writes a *new* file
+  under `<data_root>/working`. A test hashes every chunk before and after a full run.
+* **A gap is filled in the working copy and recorded on its row.** The copy exists to
+  carry the master's timeline, so a hole becomes explicit silence -- and `gap_count`,
+  `gap_total_ms`, `gaps_json` and the region's `overlaps_gap` flag keep it visible.
+  Phase 2's never-fill rule is about the *master*, which stays untouched (ADR-0016 §2).
+* **Regions are decoded in batched 30-second windows.** Whisper pads every window to
+  30 s, so one decode per region measured **RTF 2.8** where batching measured **0.31**.
+  Never revert to per-region decoding, and never concatenate non-adjacent speech --
+  that would corrupt every timestamp (ADR-0016 §3).
+* **The audio is decoded once per call and sliced.** Passing a path per region makes
+  faster-whisper re-read the whole file every time: O(regions x duration). It does not
+  show up on a short test.
+* **`validate_transcription` rebuilds every segment, so a new field must be listed
+  there.** `region_index` was added and silently dropped, which made every region look
+  empty and spent the whole pass-2 budget on the wrong places.
+* **Pass 2 supersedes, never overwrites.** The pass-1 row stays, marked inactive and
+  pointing at its replacement. That is what makes "pass 2 improved this region" a
+  checkable claim and what Phase 8's evidence chain needs.
+* **Selection is deterministic and every choice carries a reason code.** No unexplained
+  score. An over-budget region is skipped, not treated as a wall -- one 6-second region
+  once blocked an entire pass. `PASS2_BUDGET_TOO_SMALL` and `PASS2_NOTHING_FLAGGED` are
+  different facts and must stay distinguishable.
+* **Terminology normalisation is a spelling corrector.** No translation, paraphrase,
+  expansion or summarisation, and `text_raw` always keeps what the model said. Whole-word
+  matching only; never add a variant that is ordinary Indonesian.
+* **Re-running writes a new revision.** Never edit a segment in place. At most one
+  active transcript per recording, enforced by a partial unique index.
+* **No speaker anywhere.** No column, and `validate_transcription` rejects any result
+  that carries one. Phases 5 and 6 own that.
+* **Nothing under `mom_igd/asr/` may import `mom_igd.enrollment`.** Roster size must
+  never gate transcription, exactly as it must never gate recording.
+* **Accuracy is never claimed and never derived from the model's own output.** WER needs
+  a reference transcript, and a reference transcript needs the consent and licence
+  metadata `asr bench --manifest` enforces.
+
 ## Doctor classification contract
 
 * `PASS` — required by the current phase, and satisfied.
@@ -232,9 +286,18 @@ Exit codes: `0` no FAIL · `1` any FAIL · `2` `--strict` with a WARN.
 .\.venv\Scripts\python.exe -m mom_igd smoke
 .\.venv\Scripts\python.exe -m mom_igd audio devices
 .\.venv\Scripts\python.exe -m mom_igd audio smoke           # fake backend, no hardware
+.\.venv\Scripts\python.exe -m mom_igd asr models            # what is provisioned
+.\.venv\Scripts\python.exe -m mom_igd asr verify            # re-hash every model byte
+.\.venv\Scripts\python.exe -m mom_igd asr smoke             # real model, no network
+.\.venv\Scripts\python.exe -m mom_igd asr transcribe UUID   # the whole pipeline
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\python.exe -m pytest --cov=mom_igd --cov-report=term-missing
 ```
+
+The model store used during Phase 4 development is `D:\MoM-IGD-Models-Phase4`, passed with
+`--data-dir`. It is a scratch data root, **not** the production `D:\MoM-IGD-Data`. Do not
+re-download a model that already passes `asr verify`, and never run
+`asr provision --force` without being asked to.
 
 Do **not** pipe pytest through `2>&1 | Select-Object` in PowerShell: it wraps every
 stderr log line in an `ErrorRecord` and the run appears to hang. Use

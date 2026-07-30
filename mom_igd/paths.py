@@ -54,6 +54,7 @@ RUNTIME_SUBDIRS: Final[tuple[str, ...]] = (
     "backups",
     "voiceprints",
     "keys",
+    "working",
 )
 """Runtime subdirectories created under the data root by :meth:`ensure`.
 
@@ -61,6 +62,12 @@ RUNTIME_SUBDIRS: Final[tuple[str, ...]] = (
 harmless and happens with every other one; what must stay lazy is the **content** --
 the DPAPI-protected master key is generated only when an explicit enrollment needs
 it, never by ``ensure()``, an import or ``doctor`` (ADR-0010).
+
+``working`` arrived with Phase 4 and holds 16 kHz mono derivatives of master
+recordings. It is deliberately *not* inside ``recordings``: a working copy is a
+reproducible cache, and keeping it out of the master tree means a backup of the
+evidence does not carry a duplicate of it, and reclaiming disk does not mean
+walking into directories that hold the only copy of a meeting.
 """
 
 _WRITE_PROBE_PREFIX: Final[str] = ".mom_igd_write_probe_"
@@ -238,6 +245,26 @@ class RuntimePaths:
     def keys_dir(self) -> Path:
         """DPAPI-protected key material. Never committed, never logged."""
         return self.root / "keys"
+
+    @property
+    def working_dir(self) -> Path:
+        """16 kHz mono working copies. Derived, reproducible, never the evidence."""
+        return self.root / "working"
+
+    def working_copy_path(self, recording_uuid: str) -> Path:
+        """Return the working-copy path for one recording.
+
+        The file name is the recording UUID, for the same reason a voiceprint's is:
+        a meeting title or a participant name must never reach the filesystem. The
+        UUID shape is enforced rather than trusted, so an identifier cannot smuggle
+        a traversal through.
+        """
+        if not _UUID_RE.match(recording_uuid):
+            raise PathValidationError(
+                f"Recording identifier must be a lower-case UUID, got "
+                f"{recording_uuid!r}."
+            )
+        return self.working_dir / f"{recording_uuid}-16k-mono.wav"
 
     def voiceprint_path(self, voiceprint_uuid: str) -> Path:
         """Return the envelope path for one voiceprint.

@@ -1389,19 +1389,57 @@ def test_no_audio_artefact_is_committed_to_the_repository() -> None:
     assert offenders == [], f"audio artefacts in the repository: {offenders}"
 
 
-def test_numpy_is_not_installed() -> None:
-    """Capture uses RawInputStream bytes and array.array, so NumPy is not needed."""
-    import importlib.util
+def test_the_capture_path_does_not_use_numpy() -> None:
+    """Capture reads bytes from `RawInputStream` and meters with `array.array`.
 
-    assert importlib.util.find_spec("numpy") is None
+    NumPy became installed in Phase 4 -- CTranslate2 requires it -- so its *absence* is no
+    longer the thing to assert. The property that still matters, and that Phase 4 must not
+    erode, is that the capture path itself does not depend on it: an import there would put
+    a large numerical library on the real-time audio path, and the writer callback must
+    stay allocation-light.
+    """
+    import ast
+
+    offenders: list[str] = []
+    for path in sorted((Path(__file__).resolve().parent.parent / "mom_igd" / "audio").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module]
+            for name in names:
+                if name.split(".")[0] in {"numpy", "soundfile", "librosa", "soxr", "av"}:
+                    offenders.append(f"{path.name}:{node.lineno} imports {name}")
+    assert offenders == [], (
+        f"the capture path must stay free of heavy numerical/codec libraries: {offenders}"
+    )
 
 
-def test_no_deferred_audio_or_ai_dependency_is_installed() -> None:
+def test_no_out_of_phase_dependency_is_installed() -> None:
+    """The Phase 4 ASR stack graduated; Phase 5+ dependencies must still be absent.
+
+    `audit_installed_distributions` reads the *current* deferred set, so this keeps
+    working as phases advance -- what it guards against is a Phase 5 or Phase 8 dependency
+    arriving early.
+    """
     from mom_igd.offline_policy import audit_installed_distributions
 
     audit = audit_installed_distributions()
     assert audit["cloud"] == []
     assert audit["deferred"] == [], f"out-of-phase dependencies: {audit['deferred']}"
+
+
+def test_the_phase_5_and_later_stacks_are_still_absent() -> None:
+    """Named explicitly, so graduating one by accident is visible."""
+    import importlib.util
+
+    for name in ("torch", "torchaudio", "pyannote", "speechbrain", "transformers",
+                 "sentence_transformers", "llama_cpp", "openvino"):
+        assert importlib.util.find_spec(name) is None, (
+            f"{name} belongs to a later phase and must not be installed yet"
+        )
 
 
 def test_sounddevice_is_an_allowed_phase_2_dependency() -> None:
@@ -1415,13 +1453,15 @@ def test_sounddevice_is_an_allowed_phase_2_dependency() -> None:
     assert "sounddevice" not in CLOUD_SDK_DENYLIST
     assert audit_distribution_names(["sounddevice"])["deferred"] == []
     # Everything else audio-related stays out.
+    # `numpy` and `av` graduated in Phase 4 (ADR-0014): `av` decodes and resamples the
+    # 16 kHz working copy and numpy is a hard CTranslate2 requirement. They are checked
+    # above by `test_the_capture_path_does_not_use_numpy` instead -- the capture path is
+    # what must stay free of them, not the environment.
     findings = audit_distribution_names(
-        ["soundfile", "pyaudio", "librosa", "numpy", "av", "webrtcvad", "silero-vad"]
+        ["soundfile", "pyaudio", "librosa", "webrtcvad", "silero-vad"]
     )
     assert sorted(findings["deferred"]) == [
-        "av",
         "librosa",
-        "numpy",
         "pyaudio",
         "silero-vad",
         "soundfile",

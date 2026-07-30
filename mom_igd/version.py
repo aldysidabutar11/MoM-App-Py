@@ -27,7 +27,7 @@ Advancing this changes what ``doctor`` calls a FAIL rather than a WARN, so it is
 raised only once the phase's automated gate is green -- never in anticipation.
 """
 
-CONFIG_SCHEMA_VERSION: int = 3
+CONFIG_SCHEMA_VERSION: int = 4
 """Version of the configuration file schema (``config/default.toml``).
 
 The validator demands an exact match, and ``AppConfig`` forbids unknown keys -- so
@@ -44,18 +44,23 @@ this build no longer speaks.
 2 -- Phase 2 adds ``[audio]``.
 3 -- Phase 3 corrective: adds ``[participants]`` (roster capacity default and the
      configurable safety ceiling), replacing the hard-coded nine.
+4 -- Phase 4 adds ``[asr]``: thread counts and decode settings measured on the target
+     device, the pass-2 selection thresholds and budget, VAD tuning, and the
+     terminology glossary. No key in it selects a provider implementation.
 """
 
 REGISTRY_SCHEMA_VERSION: int = 1
 """Version of the model registry schema (``models/registry.json``)."""
 
-SCHEMA_VERSION_HEAD: int = 4
+SCHEMA_VERSION_HEAD: int = 5
 """Highest database migration version shipped with this build.
 
 1 -- Phase 1 foundation (nine tables).
 2 -- Phase 2 audio capture: recording lifecycle, device identity, chunk integrity.
 3 -- Phase 3 participants, biometric consent, encrypted voiceprints.
 4 -- Phase 3 corrective: per-meeting ``participant_capacity``, defaulting to 9.
+5 -- Phase 4 offline ASR: working copy, VAD run, speech regions, transcript
+     revisions, segments and word timings. No speaker column -- that is Phase 5/6.
 """
 
 USER_AGENT: str = f"{APP_NAME}/{APP_VERSION} (offline; loopback-only)"

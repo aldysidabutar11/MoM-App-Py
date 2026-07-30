@@ -414,19 +414,21 @@ def test_gitattributes_protects_binary_formats() -> None:
     assert "tests/fixtures/binary/**  binary" in rules
 
 
-def test_no_phase_4_or_later_module_was_created() -> None:
+def test_no_phase_5_or_later_module_was_created() -> None:
     """Scope boundary, moved forward by one phase rather than removed.
 
-    Phase 1 asserted that no capture package existed. Phase 2 implements capture,
-    so ``mom_igd/audio`` became expected. Phase 3 implements the participant
-    registry, consent and voice enrollment, so ``mom_igd/enrollment`` is expected
-    now -- but everything downstream of it must still be absent. Deleting this test
-    each time a package appeared would have thrown the guard away instead of
-    advancing it.
+    Phase 1 asserted that no capture package existed. Phase 2 implements capture, so
+    ``mom_igd/audio`` became expected; Phase 3 added ``mom_igd/enrollment``; Phase 4 adds
+    ``mom_igd/asr``. Everything downstream of it must still be absent. Deleting this test
+    each time a package appeared would have thrown the guard away instead of advancing it.
+
+    Note that VAD does **not** get its own package: it is a stage inside
+    ``mom_igd/asr/vad.py`` using the Silero asset bundled in the faster-whisper wheel.
     """
     package = REPO / "mom_igd"
     allowed_now = {
         "api",
+        "asr",          # Phase 4
         "audio",        # Phase 2
         "db",
         "diagnostics",
@@ -435,8 +437,7 @@ def test_no_phase_4_or_later_module_was_created() -> None:
         "shell",
     }
     forbidden_until_later_phases = {
-        "asr",              # Phase 4
-        "vad",              # Phase 4 (model-based; Phase 2/3 have none)
+        "vad",              # a stage in mom_igd/asr, never its own package
         "diarization",      # Phase 5
         "speaker",          # Phase 6 -- identification, distinct from enrollment
         "reconciliation",   # Phase 7

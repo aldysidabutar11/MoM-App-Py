@@ -181,6 +181,11 @@ def test_the_shell_proxy_allowlist_is_closed() -> None:
             # exist before it can address one. Read-only, bounded, and it returns
             # meeting UUIDs rather than internal row ids.
             "/enrollment/meetings",
+            # Phase 4: both read-only, and neither loads a model or can cause a
+            # download. `/asr/models` reads the readiness index so the page can
+            # disable the Transcribe button rather than letting it fail.
+            "/asr/status",
+            "/asr/models",
         }
     )
     assert "/openapi.json" not in ALLOWED_PROXY_PATHS
@@ -265,26 +270,31 @@ def test_manual_launch_command_is_documented() -> None:
 
 
 def test_future_features_are_shown_as_not_implemented(sources: dict[str, str]) -> None:
-    """Recording went live in Phase 2 and Participants in Phase 3.
+    """Recording went live in Phase 2, Participants in Phase 3, Transcription in 4.
 
-    The remaining four later-phase cards stay disabled and say so. Counting them is
-    what stops a card being quietly enabled before the feature behind it exists.
+    Every other card stays disabled and says so. The assertion is that the counts
+    agree with each other rather than that they equal a fixed number: an enabled card
+    must have an implementation, and a disabled one must say it has none.
     """
     html = sources["index.html"]
     for feature in (
         "Meeting setup",
         "Recording",
         "Participants",
-        "Processing",
+        "Transcription",
         "Review",
         "Export",
     ):
         assert feature in html, f"the {feature} card must be present"
-    assert html.count('aria-disabled="true"') == 4
-    assert html.count("Belum diimplementasikan") == 4
-    assert 'id="card-recording"' in html, "Recording is implemented and must be enabled"
-    assert 'id="card-participants"' in html, "Participants is implemented in Phase 3"
-    assert html.count("feature-card-enabled") == 2
+    disabled = html.count('aria-disabled="true"')
+    assert disabled == html.count("Belum diimplementasikan"), (
+        "every disabled card must say it is not implemented, and no enabled card may"
+    )
+    enabled = html.count("feature-card-enabled")
+    assert enabled == html.count("phase-tag-live") == html.count("Tersedia")
+    for panel in ('id="card-recording"', 'id="card-participants"', 'id="card-transcription"'):
+        assert panel in html, f"{panel} is implemented and must be enabled"
+    assert enabled == 3, "Recording, Participants and Transcription are live"
 
 
 def test_offline_mode_is_displayed(sources: dict[str, str]) -> None:

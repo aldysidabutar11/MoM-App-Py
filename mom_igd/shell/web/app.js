@@ -2037,3 +2037,399 @@
     if (event.key === 'Enter') once(saveCapacity);
   });
 })();
+
+/* ==========================================================================
+   Phase 4: transcription panel.
+
+   The whole pipeline runs behind one POST that takes minutes, so this polls
+   `/asr/status` for progress rather than holding a request open -- exactly as the
+   recording panel does. Every call goes through the pywebview bridge, which means
+   the session token never enters JavaScript and the page can only reach the
+   anchored paths on the shell's allowlist.
+
+   Nothing here can cause a model download. `/asr/models` reports readiness and the
+   Transcribe button stays disabled until a pass-1 model is ready; provisioning
+   remains a deliberate command-line action.
+   ========================================================================== */
+(function () {
+  'use strict';
+
+  var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  var POLL_MS = 1200;
+
+  var el = {
+    panel: document.getElementById('transcript-panel'),
+    open: document.getElementById('open-transcript-btn'),
+    modelKv: document.getElementById('asr-model-kv'),
+    modelMissing: document.getElementById('asr-model-missing'),
+    uuid: document.getElementById('asr-recording-uuid'),
+    run: document.getElementById('asr-run-btn'),
+    cancel: document.getElementById('asr-cancel-btn'),
+    load: document.getElementById('asr-load-btn'),
+    error: document.getElementById('asr-error'),
+    pill: document.getElementById('asr-pill'),
+    costKv: document.getElementById('asr-cost-kv'),
+    stages: document.getElementById('asr-stage-list'),
+    pass2Kv: document.getElementById('asr-pass2-kv'),
+    flagged: document.getElementById('asr-flagged-table'),
+    transcriptKv: document.getElementById('asr-transcript-kv'),
+    segments: document.getElementById('asr-segment-list'),
+    transcriptEmpty: document.getElementById('asr-transcript-empty')
+  };
+
+  if (!el.panel) return;
+
+  var busy = false;
+  var pollTimer = null;
+  var modelsReady = false;
+
+  function bridge() {
+    return window.pywebview && window.pywebview.api ? window.pywebview.api : null;
+  }
+
+  async function get(path, query) {
+    var api = bridge();
+    if (!api) return { ok: false, status: 0, error: 'bridge-unavailable' };
+    return api.api_get(path, query || null);
+  }
+
+  async function post(path, payload) {
+    var api = bridge();
+    if (!api) return { ok: false, status: 0, error: 'bridge-unavailable' };
+    return api.api_post(path, payload || null);
+  }
+
+  function show(node, visible) {
+    if (node) node.hidden = !visible;
+  }
+
+  function setKv(node, pairs) {
+    node.textContent = '';
+    pairs.forEach(function (pair) {
+      var dt = document.createElement('dt');
+      dt.textContent = pair[0];
+      var dd = document.createElement('dd');
+      dd.textContent = pair[1];
+      node.appendChild(dt);
+      node.appendChild(dd);
+    });
+  }
+
+  function pad2(value) {
+    return value < 10 ? '0' + value : String(value);
+  }
+
+  function stamp(ms) {
+    var total = Math.max(0, Math.floor(Number(ms) / 1000));
+    return (
+      pad2(Math.floor(total / 3600)) +
+      ':' +
+      pad2(Math.floor((total % 3600) / 60)) +
+      ':' +
+      pad2(total % 60)
+    );
+  }
+
+  function seconds(ms) {
+    return (Number(ms || 0) / 1000).toFixed(1) + ' s';
+  }
+
+  function fail(message) {
+    el.error.textContent = message;
+    show(el.error, Boolean(message));
+  }
+
+  /* -- model readiness -------------------------------------------------- */
+
+  async function loadModels() {
+    var response = await get('/asr/models');
+    if (!response.ok) {
+      setKv(el.modelKv, [['Status', 'tidak dapat dibaca']]);
+      return;
+    }
+    var data = response.data || {};
+    modelsReady = Boolean(data.pass1_ready);
+    setKv(el.modelKv, [
+      ['Pass 1', data.pass1_ready ? data.pass1_model || 'siap' : 'belum tersedia'],
+      ['Pass 2', data.pass2_ready ? data.pass2_model || 'siap' : 'belum tersedia'],
+      ['Registry', data.readable_index ? 'terbaca' : String(data.problem || 'rusak')]
+    ]);
+    show(el.modelMissing, !modelsReady);
+    updateButtons();
+  }
+
+  function updateButtons() {
+    var valid = UUID_RE.test((el.uuid.value || '').trim());
+    el.run.disabled = busy || !valid || !modelsReady;
+    el.cancel.disabled = !busy;
+    el.load.disabled = busy || !valid;
+  }
+
+  /* -- progress --------------------------------------------------------- */
+
+  function renderStages(stages) {
+    el.stages.textContent = '';
+    (stages || []).forEach(function (stage) {
+      var li = document.createElement('li');
+      li.className = stage.ok ? 'stage-ok' : 'stage-fail';
+      var name = document.createElement('strong');
+      name.textContent = stage.name + ': ';
+      li.appendChild(name);
+      li.appendChild(document.createTextNode(stage.detail || ''));
+      el.stages.appendChild(li);
+    });
+  }
+
+  function renderCost(result) {
+    if (!result) {
+      setKv(el.costKv, [['Status', 'belum ada hasil']]);
+      return;
+    }
+    setKv(el.costKv, [
+      ['Audio', seconds(result.audio_ms)],
+      ['Wicara terdeteksi', seconds(result.speech_ms) + ' (' + result.region_count + ' bagian)'],
+      ['Segmen / kata', result.segment_count + ' / ' + result.word_count],
+      ['Waktu proses', seconds(result.wall_ms)],
+      ['RTF', result.rtf === null ? 'N/A' : String(result.rtf)],
+      ['Puncak memori worker', result.peak_rss_mib + ' MiB'],
+      ['Istilah dinormalisasi', String(result.glossary_replacements)]
+    ]);
+  }
+
+  function renderPass2(result) {
+    if (!result) {
+      setKv(el.pass2Kv, [['Status', 'belum dijalankan']]);
+      return;
+    }
+    var rows = [
+      ['Anggaran', seconds(result.pass2_budget_ms)],
+      ['Terpakai', seconds(result.pass2_selected_ms)],
+      ['Bagian diulang', String(result.pass2_region_count)]
+    ];
+    if (result.pass2_skipped_reason) {
+      rows.push(['Dilewati', result.pass2_skipped_reason]);
+    }
+    if (result.pass2_budget_exhausted) {
+      rows.push(['Anggaran habis', 'ya - sisa bagian memakai hasil pass 1']);
+    }
+    setKv(el.pass2Kv, rows);
+  }
+
+  async function poll() {
+    var response = await get('/asr/status');
+    if (!response.ok) return;
+    var data = response.data || {};
+    busy = Boolean(data.busy);
+    el.pill.textContent = busy
+      ? 'Berjalan' + (data.cancel_requested ? ' (pembatalan diminta)' : '')
+      : 'Idle';
+    if (data.last_result) {
+      renderCost(data.last_result);
+      renderPass2(data.last_result);
+      renderStages(data.last_result.stages);
+    }
+    updateButtons();
+    if (busy) {
+      schedulePoll();
+    } else {
+      stopPolling();
+    }
+  }
+
+  /* Each poll schedules the next one itself, rather than running on a fixed repeating
+     timer. A poll goes through the bridge, and a repeating timer would stack a second
+     call on top of a round-trip that took longer than the interval. This cannot overlap
+     with itself, and it stops as soon as the run finishes. */
+  function schedulePoll() {
+    if (pollTimer !== null) return;
+    pollTimer = window.setTimeout(function () {
+      pollTimer = null;
+      poll();
+    }, POLL_MS);
+  }
+
+  function stopPolling() {
+    if (pollTimer === null) return;
+    window.clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+
+  /* -- reads ------------------------------------------------------------ */
+
+  function renderTranscript(payload) {
+    var transcript = payload.transcript || {};
+    setKv(el.transcriptKv, [
+      ['Revisi', String(transcript.revision) + (transcript.is_active ? ' (aktif)' : '')],
+      ['Status', String(transcript.status)],
+      ['Pass 1', String(transcript.pass1_model_name || '-')],
+      [
+        'Pass 2',
+        String(transcript.pass2_model_name || transcript.pass2_skipped_reason || '-')
+      ],
+      [
+        'Glossary',
+        transcript.glossary_version
+          ? 'v' +
+            transcript.glossary_version +
+            ' - ' +
+            transcript.glossary_replacements +
+            ' koreksi'
+          : 'nonaktif'
+      ],
+      ['Segmen / kata', transcript.segment_count + ' / ' + transcript.word_count]
+    ]);
+
+    el.segments.textContent = '';
+    var segments = payload.segments || [];
+    show(el.transcriptEmpty, segments.length === 0);
+    segments.forEach(function (segment) {
+      var li = document.createElement('li');
+      li.className = 'segment-row' + (segment.asr_pass === 2 ? ' segment-pass2' : '');
+      var time = document.createElement('span');
+      time.className = 'segment-time';
+      time.textContent = stamp(segment.start_ms);
+      var who = document.createElement('span');
+      who.className = 'segment-speaker';
+      /* Phase 4 assigns no speaker. Rendered from the field rather than assumed, so a
+         later phase that does assign one appears here without a change. */
+      who.textContent = segment.speaker_status || 'UNASSIGNED';
+      var text = document.createElement('span');
+      text.className = 'segment-text';
+      text.textContent = segment.text || '';
+      li.appendChild(time);
+      li.appendChild(who);
+      li.appendChild(text);
+      el.segments.appendChild(li);
+    });
+  }
+
+  function renderFlagged(rows) {
+    var body = el.flagged.querySelector('tbody');
+    body.textContent = '';
+    (rows || []).forEach(function (row) {
+      var tr = document.createElement('tr');
+      [
+        String(row.region_seq === null ? '-' : row.region_seq),
+        stamp(row.start_ms),
+        String(row.asr_pass),
+        row.selected_for_pass2 ? 'ya' : 'tidak',
+        (row.reason_codes || []).join(', ')
+      ].forEach(function (value) {
+        var td = document.createElement('td');
+        td.textContent = value;
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+  }
+
+  async function loadTranscript() {
+    fail('');
+    var uuid = (el.uuid.value || '').trim();
+    if (!UUID_RE.test(uuid)) {
+      fail('Recording UUID harus berupa UUID huruf kecil.');
+      return;
+    }
+    var response = await get('/asr/transcript/' + uuid);
+    if (!response.ok) {
+      fail(String((response.data && response.data.detail) || response.error || 'gagal'));
+      show(el.transcriptEmpty, true);
+      el.segments.textContent = '';
+      return;
+    }
+    renderTranscript(response.data || {});
+    var flagged = await get('/asr/flagged/' + uuid);
+    if (flagged.ok) renderFlagged((flagged.data || {}).flagged);
+  }
+
+  /* -- actions ---------------------------------------------------------- */
+
+  async function run() {
+    fail('');
+    var uuid = (el.uuid.value || '').trim();
+    if (!UUID_RE.test(uuid)) {
+      fail('Recording UUID harus berupa UUID huruf kecil.');
+      return;
+    }
+    busy = true;
+    updateButtons();
+    el.pill.textContent = 'Berjalan';
+    schedulePoll();
+
+    var response = await post('/asr/transcribe', { recording_uuid: uuid });
+    busy = false;
+    stopPolling();
+    if (!response.ok) {
+      var detail = (response.data && response.data.detail) || response.error || 'gagal';
+      if (detail && typeof detail === 'object') {
+        renderStages(detail.stages);
+        renderCost(detail);
+        renderPass2(detail);
+        fail(String(detail.error || detail.reason_code || 'transkripsi gagal'));
+      } else {
+        fail(String(detail));
+      }
+      el.pill.textContent = 'Gagal';
+      updateButtons();
+      return;
+    }
+    el.pill.textContent = 'Selesai';
+    renderStages((response.data || {}).stages);
+    renderCost(response.data);
+    renderPass2(response.data);
+    await loadTranscript();
+    updateButtons();
+  }
+
+  async function cancel() {
+    var response = await post('/asr/cancel', null);
+    if (!response.ok) {
+      fail(String((response.data && response.data.detail) || 'tidak ada proses berjalan'));
+      return;
+    }
+    el.pill.textContent = 'Pembatalan diminta';
+  }
+
+  /* -- wiring ----------------------------------------------------------- */
+
+  var running = false;
+  function once(action) {
+    if (running) return;
+    running = true;
+    Promise.resolve()
+      .then(action)
+      .catch(function (error) {
+        fail(String(error && error.message ? error.message : error));
+      })
+      .then(function () {
+        running = false;
+      });
+  }
+
+  if (el.open) {
+    el.open.addEventListener('click', function () {
+      show(el.panel, true);
+      el.panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      once(async function () {
+        await loadModels();
+        await poll();
+      });
+    });
+  }
+
+  el.uuid.addEventListener('input', updateButtons);
+  el.run.addEventListener('click', function () {
+    once(run);
+  });
+  el.cancel.addEventListener('click', function () {
+    once(cancel);
+  });
+  el.load.addEventListener('click', function () {
+    once(loadTranscript);
+  });
+
+  setKv(el.modelKv, [['Status', 'belum dimuat']]);
+  renderCost(null);
+  renderPass2(null);
+  updateButtons();
+})();

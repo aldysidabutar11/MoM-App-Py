@@ -43,7 +43,19 @@ PHASE_3_TABLES = {
     "voiceprints",
 }
 
-CURRENT_TABLES = PHASE_1_TABLES | PHASE_3_TABLES
+# Phase 4 adds the transcription evidence chain. No speaker column anywhere in it:
+# diarization is Phase 5 and voice identification is Phase 6, and each owns its own
+# schema.
+PHASE_4_TABLES = {
+    "audio_working_copies",
+    "vad_runs",
+    "speech_regions",
+    "transcripts",
+    "transcript_segments",
+    "transcript_words",
+}
+
+CURRENT_TABLES = PHASE_1_TABLES | PHASE_3_TABLES | PHASE_4_TABLES
 
 # Tables that belong to Phase 4 or later and must NOT exist yet. `consents` stays
 # on this list deliberately: Phase 3 stores consent as an append-only
@@ -51,7 +63,6 @@ CURRENT_TABLES = PHASE_1_TABLES | PHASE_3_TABLES
 # reintroduce exactly the design 0003 rejected.
 FUTURE_TABLES = {
     "consents",
-    "asr_words",
     "diarization_turns",
     "utterances",
     "speaker_assignments",

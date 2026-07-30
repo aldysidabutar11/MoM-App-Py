@@ -148,11 +148,14 @@ PIPELINE_STAGES: Final[tuple[StageSpec, ...]] = (
     StageSpec("normalize_audio", "Normalisation and 16 kHz working copy", False, "4"),
     StageSpec("vad", "Voice activity detection", False, "4"),
     StageSpec("asr_pass1", "First-pass transcription", True, "4"),
-    # Diarization runs BEFORE selective re-transcription: two of the strongest
-    # selection signals for pass 2 (speaker-change boundaries and overlap
-    # regions) only exist once diarization has run. See docs/architecture.md.
+    # Diarization is declared BEFORE selective re-transcription because two of the
+    # strongest selection signals for pass 2 -- speaker-change boundaries and overlap
+    # regions -- only exist once it has run. Phase 4 ships pass 2 without them, using
+    # the decoder's own confidence signals; when Phase 5 adds diarization it slots in
+    # here and enriches the existing rule table rather than replacing it.
     StageSpec("diarize", "Speaker diarization", True, "5"),
-    StageSpec("asr_pass2_selective", "Selective high-accuracy retranscription", True, "5"),
+    StageSpec("asr_pass2_selective", "Selective high-accuracy retranscription", True, "4"),
+    StageSpec("normalize_terminology", "Technical terminology normalisation", False, "4"),
     StageSpec("voice_id", "Voice identification", True, "6"),
     StageSpec("reconcile_transcript", "Transcript reconciliation", False, "7"),
     StageSpec("mom_extract", "MoM extraction", True, "8"),

@@ -154,15 +154,29 @@ def test_malformed_model_registry_is_a_failure(config: AppConfig, tmp_path: Path
 
 
 def test_missing_ai_dependencies_are_only_warnings(report: DoctorReport) -> None:
+    """A future-phase dependency is always a WARN, never a FAIL.
+
+    The membership list changes as phases land, so this asserts the *classification*
+    rather than a fixed set. `faster_whisper`, `ctranslate2` and `onnxruntime` graduated in
+    Phase 4 (ADR-0014) and are installed; `torch` and `openvino` belong to later phases and
+    are still expected to be missing.
+    """
     result = _by_key(report)["optional_dependencies"]
-    assert result.status is Status.WARN
+    assert result.status is Status.WARN, (
+        "a future-phase dependency must never make doctor FAIL"
+    )
     missing = {item["module"] for item in result.data["missing"]}
-    # None of these is installed yet, and none may cause a failure.
-    assert {"faster_whisper", "ctranslate2", "torch", "openvino", "onnxruntime"} <= missing
-    # sounddevice graduated to a real Phase 2 dependency with its own check, so it
-    # must no longer appear as a missing "future" dependency.
-    assert "sounddevice" not in missing
-    assert "sounddevice" not in {item["module"] for item in result.data["missing"]}
+
+    # Phase 5+ stacks: still absent, and still only a warning.
+    assert {"torch", "openvino"} <= missing, missing
+
+    # Graduated dependencies must no longer be reported as missing "future" ones -- the
+    # same rule that removed `sounddevice` from this list in Phase 2.
+    for graduated in ("sounddevice", "faster_whisper", "ctranslate2", "onnxruntime"):
+        assert graduated not in missing, (
+            f"{graduated} is an installed dependency of the current phase and must have "
+            "its own check rather than appearing as a missing future one"
+        )
 
 
 def test_audio_backend_is_a_phase_2_requirement(report: DoctorReport) -> None:
@@ -367,3 +381,89 @@ def test_doctor_does_not_import_heavy_dependencies() -> None:
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     )
     assert result.stdout.strip() == "", f"doctor pulled in {result.stdout.strip()}"
+
+
+# ------------------------------------------------- Phase 4 transcription models
+
+
+def test_a_missing_transcription_model_is_a_warning_not_a_failure(
+    report: DoctorReport,
+) -> None:
+    """Provisioning is a deliberate one-off command that needs network access.
+
+    An operator on a fresh machine has not done anything wrong, and `doctor` must work on
+    a machine where no model has ever been downloaded. It becomes a FAIL only when
+    accuracy acceptance is granted and `CURRENT_PHASE` advances to 4.
+    """
+    result = _by_key(report)["asr_models"]
+    assert result.status is Status.WARN
+    assert result.data["pass1_ready"] is False
+    assert result.data["index_readable"] is True
+    assert "asr provision" in result.detail
+    assert "MODEL_UNAVAILABLE" in result.detail
+
+
+def test_the_transcription_check_names_the_provisioning_command(
+    report: DoctorReport,
+) -> None:
+    """A diagnostic that says what is wrong without saying what to do is half a message."""
+    assert "python -m mom_igd asr provision all" in _by_key(report)["asr_models"].detail
+
+
+def test_the_transcription_check_claims_nothing_about_accuracy(
+    report: DoctorReport,
+) -> None:
+    """Matched on word boundaries: a substring search for "wer" finds "answer"."""
+    import re
+
+    detail = _by_key(report)["asr_models"].detail.lower()
+    for forbidden in ("accurate", "wer", "quality", "reliable"):
+        assert not re.search(rf"\b{forbidden}\b", detail), forbidden
+
+
+def test_the_transcription_check_reads_the_readiness_registry_not_a_directory_scan(
+    config: AppConfig, paths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model that hash-verifies but failed its load probe must not read as ready.
+
+    Asserted by handing it a model directory with no readiness record at all: a scan would
+    find the directory, and the registry -- correctly -- finds nothing.
+    """
+    store = paths.models_dir / "faster-whisper-small"
+    store.mkdir(parents=True, exist_ok=True)
+    (store / "model.bin").write_bytes(b"not really a model")
+    result = _by_key(run_doctor(config=config))["asr_models"]
+    assert result.status is Status.WARN
+    assert result.data["pass1_ready"] is False
+    assert result.data["ready_models"] == []
+
+
+def test_a_corrupt_readiness_registry_fails_closed_with_a_warning(
+    config: AppConfig, paths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths.models_dir.mkdir(parents=True, exist_ok=True)
+    (paths.models_dir / "installed.json").write_text("{ not json", encoding="utf-8")
+    result = _by_key(run_doctor(config=config))["asr_models"]
+    assert result.status is Status.WARN
+    assert result.data["index_readable"] is False
+    assert result.data["pass1_ready"] is False
+    assert "fail-closed" in result.detail
+
+
+def test_doctor_still_imports_nothing_heavy_after_the_transcription_check() -> None:
+    """The check must not drag faster-whisper, onnxruntime or numpy into `doctor`."""
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys\n"
+        "from mom_igd.diagnostics import doctor\n"
+        "heavy = {'fastapi', 'uvicorn', 'webview', 'httpx', 'faster_whisper',\n"
+        "         'ctranslate2', 'onnxruntime', 'numpy', 'torch', 'av'}\n"
+        "print(sorted({m.split('.')[0] for m in sys.modules} & heavy))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, timeout=120
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[]", result.stdout

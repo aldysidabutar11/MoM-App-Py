@@ -4,16 +4,20 @@ A fully offline desktop application for producing Minutes of Meeting from
 in-person meetings held in one physical room. Native Windows 11, CPU-first, no
 cloud API, no CUDA, no Docker in production.
 
-> **Current phase: 3 — participants, biometric consent, voice enrollment.**
-> The Phase 1 foundation (configuration, runtime paths, SQLite with migrations, a
-> workflow state machine, a loopback-only API, diagnostics, a static shell) is in
-> place, and this build **records audio**: device discovery, preflight and
-> calibration, chunked PCM16 recording with checksums and a manifest, crash
-> recovery, pause/resume, and a recording UI.
+> **Phase 4 — offline ASR — is implemented.** This build records audio *and*
+> transcribes it: a 16 kHz mono working copy derived from the master, voice activity
+> detection, two-pass transcription with a budgeted second pass, technical terminology
+> normalisation, and transcript revisions with word timings — all on this machine, with
+> no network access and no model download outside one deliberate `asr provision` command.
 >
-> There is still deliberately **no ASR, no diarization, no speaker
-> identification, no LLM, no MoM generation and no export**, and audio is **not
-> encrypted at rest** yet. See [Phase boundaries](#phase-boundaries).
+> The build still reports `phase: 3` on purpose. Advancing it changes what `doctor` calls
+> a FAIL, and **transcription accuracy has not been measured**: no reference transcript
+> exists on this machine, and accuracy is never derived from the model's own output.
+>
+> There is still deliberately **no diarization, no speaker identification, no LLM, no MoM
+> generation and no export** — every transcript segment reports `UNASSIGNED` — and audio
+> is **not encrypted at rest** yet. See [Phase boundaries](#phase-boundaries) and
+> [docs/phase-4-offline-asr.md](docs/phase-4-offline-asr.md).
 
 ---
 
@@ -76,20 +80,33 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 ```
 
-Both lock files pin exact versions. `requirements.txt` is the runtime closure
-(5 direct dependencies: `fastapi`, `uvicorn`, `psutil`, `pywebview`,
-`sounddevice`); `requirements-dev.txt` adds `pytest`, `pytest-cov`,
-`pytest-timeout` and `httpx`. Instructions for refreshing them are in the header
-of each file. A hash-pinned offline wheelhouse is deferred to Phase 11.
+Both lock files pin exact versions. `requirements.txt` is the runtime closure with eight
+direct dependencies: `fastapi`, `uvicorn`, `psutil`, `pywebview`, `sounddevice`,
+`cryptography` (Phase 3) and `faster-whisper` + `av` (Phase 4). `requirements-dev.txt`
+adds `pytest`, `pytest-cov`, `pytest-timeout`, `httpx` and `huggingface-hub` — the last of
+those is used **only** by `asr provision` and by nothing on a runtime path. Instructions
+for refreshing them are in the header of each file. A hash-pinned offline wheelhouse is
+deferred to Phase 11.
 
 `sounddevice` arrived with Phase 2 and bundles PortAudio V19.7 — a self-contained
 DLL in the wheel, no system-wide install, no driver, no service. It is imported
 **lazily**, so every command still works on a machine without it.
 
-**Nothing else may be installed.** No cloud SDK, no AI runtime, and no NumPy,
-`soundfile` or `librosa` — the capture path uses raw bytes and the standard
-library on purpose ([ADR-0006](docs/adr/0006-capture-format-pcm16-device-native.md)).
-`tests/test_offline_policy.py` fails the build if one appears.
+`faster-whisper` arrived with Phase 4 and pulls in `ctranslate2`, `onnxruntime`, `numpy`
+and `tokenizers`. Two consequences worth knowing: the Silero VAD model ships **inside** the
+faster-whisper wheel (`assets/silero_vad_v6.onnx`), so voice activity detection needs no
+download at all; and `onnxruntime`'s build advertises an `AzureExecutionProvider`, which is
+**not** evidence of a network call — what the code checks is that the live session reports
+`CPUExecutionProvider`, and it refuses to run on anything else.
+
+**NumPy is still banned from the capture path.** It is a Phase 4 dependency of the ASR
+stack, and `mom_igd/audio/` must keep using raw bytes and the standard library
+([ADR-0006](docs/adr/0006-capture-format-pcm16-device-native.md)); a test asserts by AST
+that nothing under `mom_igd/audio/` imports it.
+
+**Nothing else may be installed.** No cloud SDK, no `torch`, no `onnxruntime-gpu`, no
+hosted-inference client. `tests/test_offline_policy.py` fails the build if one appears, and
+`mom_igd/offline_policy.py` holds the denylist.
 
 ---
 
@@ -128,6 +145,18 @@ even when every future-phase dependency is missing.
 .\.venv\Scripts\python.exe -m mom_igd audio recover           # salvage interrupted recordings
 .\.venv\Scripts\python.exe -m mom_igd audio smoke             # fake backend, no hardware
 .\.venv\Scripts\python.exe -m mom_igd audio bench --minutes 60 --speed 120
+
+# offline transcription (Phase 4)
+.\.venv\Scripts\python.exe -m mom_igd asr models              # catalogue + what is ready
+.\.venv\Scripts\python.exe -m mom_igd asr provision all       # DOWNLOADS; run once
+.\.venv\Scripts\python.exe -m mom_igd asr verify              # re-hash every byte from disk
+.\.venv\Scripts\python.exe -m mom_igd asr smoke               # real model, generated audio
+.\.venv\Scripts\python.exe -m mom_igd asr smoke --audio FILE.wav   # your own 16 kHz mono WAV
+.\.venv\Scripts\python.exe -m mom_igd asr bench --threads 4,8,12 --seconds 60
+.\.venv\Scripts\python.exe -m mom_igd asr transcribe UUID     # the whole pipeline
+.\.venv\Scripts\python.exe -m mom_igd asr transcript UUID     # show a stored revision
+.\.venv\Scripts\python.exe -m mom_igd asr transcript UUID --flagged   # why pass 2 ran
+.\.venv\Scripts\python.exe -m mom_igd asr revisions UUID
 
 # backend in the foreground, loopback only
 .\.venv\Scripts\python.exe -m mom_igd serve
@@ -245,10 +274,21 @@ D:\MoM-IGD-Data\            <- default; override with MOM_IGD_DATA_DIR
 │                 quarantine\           evidence, never deleted
 ├─ exports\     generated MoM documents            (Phase 10)
 ├─ logs\
-├─ models\      model binaries                     (Phase 4A onwards)
+├─ models\      model binaries + installed.json (readiness registry)
+│                 <model>\model.manifest.json  every file, size and SHA-256
+│                 .quarantine\    a model that failed its load probe, kept
+├─ voiceprints\ AES-256-GCM envelopes, named by UUID
+├─ keys\        DPAPI-protected master key
+├─ working\     <recording-uuid>-16k-mono.wav      derived, reproducible cache
 ├─ temp\        recording.lock (single-recording guard)
 └─ backups\
 ```
+
+`working\` holds the 16 kHz mono copies the models read. It sits **outside**
+`recordings\` on purpose: a working copy is a reproducible derivation, so a backup of the
+evidence carries no duplicate of it, and reclaiming disk never means walking into
+directories that hold the only copy of a meeting. Deleting one is safe — the next run
+rebuilds it from the master and re-verifies the digest.
 
 A visible `.wav` is by definition complete: audio is written to
 `chunk_NNNNNN.pcm.part`, `fsync`ed, hashed from disk and atomically renamed. A
@@ -419,12 +459,30 @@ gates · a narrow speaker-embedding provider boundary · 24 token-protected API 
 Phase 3 **creates** voice templates. It does not compare them — there is no speaker
 identification here.
 
-**Still not implemented, by design:** VAD · ASR · diarization · voice
-identification · speaker labelling · LLM integration · MoM generation ·
-PDF/Word/JSON/Markdown export · action tracking · encryption of meeting audio and
-transcripts · model download · OpenVINO installation or benchmarking · retention
-enforcement · firewall configuration · resampling and the 16 kHz ASR working copy
-(Phase 4) · FLAC.
+**Phase 4 — implemented:** the only command in the application that downloads anything
+(`asr provision`), with staging → size and SHA-256 verification → atomic promotion →
+re-verification → a load-and-decode probe before anything is recorded ready · a
+three-layer model architecture (approved catalogue → installed registry → runtime
+resolver) so a model that hash-verifies but fails its probe never resolves · a two-link
+hash chain over the manifest and its digest · 16 kHz mono working-copy normalisation that
+never touches the master and records every gap it fills · voice activity detection with
+the Silero model **bundled in the wheel**, never downloaded · two-pass transcription
+(faster-whisper / CTranslate2, CPU INT8) with deterministic budgeted pass-2 selection and
+named reason codes · supersede-never-overwrite merging · technical terminology
+normalisation that keeps the model's original wording · transcript **revisions** with at
+most one active per recording, enforced by the schema · checkpointing at every stage
+boundary · one heavy model at a time in its own short-lived worker process · migration
+0005 · CLI, API and UI panel · offline smoke and a real-device benchmark.
+
+Phase 4 **produces text**. It does not say who spoke — every segment reports
+`UNASSIGNED` — and its **accuracy has not been measured**: no reference transcript exists
+on this machine, and accuracy is never derived from the model's own output. See
+[docs/phase-4-offline-asr.md](docs/phase-4-offline-asr.md).
+
+**Still not implemented, by design:** diarization · voice identification · speaker
+labelling · LLM integration · MoM generation · PDF/Word/JSON/Markdown export · action
+tracking · encryption of meeting audio and transcripts · OpenVINO installation or
+benchmarking · retention enforcement · firewall configuration · FLAC · transcript search.
 
 **What roster size does and does not mean.** A meeting's roster decides who the
 *known speaker candidates* are. It never decides what is recorded: capture always
@@ -447,10 +505,15 @@ If the configured ceiling is later lowered below a meeting's stored capacity, th
 meeting is **grandfathered**: the stored value is kept, it may be lowered but not
 raised, nothing is clamped, and no participant is ever removed.
 
-**No AI provider or model has been selected.** ASR, diarization,
-speaker-embedding and LLM choices are deferred to a real-device benchmark in
-Phase 4A — see
+**The ASR provider is selected; the rest are not.** Phase 4A benchmarked
+faster-whisper / CTranslate2 on CPU INT8 on the target device and
+[ADR-0014](docs/adr/0014-asr-provider-faster-whisper-cpu-int8.md) records the decision
+with its measurements. Diarization, speaker-embedding and LLM choices remain deferred by
 [ADR-0005](docs/adr/0005-ai-provider-selection-deferred-to-phase-4a.md).
+
+**ADR-0014 does not license an accuracy claim**, and says so: it is a throughput and
+memory decision. Indonesian word error rate is `N/A — PENDING` until a reference
+transcript exists.
 
 ### Phase 2 production acceptance is not granted yet
 

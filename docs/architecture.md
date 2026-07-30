@@ -3,11 +3,15 @@
 Fully offline Minutes of Meeting application for in-person meetings, running
 natively on Windows 11 on a single laptop.
 
-* **Current phase: 3 — participants, biometric consent, voice enrollment.**
+* **Phase 4 — offline ASR — is implemented and tested.** The build still reports
+  `phase: 3` deliberately: accuracy acceptance is **PENDING** for want of a reference
+  transcript, and advancing the marker would change what `doctor` calls a FAIL.
 * Decisions already taken: [`adr/`](adr/)
 * Evidence behind those decisions: [`phase-0-summary.md`](phase-0-summary.md)
 * Capture engine detail: [`phase-2-audio-capture.md`](phase-2-audio-capture.md)
 * Enrollment detail: [`phase-3-participants-enrollment.md`](phase-3-participants-enrollment.md)
+* Transcription detail: [`phase-4-offline-asr.md`](phase-4-offline-asr.md)
+* Measured numbers: [`benchmarks.md`](benchmarks.md)
 
 ---
 
@@ -128,7 +132,8 @@ config schema version · `offline = false` · an unknown key.
 Every runtime location derives from one validated data root. Default
 `D:\MoM-IGD-Data`, overridable through `MOM_IGD_DATA_DIR` or configuration —
 never hardcoded as the only valid location. Subdirectories: `db`, `recordings`,
-`exports`, `logs`, `models`, `temp`, `backups`.
+`exports`, `logs`, `models`, `temp`, `backups`, and -- added by later phases --
+`voiceprints`, `keys` (Phase 3) and `working` (Phase 4).
 
 Rejected: relative paths, a bare filesystem anchor (`D:\`), the repository
 itself, anything inside the repository, and any parent that would contain the
@@ -456,19 +461,30 @@ capture engine imports nothing from a future phase, and a test asserts it.
 Recorded here so the foundation is built to fit, and so nothing is scaffolded
 prematurely.
 
-**Audio normalisation (Phase 4).** The 16 kHz mono working copy for ASR is derived
-from the Phase 2 master, in the `normalize_audio` stage, where CPU is plentiful and
-nothing is time-critical. Capture never resamples
-([ADR-0006](adr/0006-capture-format-pcm16-device-native.md)).
+**Audio normalisation and ASR (Phase 4) — now implemented.** See
+[`phase-4-offline-asr.md`](phase-4-offline-asr.md) and
+[ADR-0016](adr/0016-transcription-pipeline-shape.md). The design above was largely
+followed; four things turned out differently once it was measured, and they are worth
+knowing before extending it:
 
-**ASR (Phase 4, provider chosen in 4A).** Pass 1 with a small multilingual model,
-VAD-gated, word timestamps, an `initial_prompt` carrying the participant names
-and an English technical glossary. Segments are flagged for pass 2 on
-`avg_logprob`, `no_speech_prob`, compression ratio, low word probability,
-high-value content (numbers, dates, names), proximity to a speaker boundary, and
-overlap. Pass 2 re-transcribes only flagged segments with ±1.5 s context padding
-and replaces pass-1 text only on a materially better score. Pass 2 is capped
-(default 25 % of audio) and any truncation of coverage is logged explicitly.
+* **Regions are decoded in batched 30-second windows, not one per region.** Whisper pads
+  every window to 30 s, so per-region decoding measured RTF 2.8 against a target of 1.0;
+  batching measured 0.31.
+* **Pass 2 supersedes rather than replacing on a better score.** Comparing scores across
+  two different models is not meaningful, and keeping both rows is what makes "pass 2
+  improved this region" checkable at all. Whether it *did* improve anything is reported
+  (`text_changed_regions`), not assumed.
+* **Speaker-boundary and overlap signals are absent**, because they do not exist until
+  diarization runs. The rule table takes them as additional reason codes when Phase 5
+  lands; `diarize` is declared before `asr_pass2_selective` for exactly that reason.
+* **The initial prompt carries the technical glossary, not participant names.** A name in
+  the prompt can be echoed into the transcript as a hallucinated attribution, which is the
+  one mistake a minute must not make. Names arrive with voice identification in Phase 6,
+  where there is evidence behind them.
+
+Capture still never resamples
+([ADR-0006](adr/0006-capture-format-pcm16-device-native.md)); the working copy is derived
+in `normalize_audio`, where CPU is plentiful and nothing is time-critical.
 
 **Diarization and Voice-ID (Phases 5–6).** Matching happens at **cluster** level,
 not segment level, so each decision has far more audio behind it, with injective
@@ -502,10 +518,10 @@ firewall hardening, backup/restore and retention enforcement all land here.
 |---|---|---|
 | 0 ✅ | Audit, feasibility, architecture | Environment matrix; hardware implications; risk list |
 | 1 ✅ | Application foundation | doctor 0 FAIL · WAL + FK verified · migrations transactional & idempotent · loopback + token proven · smoke green · suite green |
-| **2 ◀** | **Offline audio capture** | Byte-exact chunks against a deterministic source · no unrecorded frame loss · recovery survives kill/truncation/corruption and is idempotent · manifest tamper-evident · no silent device fallback. **Production acceptance additionally requires a real USB conference microphone**: 3 × 60 min on hardware, CPU < 5 %, RSS < 300 MB |
-| 3 | Participants & voice enrollment | 9 voiceprints encrypted at rest; consent recorded; intra/inter-speaker separation measured |
-| 4A | **Benchmark gate** | Real xRT, peak RSS, WER/DER for every candidate on the real device |
-| 4 | Offline ASR | WER within target; pass 2 measurably improves flagged segments; budget cap honoured |
+| 2 ✅ | Offline audio capture | Byte-exact chunks against a deterministic source · no unrecorded frame loss · recovery survives kill/truncation/corruption and is idempotent · manifest tamper-evident · no silent device fallback. **Production acceptance additionally requires a real USB conference microphone**: 3 × 60 min on hardware, CPU < 5 %, RSS < 300 MB |
+| 3 ✅ | Participants & voice enrollment | Voiceprints encrypted at rest; consent recorded per participant; roster capacity per meeting. Intra/inter-speaker separation still needs a real embedding model |
+| 4A ✅ | **Benchmark gate** | Real RTF and peak RSS measured over 30 runs on the real device ([ADR-0014](adr/0014-asr-provider-faster-whisper-cpu-int8.md)). WER/DER **not** measured: no reference transcript exists |
+| **4 ◀** | **Offline ASR** | Pipeline complete: RTF 0.31 end to end, peak worker 1 910 MiB, zero measured egress, master audio unmodified, budget cap honoured. **WER and "pass 2 measurably improves flagged segments" remain PENDING** — both need a consented reference corpus |
 | 5 | Diarization | DER/JER on 9 speakers with the production microphone |
 | 6 | Voice identification | Calibrated thresholds; **zero false-confident assignments** |
 | 7 | Transcript reconciliation | Byte-identical output for identical input (fully deterministic) |

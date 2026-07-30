@@ -18,8 +18,9 @@
 #
 # Hash-pinned offline wheelhouse creation is deferred to Phase 11.
 # ---------------------------------------------------------------------------
-# DIRECT (6): fastapi, uvicorn, psutil, pywebview, sounddevice, cryptography
-# Everything else below is a transitive dependency of those six.
+# DIRECT (8): fastapi, uvicorn, psutil, pywebview, sounddevice, cryptography,
+#            faster-whisper, av
+# Everything else below is a transitive dependency of those eight.
 #
 # `sounddevice` arrived with Phase 2 (offline audio capture). It is the only
 # audio dependency: it wraps PortAudio/WASAPI for input, and `RawInputStream`
@@ -38,17 +39,44 @@
 #     distribution.
 # Base64 is NOT an alternative and must never be used as one (ADR-0010).
 #
+# `faster-whisper` and `av` arrived with Phase 4 (offline ASR), chosen by the
+# Phase 4A benchmark (ADR-0014). Notes:
+#   - `ctranslate2` is the CPU inference engine; INT8 is what the benchmark
+#     selected, and the wheel is prebuilt so no compiler is involved;
+#   - `onnxruntime` is required by faster-whisper for the Silero VAD model, which
+#     ships INSIDE the faster-whisper wheel (`assets/silero_vad_v6.onnx`). The VAD
+#     artefact is therefore local by construction and never downloaded. That build
+#     also exposes an `AzureExecutionProvider`; the provider boundary pins
+#     `CPUExecutionProvider` explicitly and a test asserts it;
+#   - `av` gives FFmpeg decode + high-quality resampling for the 16 kHz mono
+#     working copy. It is reused from this stack rather than adding a second audio
+#     toolchain (soxr/librosa/soundfile all stay forbidden);
+#   - `numpy` is a hard requirement of ctranslate2. The Phase 2 capture path still
+#     does not use it -- `RawInputStream` yields bytes and the quality meter uses
+#     `array.array` -- and that must not change;
+#   - `huggingface-hub` is present because faster-whisper declares it. It is used
+#     ONLY by the explicit `asr provision` command. A test asserts no runtime code
+#     path imports it, and no model is ever fetched implicitly.
+#
+# MODEL BINARIES ARE NOT DEPENDENCIES. They live under <data_root>/models,
+# are provisioned by an explicit command, are hash-verified before promotion, and
+# are never committed. A missing model fails closed as MODEL_UNAVAILABLE.
+#
 # Deliberately ABSENT and forbidden:
 #   - any cloud SDK (google-genai, openai, anthropic, boto3, azure-*, ...)
-#   - any AI runtime (faster-whisper, ctranslate2, torch, onnxruntime, openvino,
-#     pyannote.audio, speechbrain, llama-cpp-python, transformers)
-#   - numpy, soundfile, librosa, pyaudio, av, soxr, webrtcvad, silero-vad
+#   - torch, pyannote.audio, speechbrain (Phase 5); llama-cpp-python,
+#     transformers, sentence-transformers (Phase 8)
+#   - openvino, optimum-intel, onnxruntime-openvino/-gpu/-directml: RULED OUT on
+#     measured evidence, not merely deferred (ADR-0014)
+#   - soundfile, librosa, pyaudio, soxr, webrtcvad, silero-vad
 #   - Redis, Kafka, MinIO, any vector database
 # ===========================================================================
 
 # --- direct ---------------------------------------------------------------
+av==15.1.0
 cryptography==49.0.0
 fastapi==0.140.7
+faster-whisper==1.2.1
 psutil==7.2.2
 pywebview==5.4
 sounddevice==0.5.5
@@ -81,3 +109,26 @@ clr-loader==0.3.1
 proxy-tools==0.1.0
 pycparser==3.0
 pythonnet==3.1.0
+
+# --- transitive: faster-whisper -> ctranslate2 / tokenizers / onnxruntime ---
+# ctranslate2 bundles the CPU kernels (oneDNN/oneMKL) inside its wheel, so there
+# is no separate native runtime to provision. onnxruntime is pulled in for the
+# bundled Silero VAD asset only.
+coloredlogs==15.0.1
+ctranslate2==4.8.1
+filelock==3.32.2
+flatbuffers==25.12.19
+fsspec==2026.7.0
+hf-xet==1.5.2
+huggingface-hub==1.25.1
+humanfriendly==10.0
+mpmath==1.3.0
+numpy==2.2.6
+onnxruntime==1.23.2
+protobuf==7.35.1
+pyreadline3==3.5.6
+pyyaml==6.0.3
+setuptools==83.0.0
+sympy==1.14.0
+tokenizers==0.23.1
+tqdm==4.70.0

@@ -46,7 +46,17 @@ PHASE_3_TABLES = {
     "voiceprints",
 }
 
-HEAD_TABLES = PHASE_1_AND_2_TABLES | PHASE_3_TABLES
+# Phase 4 adds the transcription evidence chain (migration 0005).
+PHASE_4_TABLES = {
+    "audio_working_copies",
+    "vad_runs",
+    "speech_regions",
+    "transcripts",
+    "transcript_segments",
+    "transcript_words",
+}
+
+HEAD_TABLES = PHASE_1_AND_2_TABLES | PHASE_3_TABLES | PHASE_4_TABLES
 
 MIGRATION_0001_SHA256 = "f1426fa94b8ae90e4c0b646c0f132ac4a483525165675c947649cad124e89796"
 MIGRATION_0002_SHA256 = "8d42086530a4560d28ca5cfd2707b5402c1b2872fea02a49ce3768106f570ded"
@@ -83,12 +93,20 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
 # ---------------------------------------------------------------- discovery
 
 
-def test_four_migrations_ship(migrations) -> None:
-    assert [m.version for m in migrations] == [1, 2, 3, 4]
+def test_the_migrations_ship_in_order_up_to_the_head(migrations) -> None:
+    """Every version present, contiguous, and agreeing with the declared head.
+
+    Asserted as a property rather than a fixed count: a later phase adds a migration,
+    and the thing that must stay true is that the sequence has no gap and that
+    `SCHEMA_VERSION_HEAD` names the last one.
+    """
+    versions = [m.version for m in migrations]
+    assert versions == list(range(1, len(versions) + 1))
+    assert versions[-1] == SCHEMA_VERSION_HEAD
     assert migrations[1].name == "audio_capture"
     assert migrations[2].name == "participants_consent_voiceprints"
     assert migrations[3].name == "meeting_participant_capacity"
-    assert SCHEMA_VERSION_HEAD == 4
+    assert migrations[4].name == "offline_asr"
 
 
 def test_migration_0001_is_immutable(migrations) -> None:
@@ -116,7 +134,7 @@ def test_migration_0003_is_immutable(migrations) -> None:
 
 def test_fresh_database_reaches_head_directly(db: sqlite3.Connection) -> None:
     applied = apply_migrations(db)
-    assert [m.version for m in applied] == [1, 2, 3, 4]
+    assert [m.version for m in applied] == list(range(1, SCHEMA_VERSION_HEAD + 1))
     assert current_schema_version(db) == SCHEMA_VERSION_HEAD
 
 
@@ -360,7 +378,7 @@ def upgraded(db: sqlite3.Connection, migrations):
     )
     applied = apply_migrations(db)
     # A schema-1 database catches up to head, which is now 4.
-    assert [m.version for m in applied] == [2, 3, 4]
+    assert [m.version for m in applied] == list(range(2, SCHEMA_VERSION_HEAD + 1))
     return db
 
 
@@ -446,13 +464,15 @@ def test_a_failing_later_migration_does_not_advance_the_version(
     directory.mkdir()
     for migration in migrations:
         (directory / migration.path.name).write_bytes(migration.path.read_bytes())
-    # Numbered past the real head, so it does not collide with a shipped migration.
-    (directory / "0005_broken.sql").write_text(
+    # Numbered past the real head, computed rather than hard-coded: a new phase adds a
+    # real migration, and this deliberately broken one must stay beyond it.
+    broken = f"{SCHEMA_VERSION_HEAD + 1:04d}_broken"
+    (directory / f"{broken}.sql").write_text(
         "CREATE TABLE should_not_exist (x INTEGER);\nSELECT this_column_is_missing;\n",
         encoding="utf-8",
     )
 
-    with pytest.raises(MigrationError, match="0005_broken"):
+    with pytest.raises(MigrationError, match=broken):
         apply_migrations(db, discover_migrations(directory))
 
     assert current_schema_version(db) == SCHEMA_VERSION_HEAD

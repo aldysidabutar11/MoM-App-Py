@@ -98,21 +98,17 @@ def test_deferred_dependencies_are_classified_separately_from_cloud() -> None:
     )
     assert findings["cloud"] == []
     assert set(findings["deferred"]) == {
-        "faster-whisper",
         "torch",
         "openvino",
-        "onnxruntime",
         "pyannote-audio",
-    }
+    }, (
+        "faster-whisper and onnxruntime graduated in Phase 4; torch, openvino and "
+        "pyannote-audio are still deferred"
+    )
 
 
 def test_sounddevice_became_an_allowed_dependency_in_phase_2() -> None:
-    """It is the PortAudio/WASAPI binding the capture engine is built on.
-
-    Every other audio library stays deferred: Phase 2 writes WAV with the
-    standard-library ``wave`` module and needs no codec, resampler, DSP library
-    or NumPy.
-    """
+    """It is the PortAudio/WASAPI binding the capture engine is built on."""
     assert "sounddevice" not in DEFERRED_HEAVY_DISTRIBUTIONS
     assert "sounddevice" not in CLOUD_SDK_DENYLIST
     assert audit_distribution_names(["sounddevice"]) == {
@@ -120,19 +116,54 @@ def test_sounddevice_became_an_allowed_dependency_in_phase_2() -> None:
         "deferred": [],
         "network_capable": [],
     }
+
+
+def test_the_phase_4_asr_stack_graduated_out_of_the_deferred_set() -> None:
+    """Each of these is a real Phase 4 runtime dependency, not creep.
+
+    `av` and `numpy` moved for a concrete reason: the 16 kHz working copy is decoded
+    and resampled with the FFmpeg bindings the faster-whisper stack already ships,
+    rather than adding a second audio toolchain, and numpy is a hard requirement of
+    ctranslate2. The Phase 2 capture path still uses neither -- it reads bytes from
+    `RawInputStream` and meters with `array.array` -- and that must not change.
+    """
+    graduated = ["faster-whisper", "ctranslate2", "onnxruntime", "av", "numpy", "tokenizers"]
+    for name in graduated:
+        assert name not in DEFERRED_HEAVY_DISTRIBUTIONS, name
+        assert name not in CLOUD_SDK_DENYLIST, name
+    assert audit_distribution_names(graduated) == {
+        "cloud": [],
+        "deferred": [],
+        "network_capable": [],
+    }
+
+
+def test_the_audio_libraries_phase_4_does_not_need_stay_deferred() -> None:
+    """`av` covers decode and resample; the Silero VAD asset ships in the wheel."""
     still_deferred = audit_distribution_names(
-        ["soundfile", "pyaudio", "librosa", "numpy", "av", "webrtcvad", "silero-vad", "soxr"]
+        ["soundfile", "pyaudio", "librosa", "webrtcvad", "silero-vad", "soxr"]
     )["deferred"]
     assert sorted(still_deferred) == [
-        "av",
         "librosa",
-        "numpy",
         "pyaudio",
         "silero-vad",
         "soundfile",
         "soxr",
         "webrtcvad",
     ]
+
+
+def test_openvino_stays_deferred_because_it_was_ruled_out_on_evidence() -> None:
+    r"""Not "not yet looked at" -- probed on this machine and rejected.
+
+    The Khronos `OpenCL\Vendors` registry key is absent, so the ICD loader has no
+    vendor to dispatch to; the Intel compute runtime DLLs are not on PATH; and the
+    installed ctranslate2 has no CUDA build. Adopting OpenVINO would mean installing
+    the toolkit for a benefit nothing has measured. See ADR-0014.
+    """
+    for name in ("openvino", "openvino-genai", "optimum-intel", "onnxruntime-openvino",
+                 "onnxruntime-gpu", "onnxruntime-directml"):
+        assert name in DEFERRED_HEAVY_DISTRIBUTIONS, name
 
 
 def test_prefix_denylist_catches_whole_families() -> None:

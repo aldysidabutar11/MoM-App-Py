@@ -20,7 +20,7 @@
 # A `local.toml` that omits this key, or omits [participants] entirely, keeps
 # working: every key in that section has a default, so the bump resets nothing an
 # operator has already configured.
-config_schema_version = 3
+config_schema_version = 4
 
 # Runtime mode. Only "offline" is supported: there is no cloud or hybrid mode
 # and no cloud fallback (ADR-0002).
@@ -203,9 +203,63 @@ production_requires_usb = true
 default_meeting_participant_capacity = 9
 maximum_meeting_participant_capacity = 50
 
+# ---------------------------------------------------------------------------
+# Offline transcription (Phase 4).
+#
+# Every number here was MEASURED on the target device, not guessed. The sweep and
+# the reasoning are in docs/benchmarks.md and ADR-0014. The thread counts are
+# machine-specific: RTF improves monotonically to 12 on the i7-1260P and then
+# flattens (14 and 16 were measured and are not better). On different hardware,
+# re-run `asr bench` rather than reasoning from core counts.
+#
+# Nothing in this section selects a provider implementation, and no value in it
+# can enable a test double. The engine and the model are decided in code and
+# loaded from a hash-verified local directory (ADR-0015), so that a configuration
+# file cannot redirect transcription anywhere.
+#
+# `pass2_budget_ratio` is the fraction of detected SPEECH time that the slower
+# second pass may re-transcribe. Pass 2 costs roughly twice pass 1 per second, so
+# an unbounded pass 2 would push total RTF past the target on a long meeting.
+# Selection spends the budget on the least confident regions first and records a
+# reason code for each one it picks.
+#
+# The pass1/pass2 beam split trades accuracy for speed on the first pass. It was
+# chosen on throughput evidence alone: no reference transcript exists on this
+# machine yet, so nothing has measured what that trade costs. Treat it as
+# provisional and revisit it with the first real accuracy measurement.
+# ---------------------------------------------------------------------------
+[asr]
+language = "id"
+
+pass1_cpu_threads = 12
+pass2_cpu_threads = 12
+pass1_beam_size = 1
+pass2_beam_size = 5
+compute_type = "int8"
+initial_prompt_max_chars = 400
+
+pass2_enabled = true
+pass2_budget_ratio = 0.25
+pass2_min_avg_logprob = -1.0
+pass2_max_no_speech_prob = 0.6
+pass2_min_word_probability = 0.45
+pass2_max_compression_ratio = 2.4
+
+vad_threshold = 0.5
+vad_min_speech_ms = 250
+vad_min_silence_ms = 500
+vad_speech_pad_ms = 200
+vad_merge_gap_ms = 150
+vad_max_region_seconds = 30.0
+
+glossary_enabled = true
+glossary_filename = "glossary.id-en.toml"
+
+worker_timeout_seconds = 10800.0
+
 [providers]
 
 [providers.endpoints]
-# Examples (commented out; no phase up to and including 2 selects anything):
-# asr = 'D:\MoM-IGD-Data\models\asr\model.bin'
+# Examples (commented out). The ASR model is NOT configured here - it is resolved
+# from the hash-verified model store, and no endpoint value can redirect it:
 # llm = "http://127.0.0.1:8080"

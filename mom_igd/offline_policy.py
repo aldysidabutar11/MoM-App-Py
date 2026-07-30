@@ -129,9 +129,9 @@ DEFERRED_HEAVY_DISTRIBUTIONS: Final[frozenset[str]] = frozenset(
         # Not forbidden forever -- forbidden until the phase that needs it. Each
         # arrives in its own phase after the Phase 4A benchmark selects a
         # provider. `sounddevice` left this list in Phase 2, when it became a
-        # required runtime dependency.
-        "faster-whisper",
-        "ctranslate2",
+        # required runtime dependency; `faster-whisper`, `ctranslate2`, `av`,
+        # `numpy`, `onnxruntime` and `tokenizers` left it in Phase 4 for the same
+        # reason. See the note below the set.
         "openai-whisper",
         "whisper",
         "whispercpp",
@@ -142,11 +142,15 @@ DEFERRED_HEAVY_DISTRIBUTIONS: Final[frozenset[str]] = frozenset(
         "torch",
         "torchaudio",
         "torchvision",
+        # OpenVINO stays deferred: probed on this machine and ruled OUT on
+        # evidence -- the Khronos OpenCL\Vendors registry key is absent, so the
+        # ICD loader has no vendor to dispatch to, and the Intel compute runtime
+        # DLLs are not on PATH. Adopting it would mean installing the toolkit for
+        # an unmeasured benefit. See ADR-0014.
         "openvino",
         "openvino-genai",
         "openvino-telemetry",
         "optimum-intel",
-        "onnxruntime",
         "onnxruntime-openvino",
         "onnxruntime-directml",
         "onnxruntime-gpu",
@@ -161,13 +165,8 @@ DEFERRED_HEAVY_DISTRIBUTIONS: Final[frozenset[str]] = frozenset(
         "pyaudio",
         "librosa",
         "soxr",
-        "av",
         "webrtcvad",
         "silero-vad",
-        # numpy is not needed: capture uses sounddevice.RawInputStream (bytes),
-        # the quality meter uses array.array, and Phase 3 embeddings are handled
-        # as `array`/`bytes` through the provider boundary.
-        "numpy",
         "llama-cpp-python",
         "sentence-transformers",
         "transformers",
@@ -175,11 +174,31 @@ DEFERRED_HEAVY_DISTRIBUTIONS: Final[frozenset[str]] = frozenset(
 )
 """Heavy AI/audio distributions that must not be present in the current phase.
 
-`cryptography` is deliberately NOT listed: it became a required runtime dependency
-in Phase 3 for AES-256-GCM voiceprint encryption, and it is neither AI nor audio.
-`onnxruntime` IS still listed even though Phase 3 declares an ONNX-first preference
-for the speaker-embedding model -- no artefact has been approved or provisioned, so
-its presence would mean a future phase's dependency arrived early (ADR-0011).
+Graduated out of this set, each in the phase that genuinely needed it:
+
+* `sounddevice` -- Phase 2, PortAudio/WASAPI capture.
+* `cryptography` -- Phase 3, AES-256-GCM voiceprint encryption.
+* `faster-whisper`, `ctranslate2`, `tokenizers` -- Phase 4, the ASR provider chosen
+  by the 4A benchmark (ADR-0014).
+* `onnxruntime` -- Phase 4. Required by faster-whisper for the Silero VAD asset that
+  ships **inside** the wheel, so the VAD model is local by construction and needs no
+  download. Note that this build exposes an `AzureExecutionProvider`; the provider
+  boundary pins `CPUExecutionProvider` explicitly and a test asserts it.
+* `av` -- Phase 4. FFmpeg bindings, used to decode and resample the master WAV into
+  the 16 kHz mono working copy. Reused from the faster-whisper stack rather than
+  adding a second audio toolchain.
+* `numpy` -- Phase 4. A hard requirement of ctranslate2/faster-whisper. The Phase 2
+  capture path and the Phase 3 quality meter still do not use it: capture reads bytes
+  from `RawInputStream` and metering uses `array.array`, and that must not change.
+
+Still deferred, and why:
+
+* `openvino*` / `optimum-intel` -- **ruled out on measured evidence**, not deferred by
+  default. See the comment inside the set.
+* `torch`, `pyannote.audio`, `speechbrain` -- Phase 5 diarization.
+* `llama-cpp-python`, `transformers`, `sentence-transformers` -- Phase 8 MoM.
+* `soundfile`, `librosa`, `soxr`, `pyaudio`, `webrtcvad`, `silero-vad` -- never
+  needed: `av` covers decode/resample and the VAD asset is bundled.
 """
 
 NETWORK_CAPABLE_REQUIRES_JUSTIFICATION: Final[frozenset[str]] = frozenset(

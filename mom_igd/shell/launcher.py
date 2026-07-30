@@ -52,6 +52,10 @@ ALLOWED_PROXY_PATHS: Final[frozenset[str]] = frozenset(
         "/enrollment/sessions/current",
         "/enrollment/cleanup/pending",
         "/enrollment/meetings",
+        # Phase 4, read-only. Neither loads a model: `/asr/status` and `/asr/models`
+        # read the readiness index, and neither can cause a download.
+        "/asr/status",
+        "/asr/models",
     }
 )
 """Explicit GET allowlist. The page cannot ask the proxy to call an arbitrary path."""
@@ -74,6 +78,11 @@ ALLOWED_POST_PATHS: Final[frozenset[str]] = frozenset(
         "/enrollment/sessions/current/finalize",
         "/enrollment/sessions/current/cancel",
         "/enrollment/cleanup/retry",
+        # Phase 4. `transcribe` is the heavy one: it runs the whole pipeline in worker
+        # processes and takes minutes, so it is reachable only from a button press. It
+        # never downloads a model -- a missing one is MODEL_UNAVAILABLE.
+        "/asr/transcribe",
+        "/asr/cancel",
     }
 )
 """Explicit POST allowlist. ``calibrate``, ``open-test``, ``recordings/start`` and
@@ -100,6 +109,9 @@ ALLOWED_GET_PATTERNS: Final[tuple[re.Pattern[str], ...]] = _templated(
     rf"/enrollment/participants/{_UUID}/eligibility",
     rf"/enrollment/meetings/{_UUID}/participants",
     rf"/enrollment/meetings/{_UUID}/roster",
+    rf"/asr/transcript/{_UUID}",
+    rf"/asr/revisions/{_UUID}",
+    rf"/asr/flagged/{_UUID}",
 )
 """Templated GET paths the page may call."""
 

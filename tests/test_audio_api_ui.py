@@ -350,11 +350,11 @@ def test_recording_card_is_enabled_and_the_rest_stay_disabled(
     html = ui_sources["index.html"]
     assert 'id="card-recording"' in html
     assert "feature-card-enabled" in html
-    # Recording went live in Phase 2 and Participants in Phase 3, so four later-phase
-    # cards remain disabled. The authoritative count is in tests/test_static_ui.py.
-    assert html.count('aria-disabled="true"') == 4
-    assert html.count("Belum diimplementasikan") == 4
-    for feature in ("Meeting setup", "Participants", "Processing", "Review", "Export"):
+    # Recording went live in Phase 2, Participants in Phase 3, Transcription in Phase 4.
+    # The authoritative count of enabled and disabled cards is in tests/test_static_ui.py;
+    # what matters here is that a disabled card always says it is not implemented.
+    assert html.count('aria-disabled="true"') == html.count("Belum diimplementasikan")
+    for feature in ("Meeting setup", "Participants", "Review", "Export"):
         assert feature in html
 
 
@@ -437,8 +437,8 @@ def test_ui_polls_at_a_gentle_rate(ui_sources: dict[str, str]) -> None:
 def test_the_bridge_allowlists_are_closed() -> None:
     """Every Phase 2 audio path is reachable, and nothing outside the lists is.
 
-    Phase 3 added enrollment paths to the same lists, so the audio sets are now a
-    subset rather than the whole. The closed property is asserted exactly in
+    Phase 3 added enrollment paths and Phase 4 added transcription ones, so the audio
+    sets are a subset rather than the whole. The closed property is asserted exactly in
     `tests/test_static_ui.py`, which pins full membership.
     """
     from mom_igd.shell.launcher import ALLOWED_POST_PATHS, ALLOWED_PROXY_PATHS
@@ -446,11 +446,13 @@ def test_the_bridge_allowlists_are_closed() -> None:
     assert set(AUDIO_GET_PATHS) <= ALLOWED_PROXY_PATHS
     assert set(AUDIO_POST_PATHS) <= ALLOWED_POST_PATHS
     assert "/openapi.json" not in ALLOWED_PROXY_PATHS
-    # Every extra entry belongs to Phase 3 and nothing else crept in.
+    # Every extra entry belongs to a known phase and nothing else crept in.
     for extra in (ALLOWED_PROXY_PATHS | ALLOWED_POST_PATHS) - set(
         AUDIO_GET_PATHS
     ) - set(AUDIO_POST_PATHS):
-        assert extra.startswith(("/health", "/version", "/doctor", "/internal", "/enrollment")), extra
+        assert extra.startswith(
+            ("/health", "/version", "/doctor", "/internal", "/enrollment", "/asr/")
+        ), extra
 
 
 def test_the_bridge_refuses_paths_outside_the_allowlist(config: AppConfig) -> None:
