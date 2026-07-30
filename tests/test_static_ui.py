@@ -181,11 +181,15 @@ def test_the_shell_proxy_allowlist_is_closed() -> None:
             # exist before it can address one. Read-only, bounded, and it returns
             # meeting UUIDs rather than internal row ids.
             "/enrollment/meetings",
-            # Phase 4: both read-only, and neither loads a model or can cause a
-            # download. `/asr/models` reads the readiness index so the page can
-            # disable the Transcribe button rather than letting it fail.
+            # Phase 4: all four read-only, and none loads a model or can cause a
+            # download. `/asr/models` reads the readiness index and `/asr/preflight`
+            # every other precondition, so the page can disable the button rather than
+            # letting the run fail; `/asr/recordings` is what the operator picks from
+            # instead of typing a UUID.
             "/asr/status",
             "/asr/models",
+            "/asr/recordings",
+            "/asr/preflight",
         }
     )
     assert "/openapi.json" not in ALLOWED_PROXY_PATHS

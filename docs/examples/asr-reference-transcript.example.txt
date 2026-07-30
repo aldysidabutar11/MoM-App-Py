@@ -1,0 +1,47 @@
+PLACEHOLDER — replace every line with what was actually said in your recording.
+
+This file is the reference transcript for one audio sample: a human-written record of
+exactly what was spoken. It is the only thing that makes a word error rate meaningful,
+because accuracy is never derived from the model's own output.
+
+Nothing below is a recording of anybody. It is written here to show the shape and the
+conventions, using the technical vocabulary this deployment actually uses.
+
+-------------------------------------------------------------------------------
+HOW TO WRITE ONE
+-------------------------------------------------------------------------------
+
+Write what was said, not what should have been said.
+
+* Plain UTF-8 text. Line breaks wherever they help you read it; the scorer normalises
+  whitespace away.
+* Write the words as spoken, including false starts and repetitions if they were spoken.
+  Removing them would flatter the model, because it did hear them.
+* Write technical terms in their canonical spelling: "deploy", "database", "API", "BPJS".
+  If the speaker said the English word, write the English word.
+* Write numbers the way they were said. If somebody said "dua ratus lima puluh juta",
+  write that, not "250000000" -- the normaliser deliberately does not expand numbers, so
+  writing digits would count as an error against a transcript that is not wrong.
+* Do not add speaker labels. Phase 4 assigns no speaker, and the scorer compares words.
+* Do not add punctuation the speaker did not imply. It is stripped before scoring, so it
+  costs nothing either way -- but guessing at it wastes your time.
+* Do not translate. Indonesian stays Indonesian.
+
+Producing one of these takes roughly four to six times the audio duration. Ten minutes of
+far-field audio is about an hour of careful listening. There is no shortcut that preserves
+the value: a reference transcript produced by a model is not a reference.
+
+-------------------------------------------------------------------------------
+EXAMPLE OF THE SHAPE (placeholder content)
+-------------------------------------------------------------------------------
+
+Baik, kita mulai rapat mingguan tim IT. Agenda pertama, status deployment ke server
+produksi. Integrasi API dengan SIMRS sudah selesai di staging, tapi ada satu issue pada
+database rekam medis yang belum kami tutup.
+
+Untuk klaim BPJS bulan ini, laporannya naik sekitar dua ratus lima puluh juta rupiah
+dibanding bulan lalu. Pak Budi, tolong siapkan laporan detailnya sebelum tanggal lima
+belas Agustus.
+
+Deployment kita jadwalkan hari Kamis jam sepuluh pagi. Kalau ada rollback, kita pakai
+backup dari malam sebelumnya. Ada pertanyaan?

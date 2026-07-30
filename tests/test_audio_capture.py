@@ -1479,3 +1479,137 @@ def test_sounddevice_is_pinned_in_the_runtime_lock() -> None:
         if line.strip().startswith("sounddevice") and "==" in line
     ]
     assert pins == ["sounddevice==0.5.5"]
+
+
+# ---------------------------------------------------------------------------
+# Recovery closes an interrupted recording
+#
+# Found during the Phase 4 acceptance handoff: a capture killed *after* its last
+# chunk but *before* finalisation left a directory with manifest lines and no
+# summary. `scan_recoverable` reported it for ever, `doctor` told the operator to
+# run `audio recover`, and recovery had no partial to salvage so it changed
+# nothing. A warning whose named remedy provably does nothing is worse than no
+# warning: it teaches the operator to ignore the check.
+# ---------------------------------------------------------------------------
+
+
+def _closed_chunks(directory: Path, profile: CaptureProfile, count: int = 2) -> None:
+    """Write `count` complete chunks and their manifest lines, but no summary."""
+    manifest = ManifestWriter(directory)
+    writer = ChunkWriter(
+        directory, profile, on_finalised=lambda f: manifest.append_chunk(f.record)
+    )
+    for index in range(count):
+        writer.write(CounterSource().read(index * 500, 500, profile))
+        writer.finalise_current()
+    writer.close()
+
+
+def test_recovery_closes_a_recording_whose_chunks_were_all_complete(
+    rec_dir: Path, profile: CaptureProfile
+) -> None:
+    _closed_chunks(rec_dir, profile)
+    assert not (rec_dir / "manifest.json").is_file()
+    assert rec_dir in scan_recoverable(rec_dir.parent.parent)
+
+    report = recover_recording(rec_dir, profile=profile)
+
+    assert report.summary_written is True
+    assert report.changed is True, "a closed recording is a change, not a no-op"
+    assert report.chunks_recovered == 0
+    assert (rec_dir / "manifest.json").is_file()
+    assert scan_recoverable(rec_dir.parent.parent) == [], (
+        "the directory must stop being reported, or the warning has no remedy"
+    )
+
+
+def test_the_recovered_summary_says_recovery_produced_it(
+    rec_dir: Path, profile: CaptureProfile
+) -> None:
+    """Nothing later may mistake a salvaged recording for one that closed cleanly."""
+    import json
+
+    _closed_chunks(rec_dir, profile)
+    recover_recording(rec_dir, profile=profile)
+    summary = json.loads((rec_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert summary["counters"]["finalised_by"] == "recovery"
+    assert summary["counters"]["interrupted"] is True
+
+
+def test_the_recovered_summary_is_derived_from_the_verified_chunk_records(
+    rec_dir: Path, profile: CaptureProfile
+) -> None:
+    """The manifest lines are authoritative and already carry their own SHA-256."""
+    _closed_chunks(rec_dir, profile)
+    records = read_manifest(rec_dir)[0]
+    recover_recording(rec_dir, profile=profile)
+    report = verify_manifest(rec_dir)
+    assert report.ok, report.problems
+    assert report.verified_chunks == len(records) == 2
+
+
+def test_closing_a_recording_is_idempotent(rec_dir: Path, profile: CaptureProfile) -> None:
+    _closed_chunks(rec_dir, profile)
+    first = recover_recording(rec_dir, profile=profile)
+    second = recover_recording(rec_dir, profile=profile)
+    assert first.summary_written is True
+    assert second.summary_written is False
+    assert second.changed is False
+
+
+def test_a_recording_that_still_has_a_partial_is_not_closed_early(
+    rec_dir: Path, profile: CaptureProfile
+) -> None:
+    """Closing it now would understate the recording: the partial is still audio."""
+    _closed_chunks(rec_dir, profile, count=1)
+    (rec_dir / "chunk_000001.pcm.part").write_bytes(b"\x00" * 400)
+    report = recover_recording(rec_dir, profile=profile)
+    # The partial is salvaged in this same pass, and only then is the summary written.
+    assert report.chunks_recovered + report.chunks_quarantined == 1
+    assert (rec_dir / "manifest.json").is_file()
+    assert report.summary_written is True
+
+
+def test_a_directory_with_no_surviving_chunk_record_is_not_invented_into_a_recording(
+    rec_dir: Path,
+) -> None:
+    """A torn first line means there is no recording to close."""
+    (rec_dir / "manifest.jsonl").write_text('{"type": "chunk", "seq": 0', encoding="utf-8")
+    report = recover_recording(rec_dir)
+    assert report.summary_written is False
+    assert not (rec_dir / "manifest.json").exists()
+    assert any("no recording to close" in problem for problem in report.problems)
+
+
+def test_the_format_is_taken_from_the_chunk_records_when_no_profile_is_given(
+    rec_dir: Path, profile: CaptureProfile
+) -> None:
+    """Recovery from the CLI may not know the profile the capture used."""
+    import json
+
+    _closed_chunks(rec_dir, profile)
+    report = recover_recording(rec_dir)
+    assert report.summary_written is True
+    summary = json.loads((rec_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert summary["profile"]["sample_rate"] == profile.sample_rate
+    assert summary["profile"]["channels"] == profile.channels
+
+
+def test_a_clean_recording_is_left_completely_alone(
+    rec_dir: Path, profile: CaptureProfile
+) -> None:
+    import hashlib
+
+    _closed_chunks(rec_dir, profile)
+    write_manifest_summary(
+        rec_dir,
+        recording_uuid="r",
+        meeting_uuid="m",
+        profile=profile,
+        records=read_manifest(rec_dir)[0],
+    )
+    before = hashlib.sha256((rec_dir / "manifest.json").read_bytes()).hexdigest()
+    report = recover_recording(rec_dir, profile=profile)
+    after = hashlib.sha256((rec_dir / "manifest.json").read_bytes()).hexdigest()
+    assert report.summary_written is False
+    assert before == after, "an already-closed recording must not be rewritten"

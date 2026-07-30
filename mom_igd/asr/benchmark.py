@@ -44,6 +44,7 @@ __all__ = [
     "CorpusSample",
     "load_corpus_manifest",
     "run_benchmark",
+    "validate_corpus_manifest",
 ]
 
 _LOG = get_logger("asr.benchmark")
@@ -183,6 +184,117 @@ def _normalise_for_wer(text: str) -> list[str]:
     folded = unicodedata.normalize("NFKC", text).lower()
     folded = re.sub(r"[^\w\s']", " ", folded, flags=re.UNICODE)
     return [token for token in folded.split() if token]
+
+
+def validate_corpus_manifest(path: str | Path) -> dict[str, Any]:
+    """Check an evaluation manifest without loading a model or decoding anything.
+
+    Producing a reference transcript costs four to six times the audio duration, and a
+    benchmark run costs minutes. Finding out that a checksum is wrong *after* both is
+    avoidable, so this exists: it applies exactly the same loader -- the same schema, the
+    same checksum verification, the same consent gate -- and then reports what it found.
+
+    Read-only. It touches no model, runs no inference and writes nothing to the database.
+    """
+    report: dict[str, Any] = {
+        "manifest": str(Path(path)),
+        "ok": False,
+        "problem": None,
+        "sample_count": 0,
+        "samples": [],
+        "total_duration_seconds": 0.0,
+        "with_reference": 0,
+        "with_word_timestamps": 0,
+        "conditions": {},
+        "warnings": [],
+    }
+    try:
+        samples = load_corpus_manifest(path)
+    except BenchmarkError as exc:
+        report["problem"] = str(exc)
+        return report
+
+    conditions: dict[str, int] = {}
+    for sample in samples:
+        conditions[sample.condition] = conditions.get(sample.condition, 0) + 1
+        actual_seconds: float | None = None
+        try:
+            import wave
+
+            with wave.open(str(sample.audio_path), "rb") as handle:
+                rate = handle.getframerate()
+                if rate:
+                    actual_seconds = handle.getnframes() / rate
+        except Exception:  # noqa: BLE001 - not a WAV, or a format wave cannot read
+            actual_seconds = None
+
+        if actual_seconds is not None and abs(actual_seconds - sample.duration_seconds) > 1.0:
+            report["warnings"].append(
+                f"sample {sample.sample_uuid} declares {sample.duration_seconds:.1f}s but "
+                f"the file is {actual_seconds:.1f}s. The declared duration is what the "
+                "real-time factor is computed against, so a wrong one makes the timing "
+                "wrong."
+            )
+        if not sample.has_reference:
+            report["warnings"].append(
+                f"sample {sample.sample_uuid} has no readable reference transcript, so it "
+                "contributes no accuracy number -- only timing."
+            )
+        else:
+            report["with_reference"] += 1
+        if sample.word_timestamp_reference_path is not None:
+            if sample.word_timestamp_reference_path.is_file():
+                report["with_word_timestamps"] += 1
+            else:
+                report["warnings"].append(
+                    f"sample {sample.sample_uuid} declares a word-timestamp reference that "
+                    "does not exist; word-timestamp error will be N/A."
+                )
+        # The audio path is deliberately not echoed: this report is quotable, and an
+        # operator's private path is not something to paste into a ticket.
+        report["samples"].append(
+            {
+                "sample_uuid": sample.sample_uuid,
+                "audio_name": sample.audio_path.name,
+                "sha256_verified": True,
+                "declared_duration_seconds": sample.duration_seconds,
+                "measured_duration_seconds": (
+                    None if actual_seconds is None else round(actual_seconds, 2)
+                ),
+                "language": sample.language,
+                "consent_status": sample.consent_status,
+                "license_name": sample.license_name,
+                "condition": sample.condition,
+                "has_reference_transcript": sample.has_reference,
+                "technical_term_count": len(sample.technical_terms),
+            }
+        )
+
+    report["sample_count"] = len(samples)
+    report["total_duration_seconds"] = round(
+        sum(sample.duration_seconds for sample in samples), 1
+    )
+    report["conditions"] = conditions
+    report["ok"] = True
+    if report["with_reference"] == 0:
+        report["warnings"].append(
+            "no sample has a reference transcript, so this manifest can measure "
+            "throughput but not accuracy. WER will be N/A."
+        )
+    if conditions.get("far-field", 0) == 0:
+        report["warnings"].append(
+            "no far-field sample. Far-field is the condition that decides whether the "
+            "product works in a real meeting, and it has its own acceptance target."
+        )
+    _LOG.info(
+        "asr.benchmark.manifest_validated",
+        extra={
+            "samples": report["sample_count"],
+            "with_reference": report["with_reference"],
+            "warnings": len(report["warnings"]),
+        },
+    )
+    return report
 
 
 def word_error_rate(reference: str, hypothesis: str) -> dict[str, Any]:

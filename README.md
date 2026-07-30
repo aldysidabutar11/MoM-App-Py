@@ -157,6 +157,10 @@ even when every future-phase dependency is missing.
 .\.venv\Scripts\python.exe -m mom_igd asr transcript UUID     # show a stored revision
 .\.venv\Scripts\python.exe -m mom_igd asr transcript UUID --flagged   # why pass 2 ran
 .\.venv\Scripts\python.exe -m mom_igd asr revisions UUID
+.\.venv\Scripts\python.exe -m mom_igd asr bench --manifest FILE.json --validate-only
+
+# one-command readiness check before a manual acceptance test (read-only)
+powershell -ExecutionPolicy Bypass -File .\scripts\phase4_acceptance_preflight.ps1
 
 # backend in the foreground, loopback only
 .\.venv\Scripts\python.exe -m mom_igd serve
@@ -478,6 +482,17 @@ Phase 4 **produces text**. It does not say who spoke — every segment reports
 `UNASSIGNED` — and its **accuracy has not been measured**: no reference transcript exists
 on this machine, and accuracy is never derived from the model's own output. See
 [docs/phase-4-offline-asr.md](docs/phase-4-offline-asr.md).
+
+**To test it yourself**, run the read-only preflight and then follow
+[docs/phase-4-manual-acceptance.md](docs/phase-4-manual-acceptance.md):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\phase4_acceptance_preflight.ps1
+.\.venv\Scripts\python.exe -m mom_igd shell --data-dir "D:\MoM-IGD-Models-Phase4"
+```
+
+That acceptance root is separate from production on purpose. `D:\MoM-IGD-Data` is
+untouched and still at schema 3; the preflight script refuses to run against it.
 
 **Still not implemented, by design:** diarization · voice identification · speaker
 labelling · LLM integration · MoM generation · PDF/Word/JSON/Markdown export · action

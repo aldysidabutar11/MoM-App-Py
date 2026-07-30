@@ -30,6 +30,7 @@ from mom_igd.asr.benchmark import (
     load_corpus_manifest,
     technical_term_recall,
     timestamp_error_stats,
+    validate_corpus_manifest,
     word_error_rate,
 )
 
@@ -723,3 +724,237 @@ def test_the_benchmark_requests_egress_recording() -> None:
     """The 'zero network egress' line has to be a measurement, not an assertion."""
     source = BENCH.read_text(encoding="utf-8")
     assert "record_network_attempts" in source
+
+
+# ===========================================================================
+# `--validate-only`: check a manifest before spending hours on it
+# ===========================================================================
+
+
+def _corpus(tmp_path: Path, **overrides: Any) -> Path:
+    audio, digest = _write_sample(tmp_path, "sample.wav", b"synthetic-audio-bytes")
+    reference = tmp_path / "sample.txt"
+    reference.write_text("kata kata", encoding="utf-8")
+    entry: dict[str, Any] = {
+        "sample_uuid": "00000000-0000-4000-8000-000000000001",
+        "audio_path": str(audio),
+        "sha256": digest,
+        "duration_seconds": 12.0,
+        "language": "id",
+        "reference_transcript_path": str(reference),
+        "consent_status": "synthetic",
+        "license_name": "generated",
+        "condition": "clean",
+        "technical_terms": ["API"],
+    }
+    entry.update(overrides)
+    return _manifest(tmp_path, [entry])
+
+
+def test_validation_accepts_a_well_formed_manifest(tmp_path: Path) -> None:
+    report = validate_corpus_manifest(_corpus(tmp_path))
+    assert report["ok"] is True
+    assert report["problem"] is None
+    assert report["sample_count"] == 1
+    assert report["with_reference"] == 1
+    assert report["conditions"] == {"clean": 1}
+
+
+def test_validation_applies_the_same_checksum_gate_as_the_benchmark(
+    tmp_path: Path,
+) -> None:
+    """Same loader, so a manifest that validates cannot fail the real run on schema."""
+    report = validate_corpus_manifest(_corpus(tmp_path, sha256="ff" * 32))
+    assert report["ok"] is False
+    assert "checksum mismatch" in report["problem"]
+
+
+def test_validation_applies_the_same_consent_gate(tmp_path: Path) -> None:
+    report = validate_corpus_manifest(_corpus(tmp_path, consent_status="assumed"))
+    assert report["ok"] is False
+    assert "requires recorded" in report["problem"]
+
+
+def test_validation_refuses_a_missing_manifest(tmp_path: Path) -> None:
+    report = validate_corpus_manifest(tmp_path / "absent.json")
+    assert report["ok"] is False
+    assert "does not exist" in report["problem"]
+
+
+def test_validation_warns_when_no_sample_has_a_reference(tmp_path: Path) -> None:
+    """Without one there is no accuracy number, only timing."""
+    report = validate_corpus_manifest(_corpus(tmp_path, reference_transcript_path=None))
+    assert report["ok"] is True
+    assert report["with_reference"] == 0
+    assert any("WER will be N/A" in warning for warning in report["warnings"])
+
+
+def test_validation_warns_about_a_declared_reference_that_is_absent(
+    tmp_path: Path,
+) -> None:
+    report = validate_corpus_manifest(
+        _corpus(tmp_path, reference_transcript_path=str(tmp_path / "gone.txt"))
+    )
+    assert report["ok"] is True
+    assert any("no readable reference" in warning for warning in report["warnings"])
+
+
+def test_validation_warns_when_no_sample_is_far_field(tmp_path: Path) -> None:
+    """Far-field is the condition that decides whether the product works in a real room."""
+    report = validate_corpus_manifest(_corpus(tmp_path))
+    assert any("far-field" in warning for warning in report["warnings"])
+
+
+def test_validation_notices_a_wrong_declared_duration(tmp_path: Path) -> None:
+    """The declared duration is what the real-time factor is computed against."""
+    import struct
+    import wave
+
+    audio = tmp_path / "real.wav"
+    with wave.open(str(audio), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16_000)
+        handle.writeframes(struct.pack("<h", 0) * 16_000)  # exactly 1 second
+    import hashlib
+
+    manifest = _manifest(
+        tmp_path,
+        [
+            {
+                "sample_uuid": "x",
+                "audio_path": str(audio),
+                "sha256": hashlib.sha256(audio.read_bytes()).hexdigest(),
+                "duration_seconds": 600.0,
+                "consent_status": "synthetic",
+            }
+        ],
+    )
+    report = validate_corpus_manifest(manifest)
+    assert report["ok"] is True
+    assert any("declares 600.0s" in warning for warning in report["warnings"])
+    assert report["samples"][0]["measured_duration_seconds"] == pytest.approx(1.0)
+
+
+def test_validation_reports_the_file_name_but_not_the_path(tmp_path: Path) -> None:
+    """The report is quotable; an operator's private path is not."""
+    report = validate_corpus_manifest(_corpus(tmp_path))
+    blob = repr(report["samples"])
+    assert "sample.wav" in blob
+    assert str(tmp_path) not in blob
+
+
+def test_validation_loads_no_model_and_runs_no_inference() -> None:
+    """Structural: the whole point is that it is cheap and safe to run."""
+    import ast
+
+    tree = ast.parse(BENCH.read_text(encoding="utf-8"))
+    function = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "validate_corpus_manifest"
+    )
+    identifiers: set[str] = set()
+    for node in ast.walk(function):
+        if isinstance(node, ast.Name):
+            identifiers.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            identifiers.add(node.attr)
+    for forbidden in ("run_in_worker", "FasterWhisperProvider", "_run_one", "transcribe"):
+        assert forbidden not in identifiers, forbidden
+
+
+def test_validation_writes_nothing(tmp_path: Path) -> None:
+    manifest = _corpus(tmp_path)
+    before = {path.name: path.stat().st_mtime_ns for path in sorted(tmp_path.iterdir())}
+    validate_corpus_manifest(manifest)
+    after = {path.name: path.stat().st_mtime_ns for path in sorted(tmp_path.iterdir())}
+    assert before == after
+
+
+# ===========================================================================
+# The shipped templates must actually work
+# ===========================================================================
+
+
+EXAMPLES = Path(__file__).resolve().parent.parent / "docs" / "examples"
+
+
+def test_the_example_manifest_is_valid_json() -> None:
+    import json
+
+    payload = json.loads(
+        (EXAMPLES / "asr-evaluation-manifest.example.json").read_text(encoding="utf-8")
+    )
+    assert isinstance(payload["samples"], list)
+    assert len(payload["samples"]) >= 2
+
+
+def test_every_field_the_loader_reads_appears_in_the_example() -> None:
+    """A template that omits a field teaches the operator to omit it too."""
+    import json
+
+    payload = json.loads(
+        (EXAMPLES / "asr-evaluation-manifest.example.json").read_text(encoding="utf-8")
+    )
+    keys: set[str] = set()
+    for sample in payload["samples"]:
+        keys.update(sample)
+    for field_name in (
+        "sample_uuid",
+        "audio_path",
+        "sha256",
+        "duration_seconds",
+        "language",
+        "reference_transcript_path",
+        "consent_status",
+        "license_name",
+        "technical_terms",
+        "condition",
+        "word_timestamp_reference_path",
+    ):
+        assert field_name in keys, field_name
+
+
+def test_the_example_uses_only_accepted_consent_values() -> None:
+    import json
+
+    payload = json.loads(
+        (EXAMPLES / "asr-evaluation-manifest.example.json").read_text(encoding="utf-8")
+    )
+    for sample in payload["samples"]:
+        assert sample["consent_status"] in {"granted", "public-licensed", "synthetic"}
+
+
+def test_the_example_manifest_is_refused_as_shipped(tmp_path: Path) -> None:
+    """It must not look like working configuration: every value is a placeholder.
+
+    Copying it and running the benchmark unchanged has to fail loudly, or somebody will
+    produce a "result" from paths that do not exist.
+    """
+    import shutil
+
+    target = tmp_path / "corpus.json"
+    shutil.copy(EXAMPLES / "asr-evaluation-manifest.example.json", target)
+    report = validate_corpus_manifest(target)
+    assert report["ok"] is False
+    assert report["problem"]
+
+
+def test_the_example_manifest_contains_no_real_audio_path_or_person() -> None:
+    text = (EXAMPLES / "asr-evaluation-manifest.example.json").read_text(encoding="utf-8")
+    for forbidden in ("Aldy", "pangsor", "C:\\Users", "MoM-IGD-Data"):
+        assert forbidden not in text, forbidden
+    assert "REPLACE_WITH" in text, "placeholders must be obviously placeholders"
+
+
+def test_the_example_reference_transcript_says_how_to_write_one() -> None:
+    text = (EXAMPLES / "asr-reference-transcript.example.txt").read_text(encoding="utf-8")
+    assert "PLACEHOLDER" in text
+    for guidance in ("Write what was said", "Do not add speaker labels", "Do not translate"):
+        assert guidance in text, guidance
+
+
+def test_the_example_reference_is_not_a_recording_of_anybody() -> None:
+    text = (EXAMPLES / "asr-reference-transcript.example.txt").read_text(encoding="utf-8")
+    assert "Nothing below is a recording of anybody" in text

@@ -224,6 +224,18 @@ quietly widening scope.
 * **Accuracy is never claimed and never derived from the model's own output.** WER needs
   a reference transcript, and a reference transcript needs the consent and licence
   metadata `asr bench --manifest` enforces.
+* **Transcription is refused while a capture is live**, and a capture is **never** refused
+  because a transcription is running. The asymmetry is deliberate: an operator must always
+  be able to record the next meeting. The state list in `asr/service.py` mirrors migration
+  0002's partial unique index, and a test reads the SQL to keep them from drifting.
+* **A warning must name a remedy that works.** `doctor` once reported an interrupted
+  recording and told the operator to run `audio recover`, which provably did nothing --
+  recovery salvaged partials and never wrote the summary manifest a killed capture missed.
+  A dead-end warning teaches the operator to ignore the check.
+* **The acceptance data root is `D:\MoM-IGD-Models-Phase4`, never `D:\MoM-IGD-Data`.**
+  `scripts\phase4_acceptance_preflight.ps1` refuses the production root before it runs
+  anything, and 65 static tests assert it holds no destructive command. Do not migrate the
+  production root until the operator has returned a manual acceptance result.
 
 ## Doctor classification contract
 
@@ -294,10 +306,17 @@ Exit codes: `0` no FAIL · `1` any FAIL · `2` `--strict` with a WARN.
 .\.venv\Scripts\python.exe -m pytest --cov=mom_igd --cov-report=term-missing
 ```
 
-The model store used during Phase 4 development is `D:\MoM-IGD-Models-Phase4`, passed with
-`--data-dir`. It is a scratch data root, **not** the production `D:\MoM-IGD-Data`. Do not
-re-download a model that already passes `asr verify`, and never run
-`asr provision --force` without being asked to.
+The Phase 4 **acceptance data root** is `D:\MoM-IGD-Models-Phase4`, passed with
+`--data-dir`. It holds the models and the acceptance database, and it is **not** the
+production `D:\MoM-IGD-Data` -- which is still at schema 3 and must stay that way until the
+operator returns a manual acceptance result. Do not re-download a model that already passes
+`asr verify`, and never run `asr provision --force` without being asked to.
+
+The operator's one-command readiness check, which changes nothing:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\phase4_acceptance_preflight.ps1
+```
 
 Do **not** pipe pytest through `2>&1 | Select-Object` in PowerShell: it wraps every
 stderr log line in an `ErrorRecord` and the run appears to hang. Use

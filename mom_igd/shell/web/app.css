@@ -709,3 +709,18 @@ main {
   content: " *";
   color: var(--warn);
 }
+
+/* A low-confidence segment is marked, never hidden: a reviewer needs to know which
+   lines to check against the audio. `display` is deliberately absent from every rule
+   below -- these elements are created and removed, never toggled with [hidden]. */
+.segment-lowconf {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-radius: 3px;
+  padding: 1px 5px;
+  flex: 0 0 auto;
+  margin-left: 6px;
+}
+.segment-low .segment-text { color: var(--warn); }

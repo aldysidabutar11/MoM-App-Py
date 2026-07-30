@@ -28,7 +28,12 @@ from typing import Annotated, Any, Final
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 
 from mom_igd.api.deps import require_session_token
-from mom_igd.asr.service import AsrBusyError, AsrService, AsrServiceError
+from mom_igd.asr.service import (
+    AsrBusyError,
+    AsrService,
+    AsrServiceError,
+    RecordingInProgressError,
+)
 
 __all__ = ["asr_router", "get_asr_service"]
 
@@ -90,7 +95,9 @@ def _require_uuid(value: str) -> str:
 def _guard(callable_, *args, **kwargs):
     try:
         return callable_(*args, **kwargs)
-    except AsrBusyError as exc:
+    except (AsrBusyError, RecordingInProgressError) as exc:
+        # 409, not 503: the server is fine and the precondition is not met. A recording
+        # in progress is a state the operator resolves, not an error to retry blindly.
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
     except AsrServiceError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from None
@@ -102,6 +109,36 @@ def _guard(callable_, *args, **kwargs):
 @asr_router.get("/status", summary="Transcription state (loads no model)")
 def asr_status(service: ServiceDep) -> dict[str, Any]:
     return service.status()
+
+
+@asr_router.get("/recordings", summary="Closed recordings that can be transcribed")
+def transcribable_recordings(
+    service: ServiceDep, limit: int = Query(default=100, ge=1, le=500)
+) -> dict[str, Any]:
+    """The list the panel offers instead of asking the operator to type a UUID.
+
+    Each entry carries `eligible` and `ineligible_reason`, computed server-side so the
+    button's enabled state and the explanation shown next to it cannot disagree.
+    """
+    return {
+        "recordings": service.list_transcribable(limit=limit),
+        "active_capture": service.active_capture(),
+    }
+
+
+@asr_router.get("/preflight", summary="Everything that must hold before a run")
+def asr_preflight(
+    service: ServiceDep, recording_uuid: str | None = Query(default=None)
+) -> dict[str, Any]:
+    """Loads no model and opens no microphone.
+
+    Separate from `transcribe` on purpose: an operator told *before* pressing the button
+    that no model is provisioned has a problem they can fix; one told five seconds into a
+    run has a failure to interpret.
+    """
+    if recording_uuid is not None:
+        _require_uuid(recording_uuid)
+    return service.preflight(recording_uuid)
 
 
 @asr_router.get("/models", summary="Which models are ready (never downloads)")

@@ -2043,31 +2043,49 @@
 
    The whole pipeline runs behind one POST that takes minutes, so this polls
    `/asr/status` for progress rather than holding a request open -- exactly as the
-   recording panel does. Every call goes through the pywebview bridge, which means
-   the session token never enters JavaScript and the page can only reach the
-   anchored paths on the shell's allowlist.
+   recording panel does. Every call goes through the pywebview bridge, which means the
+   session token never enters JavaScript and the page can only reach the anchored paths
+   on the shell's allowlist.
 
-   Nothing here can cause a model download. `/asr/models` reports readiness and the
-   Transcribe button stays disabled until a pass-1 model is ready; provisioning
-   remains a deliberate command-line action.
+   Nothing here can cause a model download. `/asr/models` reports readiness, `/asr/
+   preflight` reports every precondition, and the Proses transkripsi button stays
+   disabled until the server says the recording is eligible. Provisioning remains a
+   deliberate command-line action.
+
+   Eligibility is decided by the server, never here: `/asr/recordings` returns
+   `eligible` and `ineligible_reason` per recording, so the button's enabled state and
+   the explanation next to it cannot disagree.
    ========================================================================== */
 (function () {
   'use strict';
 
   var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
   var POLL_MS = 1200;
+  var ELAPSED_MS = 1000;
+  /* A segment is called low-confidence when the decoder's own average token log
+     probability is below the same floor pass-2 selection uses. Shown, never hidden:
+     a reviewer needs to know which lines to check against the audio. */
+  var LOW_CONFIDENCE_LOGPROB = -1.0;
 
   var el = {
     panel: document.getElementById('transcript-panel'),
     open: document.getElementById('open-transcript-btn'),
     modelKv: document.getElementById('asr-model-kv'),
     modelMissing: document.getElementById('asr-model-missing'),
-    uuid: document.getElementById('asr-recording-uuid'),
+    select: document.getElementById('asr-recording-select'),
+    refresh: document.getElementById('asr-refresh-btn'),
+    preflightBtn: document.getElementById('asr-preflight-btn'),
+    selectedKv: document.getElementById('asr-selected-kv'),
+    ineligible: document.getElementById('asr-ineligible'),
+    emptyHint: document.getElementById('asr-empty-hint'),
+    preflightList: document.getElementById('asr-preflight-list'),
     run: document.getElementById('asr-run-btn'),
     cancel: document.getElementById('asr-cancel-btn'),
     load: document.getElementById('asr-load-btn'),
+    retryHint: document.getElementById('asr-retry-hint'),
     error: document.getElementById('asr-error'),
     pill: document.getElementById('asr-pill'),
+    elapsed: document.getElementById('asr-elapsed'),
     costKv: document.getElementById('asr-cost-kv'),
     stages: document.getElementById('asr-stage-list'),
     pass2Kv: document.getElementById('asr-pass2-kv'),
@@ -2081,7 +2099,11 @@
 
   var busy = false;
   var pollTimer = null;
+  var elapsedTimer = null;
+  var startedAt = 0;
   var modelsReady = false;
+  var preflightOk = false;
+  var recordings = [];
 
   function bridge() {
     return window.pywebview && window.pywebview.api ? window.pywebview.api : null;
@@ -2139,7 +2161,30 @@
     show(el.error, Boolean(message));
   }
 
-  /* -- model readiness -------------------------------------------------- */
+  function selectedUuid() {
+    var value = (el.select.value || '').trim();
+    return UUID_RE.test(value) ? value : '';
+  }
+
+  function selectedEntry() {
+    var uuid = selectedUuid();
+    if (!uuid) return null;
+    for (var index = 0; index < recordings.length; index += 1) {
+      if (recordings[index].recording_uuid === uuid) return recordings[index];
+    }
+    return null;
+  }
+
+  /* -- readiness and the recording list --------------------------------- */
+
+  var INELIGIBLE_TEXT = {
+    MODEL_UNAVAILABLE:
+      'Model transkripsi belum tersedia. Provisioning dilakukan sekali dari terminal.',
+    RECORDING_IN_PROGRESS:
+      'Ada perekaman yang sedang berjalan. Transkripsi tidak boleh bersaing dengan ' +
+      'perekaman; hentikan rekaman terlebih dahulu.',
+    NO_AUDIO: 'Rekaman ini tidak memiliki chunk audio, jadi tidak ada yang ditranskripsi.'
+  };
 
   async function loadModels() {
     var response = await get('/asr/models');
@@ -2158,11 +2203,145 @@
     updateButtons();
   }
 
+  function describeTranscript(entry) {
+    if (!entry.transcript_revision) return 'belum ada';
+    return (
+      'revisi ' +
+      entry.transcript_revision +
+      ' (' +
+      String(entry.transcript_status) +
+      ', ' +
+      entry.segment_count +
+      ' segmen)'
+    );
+  }
+
+  async function loadRecordings() {
+    var response = await get('/asr/recordings', { limit: 100 });
+    if (!response.ok) {
+      fail(String((response.data && response.data.detail) || response.error || 'gagal'));
+      return;
+    }
+    var previous = selectedUuid();
+    recordings = (response.data || {}).recordings || [];
+    el.select.textContent = '';
+    show(el.emptyHint, recordings.length === 0);
+
+    if (recordings.length === 0) {
+      var none = document.createElement('option');
+      none.value = '';
+      none.textContent = 'Tidak ada rekaman selesai';
+      el.select.appendChild(none);
+    }
+    recordings.forEach(function (entry) {
+      var option = document.createElement('option');
+      option.value = entry.recording_uuid;
+      option.textContent =
+        (entry.meeting_title || '(tanpa judul)') +
+        ' — ' +
+        stamp(entry.duration_ms) +
+        ' — ' +
+        entry.recording_uuid.slice(0, 8);
+      el.select.appendChild(option);
+    });
+    if (previous) el.select.value = previous;
+    renderSelected();
+  }
+
+  function renderSelected() {
+    var entry = selectedEntry();
+    preflightOk = false;
+    el.preflightList.textContent = '';
+    if (!entry) {
+      setKv(el.selectedKv, [['Status', 'belum ada rekaman dipilih']]);
+      show(el.ineligible, false);
+      show(el.retryHint, false);
+      updateButtons();
+      return;
+    }
+    setKv(el.selectedKv, [
+      ['Rapat', entry.meeting_title || '(tanpa judul)'],
+      ['Durasi', stamp(entry.duration_ms)],
+      ['Chunk', String(entry.chunk_count)],
+      ['Integritas manifest', String(entry.manifest_status)],
+      ['Kualitas', entry.degraded ? 'terdegradasi — periksa level' : 'normal'],
+      ['Transkrip', describeTranscript(entry)],
+      ['Jumlah revisi', String(entry.revision_count)]
+    ]);
+    var reason = entry.ineligible_reason;
+    el.ineligible.textContent = reason
+      ? INELIGIBLE_TEXT[reason] || String(reason)
+      : '';
+    show(el.ineligible, Boolean(reason));
+
+    /* Re-running is the retry: it writes a new revision and leaves the old one as
+       evidence. Said plainly, because "Proses transkripsi" on a recording that already
+       has a transcript is otherwise an alarming button to press. */
+    if (entry.revision_count > 0) {
+      el.retryHint.textContent =
+        'Rekaman ini sudah memiliki ' +
+        entry.revision_count +
+        ' revisi. Menjalankan ulang membuat revisi baru dan menonaktifkan yang lama — ' +
+        'revisi sebelumnya tetap disimpan sebagai bukti, tidak ditimpa. Tahap yang ' +
+        'sudah selesai dan masih valid (salinan kerja, VAD) akan dipakai ulang.';
+      show(el.retryHint, true);
+    } else {
+      show(el.retryHint, false);
+    }
+    updateButtons();
+  }
+
   function updateButtons() {
-    var valid = UUID_RE.test((el.uuid.value || '').trim());
-    el.run.disabled = busy || !valid || !modelsReady;
+    var entry = selectedEntry();
+    var eligible = Boolean(entry && entry.eligible);
+    el.run.disabled = busy || !eligible || !modelsReady || !preflightOk;
     el.cancel.disabled = !busy;
-    el.load.disabled = busy || !valid;
+    el.load.disabled = busy || !entry || !entry.transcript_revision;
+    el.preflightBtn.disabled = busy || !entry;
+    el.refresh.disabled = busy;
+    el.select.disabled = busy;
+    el.run.textContent =
+      entry && entry.revision_count > 0 ? 'Proses transkripsi ulang' : 'Proses transkripsi';
+  }
+
+  /* -- preflight -------------------------------------------------------- */
+
+  async function runPreflight() {
+    fail('');
+    var uuid = selectedUuid();
+    if (!uuid) {
+      fail('Pilih rekaman terlebih dahulu.');
+      return;
+    }
+    var response = await get('/asr/preflight', { recording_uuid: uuid });
+    if (!response.ok) {
+      fail(String((response.data && response.data.detail) || response.error || 'gagal'));
+      return;
+    }
+    var data = response.data || {};
+    preflightOk = Boolean(data.ok);
+    el.preflightList.textContent = '';
+    (data.checks || []).forEach(function (check) {
+      var li = document.createElement('li');
+      li.className = check.ok ? 'stage-ok' : 'stage-fail';
+      var name = document.createElement('strong');
+      name.textContent = check.key + ': ';
+      li.appendChild(name);
+      li.appendChild(document.createTextNode(check.detail || ''));
+      if (!check.ok && !check.blocking) {
+        var note = document.createElement('em');
+        note.textContent = ' (tidak memblokir)';
+        li.appendChild(note);
+      }
+      el.preflightList.appendChild(li);
+    });
+    if (!preflightOk) {
+      fail(
+        data.blocking_count +
+          ' pemeriksaan memblokir transkripsi. Perbaiki dahulu, lalu jalankan preflight lagi.'
+      );
+    }
+    updateButtons();
   }
 
   /* -- progress --------------------------------------------------------- */
@@ -2215,6 +2394,27 @@
     setKv(el.pass2Kv, rows);
   }
 
+  function startElapsed() {
+    startedAt = Date.now();
+    if (elapsedTimer !== null) return;
+    tickElapsed();
+  }
+
+  function tickElapsed() {
+    el.elapsed.textContent = stamp(Date.now() - startedAt);
+    elapsedTimer = window.setTimeout(function () {
+      elapsedTimer = null;
+      if (busy) tickElapsed();
+    }, ELAPSED_MS);
+  }
+
+  function stopElapsed() {
+    if (elapsedTimer !== null) {
+      window.clearTimeout(elapsedTimer);
+      elapsedTimer = null;
+    }
+  }
+
   async function poll() {
     var response = await get('/asr/status');
     if (!response.ok) return;
@@ -2233,6 +2433,7 @@
       schedulePoll();
     } else {
       stopPolling();
+      stopElapsed();
     }
   }
 
@@ -2276,15 +2477,22 @@
             ' koreksi'
           : 'nonaktif'
       ],
-      ['Segmen / kata', transcript.segment_count + ' / ' + transcript.word_count]
+      ['Segmen / kata', transcript.segment_count + ' / ' + transcript.word_count],
+      ['Pembicara', 'belum dipisahkan (Phase 5-6)']
     ]);
 
     el.segments.textContent = '';
     var segments = payload.segments || [];
     show(el.transcriptEmpty, segments.length === 0);
     segments.forEach(function (segment) {
+      var low =
+        typeof segment.avg_logprob === 'number' &&
+        segment.avg_logprob < LOW_CONFIDENCE_LOGPROB;
       var li = document.createElement('li');
-      li.className = 'segment-row' + (segment.asr_pass === 2 ? ' segment-pass2' : '');
+      li.className =
+        'segment-row' +
+        (segment.asr_pass === 2 ? ' segment-pass2' : '') +
+        (low ? ' segment-low' : '');
       var time = document.createElement('span');
       time.className = 'segment-time';
       time.textContent = stamp(segment.start_ms);
@@ -2299,6 +2507,16 @@
       li.appendChild(time);
       li.appendChild(who);
       li.appendChild(text);
+      if (low) {
+        var badge = document.createElement('span');
+        badge.className = 'segment-lowconf';
+        badge.textContent = 'rendah';
+        badge.title =
+          'Keyakinan decoder rendah (avg_logprob ' +
+          segment.avg_logprob.toFixed(2) +
+          '). Periksa terhadap audio.';
+        li.appendChild(badge);
+      }
       el.segments.appendChild(li);
     });
   }
@@ -2325,9 +2543,9 @@
 
   async function loadTranscript() {
     fail('');
-    var uuid = (el.uuid.value || '').trim();
-    if (!UUID_RE.test(uuid)) {
-      fail('Recording UUID harus berupa UUID huruf kecil.');
+    var uuid = selectedUuid();
+    if (!uuid) {
+      fail('Pilih rekaman terlebih dahulu.');
       return;
     }
     var response = await get('/asr/transcript/' + uuid);
@@ -2346,19 +2564,21 @@
 
   async function run() {
     fail('');
-    var uuid = (el.uuid.value || '').trim();
-    if (!UUID_RE.test(uuid)) {
-      fail('Recording UUID harus berupa UUID huruf kecil.');
+    var uuid = selectedUuid();
+    if (!uuid) {
+      fail('Pilih rekaman terlebih dahulu.');
       return;
     }
     busy = true;
     updateButtons();
     el.pill.textContent = 'Berjalan';
+    startElapsed();
     schedulePoll();
 
     var response = await post('/asr/transcribe', { recording_uuid: uuid });
     busy = false;
     stopPolling();
+    stopElapsed();
     if (!response.ok) {
       var detail = (response.data && response.data.detail) || response.error || 'gagal';
       if (detail && typeof detail === 'object') {
@@ -2370,6 +2590,7 @@
         fail(String(detail));
       }
       el.pill.textContent = 'Gagal';
+      await loadRecordings();
       updateButtons();
       return;
     }
@@ -2377,6 +2598,7 @@
     renderStages((response.data || {}).stages);
     renderCost(response.data);
     renderPass2(response.data);
+    await loadRecordings();
     await loadTranscript();
     updateButtons();
   }
@@ -2412,12 +2634,25 @@
       el.panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
       once(async function () {
         await loadModels();
+        await loadRecordings();
         await poll();
       });
     });
   }
 
-  el.uuid.addEventListener('input', updateButtons);
+  el.select.addEventListener('change', function () {
+    fail('');
+    renderSelected();
+  });
+  el.refresh.addEventListener('click', function () {
+    once(async function () {
+      await loadModels();
+      await loadRecordings();
+    });
+  });
+  el.preflightBtn.addEventListener('click', function () {
+    once(runPreflight);
+  });
   el.run.addEventListener('click', function () {
     once(run);
   });
@@ -2429,6 +2664,7 @@
   });
 
   setKv(el.modelKv, [['Status', 'belum dimuat']]);
+  setKv(el.selectedKv, [['Status', 'belum ada rekaman dipilih']]);
   renderCost(null);
   renderPass2(null);
   updateButtons();

@@ -509,32 +509,51 @@
         </article>
 
         <article class="status-card">
-          <header><h3>Jalankan transkripsi</h3></header>
+          <header><h3>Pilih rekaman</h3></header>
           <label class="field">
-            <span>Recording UUID</span>
-            <input type="text" id="asr-recording-uuid" maxlength="36"
-                   placeholder="mis. 3f2c…" autocomplete="off" />
+            <span>Rekaman selesai</span>
+            <select id="asr-recording-select">
+              <option value="">Memuat…</option>
+            </select>
           </label>
-          <p class="muted" id="asr-uuid-hint">
-            UUID rekaman diperoleh dari panel perekaman setelah rekaman berhenti.
+          <div class="btn-row">
+            <button type="button" class="btn" id="asr-refresh-btn">
+              Muat ulang daftar
+            </button>
+            <button type="button" class="btn" id="asr-preflight-btn">
+              Jalankan preflight
+            </button>
+          </div>
+          <dl class="kv" id="asr-selected-kv"></dl>
+          <p class="notice" id="asr-ineligible" hidden></p>
+          <p class="muted" id="asr-empty-hint" hidden>
+            Belum ada rekaman berstatus <code>RECORDED</code>. Rekam rapat terlebih
+            dahulu di panel perekaman, lalu tekan <em>Muat ulang daftar</em>.
           </p>
+        </article>
+
+        <article class="status-card">
+          <header><h3>Jalankan transkripsi</h3></header>
+          <ul class="plain" id="asr-preflight-list"></ul>
           <div class="btn-row">
             <button type="button" class="btn btn-primary" id="asr-run-btn" disabled>
-              Transkripsikan
+              Proses transkripsi
             </button>
             <button type="button" class="btn" id="asr-cancel-btn" disabled>
               Batalkan
             </button>
-            <button type="button" class="btn" id="asr-load-btn">
+            <button type="button" class="btn" id="asr-load-btn" disabled>
               Muat transkrip tersimpan
             </button>
           </div>
+          <p class="muted" id="asr-retry-hint" hidden></p>
           <p class="warn-line" id="asr-error" hidden></p>
         </article>
 
         <article class="status-card">
           <header><h3>Progres &amp; biaya</h3></header>
           <span class="pill" id="asr-pill">Idle</span>
+          <p class="elapsed" id="asr-elapsed">00:00:00</p>
           <dl class="kv" id="asr-cost-kv"></dl>
           <ul class="plain" id="asr-stage-list"></ul>
         </article>
@@ -558,6 +577,12 @@
       <article class="status-card" id="asr-transcript-card">
         <header><h3>Transkrip</h3></header>
         <dl class="kv" id="asr-transcript-kv"></dl>
+        <p class="muted">
+          Transkrip di bawah bersifat <strong>read-only</strong> pada Phase 4. Penyuntingan
+          oleh reviewer adalah Phase 7. Segmen bertanda
+          <span class="segment-lowconf">rendah</span> memiliki keyakinan rendah dan
+          sebaiknya diperiksa terhadap audio.
+        </p>
         <ul class="plain" id="asr-segment-list"></ul>
         <p class="muted" id="asr-transcript-empty">Belum ada transkrip yang dimuat.</p>
       </article>

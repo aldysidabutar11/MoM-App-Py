@@ -340,6 +340,15 @@ def build_parser() -> argparse.ArgumentParser:
     asr_bench.add_argument(
         "--out", default=None, help="Write the machine-readable result to this path."
     )
+    asr_bench.add_argument(
+        "--validate-only",
+        action="store_true",
+        help=(
+            "Check an evaluation manifest and stop: verify its schema, every audio "
+            "checksum, the consent status and the reference files. Loads no model, runs "
+            "no inference, writes nothing. Requires --manifest."
+        ),
+    )
 
     asr_transcribe = asr_sub.add_parser(
         "transcribe",
@@ -964,11 +973,21 @@ def _cmd_audio_recover(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True, default=str))
     else:
+        closed = sum(1 for report in payload["reports"] if report.get("summary_written"))
         print(f"Scanned            : {payload['scanned']} interrupted recording(s)")
         print(f"Chunks recovered   : {payload['recovered_chunks']}")
         print(f"Chunks quarantined : {payload['quarantined_chunks']}")
+        # Reported separately, because a recording whose chunks were all complete needs
+        # no salvage and still needs closing. Printing only "0 recovered, 0 quarantined"
+        # made a successful run look like a no-op.
+        print(f"Recordings closed  : {closed} (summary manifest written by recovery)")
         for report in payload["reports"]:
             print(f"\n  {report['directory']}")
+            if report.get("summary_written"):
+                print(
+                    "    closed an interrupted recording: summary manifest written from "
+                    "its verified chunk records"
+                )
             for chunk in report["chunks"]:
                 detail = chunk.get("reason") or (
                     f"{chunk['frames_recovered']} frames, "
@@ -1799,6 +1818,10 @@ def _cmd_asr_bench(args: argparse.Namespace) -> int:
     from mom_igd.asr.benchmark import BenchmarkError, run_benchmark
 
     config, paths = _asr_paths(args)
+
+    if getattr(args, "validate_only", False):
+        return _validate_manifest_only(args)
+
     threads = None
     if getattr(args, "threads", None):
         try:
@@ -2024,6 +2047,72 @@ def _cmd_asr_revisions(args: argparse.Namespace) -> int:
             f"{row['revision']:>4} {row['status']:>10} "
             f"{'yes' if row['is_active'] else '':>6} {row['segment_count']:>5} "
             f"{row['word_count']:>6}  {row['created_at']}"
+        )
+    return EXIT_OK
+
+
+def _validate_manifest_only(args: argparse.Namespace) -> int:
+    """`asr bench --manifest <path> --validate-only`.
+
+    Producing a reference transcript costs four to six times the audio duration; finding
+    out afterwards that a checksum is wrong is avoidable. This applies the same loader the
+    benchmark uses -- same schema, same checksums, same consent gate -- and stops.
+    """
+    from mom_igd.asr.benchmark import validate_corpus_manifest
+
+    manifest = getattr(args, "manifest", None)
+    if not manifest:
+        print(
+            "--validate-only needs --manifest <path>. There is nothing to validate "
+            "without one; see docs/examples/asr-evaluation-manifest.example.json.",
+            file=sys.stderr,
+        )
+        return EXIT_FAILURE
+
+    report = validate_corpus_manifest(manifest)
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2, default=str))
+        return EXIT_OK if report["ok"] else EXIT_FAILURE
+
+    if not report["ok"]:
+        print(f"Manifest REFUSED: {report['problem']}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f"Manifest          : {report['manifest']}")
+    print(f"Samples           : {report['sample_count']}")
+    print(
+        f"Total audio       : {report['total_duration_seconds']:.1f}s "
+        f"({report['total_duration_seconds'] / 60:.1f} min)"
+    )
+    print(f"With reference    : {report['with_reference']} of {report['sample_count']}")
+    print(f"With word times   : {report['with_word_timestamps']}")
+    print(
+        "Conditions        : "
+        + (
+            ", ".join(f"{name}={count}" for name, count in sorted(report["conditions"].items()))
+            or "none declared"
+        )
+    )
+    print()
+    print(f"{'sample':38} {'consent':17} {'condition':11} {'ref':>4} {'seconds':>8}")
+    for sample in report["samples"]:
+        print(
+            f"{sample['sample_uuid'][:38]:38} {sample['consent_status']:17} "
+            f"{sample['condition']:11} "
+            f"{'yes' if sample['has_reference_transcript'] else 'NO':>4} "
+            f"{sample['declared_duration_seconds']:>8.1f}"
+        )
+    for warning in report["warnings"]:
+        print(f"\nWARN: {warning}")
+
+    print(
+        "\nEvery checksum verified and every consent status accepted. Nothing was "
+        "loaded, decoded or written."
+    )
+    if report["with_reference"] == 0:
+        print(
+            "This manifest cannot produce an accuracy number: no sample has a reference "
+            "transcript, so WER will be N/A."
         )
     return EXIT_OK
 

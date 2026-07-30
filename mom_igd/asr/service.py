@@ -27,7 +27,14 @@ from typing import Any, Callable, Final
 
 from mom_igd.logging_setup import get_logger
 
-__all__ = ["AsrBusyError", "AsrService", "AsrServiceError", "TranscriptionHandle"]
+__all__ = [
+    "ACTIVE_CAPTURE_STATES",
+    "AsrBusyError",
+    "AsrService",
+    "AsrServiceError",
+    "RecordingInProgressError",
+    "TranscriptionHandle",
+]
 
 _LOG = get_logger("asr.service")
 
@@ -38,6 +45,23 @@ class AsrServiceError(RuntimeError):
 
 class AsrBusyError(AsrServiceError):
     """A heavy run is already in flight. Exactly one is permitted."""
+
+
+class RecordingInProgressError(AsrServiceError):
+    """A capture is live. Transcription must not compete with it for the machine."""
+
+
+#: Capture states that mean a microphone is open or a recording is being finalised.
+#: Must match the partial unique index in migration 0002 that enforces one active
+#: recording across the data root.
+ACTIVE_CAPTURE_STATES: Final[tuple[str, ...]] = (
+    "PREFLIGHT",
+    "ARMED",
+    "RECORDING",
+    "PAUSED",
+    "STOPPING",
+    "FINALIZING",
+)
 
 
 @dataclass(slots=True)
@@ -120,6 +144,219 @@ class AsrService:
             "pass2_model": ready["pass2"].model_name if "pass2" in ready else None,
         }
 
+    # -- what can be transcribed --------------------------------------------
+
+    def active_capture(self) -> str | None:
+        """The UUID of a recording that is currently capturing, if any.
+
+        Asked with SQL rather than by importing the capture service: nothing under
+        `mom_igd/asr/` may depend on `mom_igd.audio`, and this needs one fact, not a
+        service. The state list mirrors migration 0002's partial unique index.
+        """
+        placeholders = ", ".join("?" for _ in ACTIVE_CAPTURE_STATES)
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                f"SELECT recording_uuid FROM recordings WHERE status IN ({placeholders}) "
+                "LIMIT 1",
+                ACTIVE_CAPTURE_STATES,
+            ).fetchone()
+        finally:
+            conn.close()
+        return str(row["recording_uuid"]) if row is not None else None
+
+    def list_transcribable(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        """Closed recordings, newest first, each with its transcript state.
+
+        The panel needs this so an operator picks a recording from a list rather than
+        typing a UUID: a typed identifier is a way to get a 404 and no way to discover
+        what exists. `eligible` and `reason` are computed here rather than in JavaScript,
+        so the button's enabled state and the explanation cannot disagree.
+        """
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT r.recording_uuid, r.status, r.duration_ms, r.chunk_count,
+                       r.manifest_status, r.degraded, r.created_at,
+                       m.title AS meeting_title,
+                       t.revision AS transcript_revision,
+                       t.status  AS transcript_status,
+                       t.segment_count, t.word_count, t.pass2_skipped_reason,
+                       (SELECT COUNT(*) FROM transcripts a WHERE a.recording_id = r.id)
+                           AS revision_count
+                  FROM recordings r
+                  JOIN meetings m ON m.id = r.meeting_id
+                  LEFT JOIN transcripts t
+                         ON t.recording_id = r.id AND t.is_active = 1
+                 WHERE r.status = 'RECORDED'
+                 ORDER BY r.id DESC
+                 LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        models = self._model_status()
+        busy_with = self.active_capture()
+        # Two kinds of blocker, and the specific one wins. "This recording has no audio"
+        # is about the recording and will never be fixed by provisioning a model;
+        # "no model" and "a capture is running" are about the machine and apply to every
+        # row. Reporting the global one first hid the row-specific ones entirely.
+        global_reason: str | None = None
+        if not models["pass1_ready"]:
+            global_reason = "MODEL_UNAVAILABLE"
+        elif busy_with is not None:
+            global_reason = "RECORDING_IN_PROGRESS"
+
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            reason: str | None = None
+            if int(row["chunk_count"] or 0) <= 0:
+                reason = "NO_AUDIO"
+            elif global_reason is not None:
+                reason = global_reason
+            out.append(
+                {
+                    "recording_uuid": row["recording_uuid"],
+                    "meeting_title": row["meeting_title"],
+                    "duration_ms": int(row["duration_ms"] or 0),
+                    "chunk_count": int(row["chunk_count"] or 0),
+                    "manifest_status": row["manifest_status"],
+                    "degraded": bool(row["degraded"]),
+                    "created_at": row["created_at"],
+                    "transcript_revision": row["transcript_revision"],
+                    "transcript_status": row["transcript_status"],
+                    "revision_count": int(row["revision_count"] or 0),
+                    "segment_count": row["segment_count"],
+                    "word_count": row["word_count"],
+                    "pass2_skipped_reason": row["pass2_skipped_reason"],
+                    "eligible": reason is None,
+                    "ineligible_reason": reason,
+                }
+            )
+        return out
+
+    def preflight(self, recording_uuid: str | None = None) -> dict[str, Any]:
+        """Everything that must be true before a run, checked without loading a model.
+
+        Deliberately separate from `transcribe`: an operator who is told *before* pressing
+        the button that no model is provisioned has a problem they can fix, while one told
+        five seconds into a run has a failure to interpret.
+        """
+        import shutil
+
+        models = self._model_status()
+        capture = self.active_capture()
+        checks: list[dict[str, Any]] = [
+            {
+                "key": "model_pass1",
+                "ok": bool(models["pass1_ready"]),
+                "detail": (
+                    f"pass 1 ready: {models['pass1_model']}"
+                    if models["pass1_ready"]
+                    else "no pass-1 model is provisioned. Run "
+                    "`python -m mom_igd asr provision asr-pass1` once, with network "
+                    "access. Transcription never downloads a model by itself."
+                ),
+                "blocking": True,
+            },
+            {
+                "key": "model_pass2",
+                "ok": bool(models["pass2_ready"]),
+                "detail": (
+                    f"pass 2 ready: {models['pass2_model']}"
+                    if models["pass2_ready"]
+                    else "no pass-2 model. The run will complete on the first pass and "
+                    "record PASS2_MODEL_UNAVAILABLE."
+                ),
+                "blocking": False,
+            },
+            {
+                "key": "no_active_recording",
+                "ok": capture is None,
+                "detail": (
+                    "no capture is in progress"
+                    if capture is None
+                    else "a recording is in progress. Transcription would compete with "
+                    "it for CPU and disk, and a recording must never be put at risk by "
+                    "post-processing. Stop the recording first."
+                ),
+                "blocking": True,
+            },
+            {
+                "key": "worker_slot",
+                "ok": not self.busy,
+                "detail": (
+                    "the heavy worker slot is free"
+                    if not self.busy
+                    else "another transcription is running. Exactly one heavy model may "
+                    "be resident at a time."
+                ),
+                "blocking": True,
+            },
+        ]
+
+        try:
+            free_gb = shutil.disk_usage(self._paths.root).free / (1 << 30)
+        except OSError as exc:  # pragma: no cover - unreadable data root
+            checks.append(
+                {
+                    "key": "disk",
+                    "ok": False,
+                    "detail": f"the data root could not be measured: {exc}",
+                    "blocking": True,
+                }
+            )
+        else:
+            # The working copy is 16 kHz mono PCM16: about 115 MB per hour. Two
+            # gigabytes is generous for a long meeting plus the database.
+            checks.append(
+                {
+                    "key": "disk",
+                    "ok": free_gb >= 2.0,
+                    "detail": (
+                        f"{free_gb:.1f} GB free in the data root"
+                        + ("" if free_gb >= 2.0 else " -- below the 2.0 GB minimum")
+                    ),
+                    "blocking": free_gb < 2.0,
+                }
+            )
+
+        if recording_uuid is not None:
+            entry = next(
+                (
+                    item
+                    for item in self.list_transcribable(limit=500)
+                    if item["recording_uuid"] == recording_uuid
+                ),
+                None,
+            )
+            checks.append(
+                {
+                    "key": "recording",
+                    "ok": entry is not None,
+                    "detail": (
+                        f"{entry['chunk_count']} chunk(s), "
+                        f"{entry['duration_ms'] / 1000:.0f}s, manifest "
+                        f"{entry['manifest_status']}"
+                        if entry is not None
+                        else "this recording is not a closed recording with audio. Only "
+                        "a RECORDED recording can be transcribed."
+                    ),
+                    "blocking": entry is None,
+                }
+            )
+
+        blocking = [check for check in checks if check["blocking"] and not check["ok"]]
+        return {
+            "ok": not blocking,
+            "recording_uuid": recording_uuid,
+            "checks": checks,
+            "blocking_count": len(blocking),
+        }
+
     def request_cancel(self) -> bool:
         """Ask the running pipeline to stop at its next boundary."""
         with self._lock:
@@ -152,6 +389,19 @@ class AsrService:
             raise AsrServiceError(
                 "resources.max_heavy_workers must be 1. Configuration validation "
                 "normally rejects anything else."
+            )
+
+        # Checked here rather than only in preflight, because preflight is advice and
+        # this is the gate. A recording must never be put at risk by post-processing
+        # competing for CPU and disk -- and the operator can always record the next
+        # meeting while an earlier one transcribes, which is why the guard is on the
+        # capture side of the pair and not the reverse.
+        capturing = self.active_capture()
+        if capturing is not None:
+            raise RecordingInProgressError(
+                f"recording {capturing} is in progress, so transcription will not start. "
+                "Stop the recording first. Transcription is deliberately never allowed "
+                "to compete with a live capture."
             )
 
         handle = TranscriptionHandle(

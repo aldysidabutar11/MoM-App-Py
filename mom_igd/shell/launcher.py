@@ -56,6 +56,8 @@ ALLOWED_PROXY_PATHS: Final[frozenset[str]] = frozenset(
         # read the readiness index, and neither can cause a download.
         "/asr/status",
         "/asr/models",
+        "/asr/recordings",
+        "/asr/preflight",
     }
 )
 """Explicit GET allowlist. The page cannot ask the proxy to call an arbitrary path."""

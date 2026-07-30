@@ -38,7 +38,15 @@ PANEL_IDS = (
     "open-transcript-btn",
     "asr-model-kv",
     "asr-model-missing",
-    "asr-recording-uuid",
+    "asr-recording-select",
+    "asr-refresh-btn",
+    "asr-preflight-btn",
+    "asr-selected-kv",
+    "asr-ineligible",
+    "asr-empty-hint",
+    "asr-preflight-list",
+    "asr-retry-hint",
+    "asr-elapsed",
     "asr-run-btn",
     "asr-cancel-btn",
     "asr-load-btn",
@@ -162,12 +170,69 @@ def test_the_panel_offers_no_way_to_download_a_model(html: str, js: str) -> None
     assert "<button" not in panel[panel.index("asr-model-missing") : ][:400]
 
 
-def test_the_transcribe_button_is_disabled_until_a_model_is_ready(js: str) -> None:
+def test_the_transcribe_button_is_disabled_until_everything_is_ready(js: str) -> None:
+    """Eligibility, model readiness and a passed preflight -- all three, server-decided."""
     block = js[js.index("Phase 4: transcription panel") :]
-    assert "el.run.disabled = busy || !valid || !modelsReady" in block
+    assert (
+        "el.run.disabled = busy || !eligible || !modelsReady || !preflightOk" in block
+    )
+
+
+def test_eligibility_comes_from_the_server_not_from_javascript(js: str) -> None:
+    """The button's enabled state and the explanation beside it cannot then disagree."""
+    block = js[js.index("Phase 4: transcription panel") :]
+    assert "entry.eligible" in block
+    assert "ineligible_reason" in block
+    # No client-side reimplementation of the rules the server already applied.
+    for invented in ("status === 'RECORDED'", "chunk_count > 0", "=== 'RECORDED'"):
+        assert invented not in block, invented
+
+
+def test_the_button_says_proses_transkripsi(html: str, js: str) -> None:
+    assert "Proses transkripsi" in html
+    block = js[js.index("Phase 4: transcription panel") :]
+    assert "Proses transkripsi ulang" in block, (
+        "re-running an already-transcribed recording must say so on the button"
+    )
+
+
+def test_re_running_is_explained_as_a_new_revision(js: str) -> None:
+    """Pressing it on a recording that already has a transcript must not look destructive."""
+    block = js[js.index("Phase 4: transcription panel") :]
+    assert "revisi baru" in block
+    assert "tidak ditimpa" in block
+
+
+def test_the_panel_shows_elapsed_time_while_running(html: str, js: str) -> None:
+    assert 'id="asr-elapsed"' in html
+    block = js[js.index("Phase 4: transcription panel") :]
+    assert "startElapsed" in block and "stopElapsed" in block
+
+
+def test_the_elapsed_timer_does_not_use_a_repeating_timer(js: str) -> None:
+    block = js[js.index("Phase 4: transcription panel") :]
+    assert "setInterval" not in block
+    assert "tickElapsed" in block
+
+
+def test_low_confidence_segments_are_marked_not_hidden(css: str, js: str) -> None:
+    block = js[js.index("Phase 4: transcription panel") :]
+    assert "LOW_CONFIDENCE_LOGPROB" in block
+    assert "avg_logprob" in block
+    assert "segment-lowconf" in block
+    assert ".segment-lowconf" in css
+
+
+def test_the_panel_runs_preflight_before_offering_the_button(js: str) -> None:
+    block = js[js.index("Phase 4: transcription panel") :]
+    assert "/asr/preflight" in block
+    assert "preflightOk = false" in block, (
+        "selecting another recording must invalidate the previous preflight"
+    )
 
 
 def test_the_uuid_is_validated_in_the_page_before_being_sent(js: str) -> None:
+    """Even though it now comes from a server-supplied list, not from typing."""
     block = js[js.index("Phase 4: transcription panel") :]
     assert "UUID_RE.test" in block
     assert re.search(r"UUID_RE\s*=\s*/\^\[0-9a-f\]\{8\}", block)

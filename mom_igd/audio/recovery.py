@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
-from mom_igd.audio.backend import CaptureProfile, SampleFormat
+from mom_igd.audio.backend import CaptureProfile, SampleFormat, UnsupportedProfileError
 from mom_igd.audio.manifest import (
     CHUNK_META_SUFFIX,
     MANIFEST_FILENAME,
@@ -42,6 +42,7 @@ from mom_igd.audio.manifest import (
     read_manifest,
     sha256_file,
     utc_now_iso,
+    write_manifest_summary,
 )
 from mom_igd.audio.writer import build_wav_from_pcm, partial_meta_path, read_partial_meta
 from mom_igd.logging_setup import get_logger
@@ -96,6 +97,13 @@ class RecoveryReport:
     frames_recovered: int = 0
     bytes_discarded: int = 0
     already_final: int = 0
+    summary_written: bool = False
+    """Whether recovery closed an interrupted recording by writing its summary.
+
+    Kept separate from the chunk counters: a recording whose chunks were all complete
+    needs no salvage and still needs closing, and reporting that as "0 recovered, nothing
+    changed" is what made the warning unresolvable.
+    """
     chunks: list[RecoveredChunk] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
 
@@ -105,7 +113,11 @@ class RecoveryReport:
 
     @property
     def changed(self) -> bool:
-        return self.chunks_recovered > 0 or self.chunks_quarantined > 0
+        return (
+            self.chunks_recovered > 0
+            or self.chunks_quarantined > 0
+            or self.summary_written
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -116,6 +128,7 @@ class RecoveryReport:
             "chunks_recovered": self.chunks_recovered,
             "chunks_quarantined": self.chunks_quarantined,
             "already_final": self.already_final,
+            "summary_written": self.summary_written,
             "frames_recovered": self.frames_recovered,
             "bytes_discarded": self.bytes_discarded,
             "chunks": [c.to_dict() for c in self.chunks],
@@ -386,7 +399,88 @@ def recover_recording(
         if not (directory / f"{stem}{PARTIAL_SUFFIX}").exists():
             meta_path.unlink(missing_ok=True)
 
+    _finish_interrupted_finalisation(directory, profile, report)
     return report
+
+
+def _finish_interrupted_finalisation(
+    directory: Path, profile: CaptureProfile | None, report: RecoveryReport
+) -> None:
+    """Write the summary manifest a killed capture never got to write.
+
+    **Why this is recovery's job.** ``scan_recoverable`` treats "manifest lines but no
+    summary" as needing recovery, which is right -- the capture was killed between its
+    last chunk and finalisation. But recovery used to salvage only *partials*, so a
+    directory whose chunks were all complete had nothing to salvage and stayed flagged
+    for ever: ``doctor`` kept telling the operator to run ``audio recover``, and running
+    it changed nothing. A warning whose named remedy provably does nothing is worse than
+    no warning, because it teaches the operator to ignore the check.
+
+    Finishing the finalisation is the honest resolution. The per-chunk records in
+    ``manifest.jsonl`` are authoritative and already carry their own verified SHA-256, so
+    the summary is derived from them rather than from a re-read of the audio. It is marked
+    ``finalised_by: recovery`` and carries ``interrupted: true``, so nothing later mistakes
+    a salvaged recording for one that closed cleanly.
+
+    Nothing is written when there are no chunk records at all: a directory with only a
+    torn manifest line has no recording to close, and inventing a summary for it would be
+    inventing a recording.
+    """
+    summary_path = directory / MANIFEST_SUMMARY_FILENAME
+    if summary_path.is_file():
+        return
+    if list(directory.glob(f"*{PARTIAL_SUFFIX}")):
+        # Still something to salvage -- another pass may yet add chunks, so closing the
+        # recording now would understate it.
+        return
+
+    records, _events, _torn = read_manifest(directory)
+    if not records:
+        report.problems.append(
+            "no chunk record survived in manifest.jsonl, so there is no recording to "
+            "close. The directory is kept as evidence and holds no usable audio."
+        )
+        return
+
+    resolved = profile
+    if resolved is None:
+        first = records[0]
+        try:
+            resolved = CaptureProfile(
+                sample_rate=first.sample_rate,
+                channels=first.channels,
+                sample_format=SampleFormat(first.sample_format),
+            )
+        except (UnsupportedProfileError, ValueError) as exc:
+            report.problems.append(
+                f"cannot close the recording: its chunk records describe a format this "
+                f"build does not support ({exc}). No summary was invented."
+            )
+            return
+
+    usable = [record for record in records if record.is_usable_audio]
+    summary = write_manifest_summary(
+        directory,
+        recording_uuid=directory.name,
+        meeting_uuid=directory.parent.name,
+        profile=resolved,
+        records=records,
+        counters={
+            "written_frames": sum(record.frame_count for record in usable),
+            "dropped_frames": sum(record.dropped_frames for record in records),
+            "finalised_by": "recovery",
+            "interrupted": True,
+        },
+    )
+    report.summary_written = True
+    _LOG.info(
+        "%s: closed an interrupted recording from %d manifest record(s); "
+        "%d frame(s), chain %s.",
+        directory.name,
+        len(records),
+        summary["total_frames"],
+        str(summary["chain_sha256"])[:12],
+    )
 
 
 def _cleanup_partial(directory: Path, seq: int, partial: Path) -> None:

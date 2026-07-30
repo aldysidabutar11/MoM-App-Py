@@ -3,10 +3,13 @@
 What this phase builds, what it refuses to build, and exactly what has and has not been
 proven about it.
 
-**Status: PHASE 4 PIPELINE COMPLETE — ACCURACY ACCEPTANCE PENDING.** Every stage runs end to
-end on this machine with the real models, offline, and is covered by automated tests. No
-accuracy figure exists, because no reference transcript exists. See
-[What is not proven](#what-is-not-proven).
+**Status: PHASE 4 READY FOR MANUAL FUNCTIONAL TESTING — ACCURACY ACCEPTANCE PENDING.** Every
+stage runs end to end on this machine with the real models, offline, and is covered by
+automated tests. No accuracy figure exists, because no reference transcript exists. See
+[What is not proven](#6-what-is-not-proven).
+
+**Operator handoff:** run `scripts\phase4_acceptance_preflight.ps1`, then follow
+[`phase-4-manual-acceptance.md`](phase-4-manual-acceptance.md).
 
 ---
 
@@ -206,5 +209,7 @@ consent is refused — benchmarking somebody's voice is processing biometric dat
 | Provisioning, the hash chain, offline loading | [`adr/0015-model-provisioning-and-offline-loading.md`](adr/0015-model-provisioning-and-offline-loading.md) |
 | Pipeline shape, and the four defects measurement found | [`adr/0016-transcription-pipeline-shape.md`](adr/0016-transcription-pipeline-shape.md) |
 | Measured numbers | [`benchmarks.md`](benchmarks.md) |
-| Recovery checkpoint and the manual verification log | [`phase-4-progress.md`](phase-4-progress.md) |
+| Recovery checkpoint and the verification log | [`phase-4-progress.md`](phase-4-progress.md) |
+| Operator's manual test script | [`phase-4-manual-acceptance.md`](phase-4-manual-acceptance.md) |
+| Evaluation-corpus templates | [`examples/`](examples/) |
 | Schema, with the reasoning inline | `mom_igd/db/migrations/0005_offline_asr.sql` |

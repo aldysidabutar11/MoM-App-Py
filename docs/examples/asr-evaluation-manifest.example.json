@@ -1,0 +1,84 @@
+{
+  "_README": [
+    "Template for `asr bench --manifest`. Every value below is a PLACEHOLDER: replace",
+    "them all, and delete these _README keys or leave them -- the loader ignores keys it",
+    "does not know.",
+    "",
+    "Check it before spending decode time on it:",
+    "  python -m mom_igd asr bench --data-dir <root> --manifest <this file> --validate-only",
+    "",
+    "Keep the audio and the transcripts OUTSIDE the repository. Nothing in the repository",
+    "may ever contain a recording of a person.",
+    "",
+    "Get a checksum with:  Get-FileHash -Algorithm SHA256 '<audio-path>'",
+    "",
+    "consent_status must be one of: granted | public-licensed | synthetic.",
+    "Anything else is refused, and that is not a formality: benchmarking somebody's voice",
+    "is processing biometric data under UU PDP No. 27/2022."
+  ],
+
+  "samples": [
+    {
+      "_comment": "A clean, close-microphone recording with recorded consent.",
+      "sample_uuid": "00000000-0000-4000-8000-000000000001",
+      "audio_path": "D:\\Eval\\rapat-01-16k-mono.wav",
+      "sha256": "REPLACE_WITH_64_HEX_CHARACTERS_FROM_GET_FILEHASH_SHA256_00000000",
+      "duration_seconds": 92.5,
+      "language": "id",
+      "reference_transcript_path": "D:\\Eval\\rapat-01-reference.txt",
+      "consent_status": "granted",
+      "license_name": "internal-consented-recording",
+      "condition": "clean",
+      "technical_terms": [
+        "API",
+        "database",
+        "deployment",
+        "server",
+        "BPJS",
+        "SIMRS",
+        "rekam medis"
+      ]
+    },
+    {
+      "_comment": "The same room recorded from the centre of the table. This is the condition that decides whether the product works in a real meeting, and it needs at least 10 minutes in total to be worth anything.",
+      "sample_uuid": "00000000-0000-4000-8000-000000000002",
+      "audio_path": "D:\\Eval\\rapat-02-farfield-16k-mono.wav",
+      "sha256": "REPLACE_WITH_64_HEX_CHARACTERS_FROM_GET_FILEHASH_SHA256_00000001",
+      "duration_seconds": 610.0,
+      "language": "id",
+      "reference_transcript_path": "D:\\Eval\\rapat-02-reference.txt",
+      "consent_status": "granted",
+      "license_name": "internal-consented-recording",
+      "condition": "far-field",
+      "technical_terms": ["API", "deployment", "action item"],
+      "word_timestamp_reference_path": "D:\\Eval\\rapat-02-words.json"
+    },
+    {
+      "_comment": "A publicly licensed corpus sample. `license_name` must name the actual licence, because it is the only record of why this audio may be used.",
+      "sample_uuid": "00000000-0000-4000-8000-000000000003",
+      "audio_path": "D:\\Eval\\public-id-sample-16k-mono.wav",
+      "sha256": "REPLACE_WITH_64_HEX_CHARACTERS_FROM_GET_FILEHASH_SHA256_00000002",
+      "duration_seconds": 45.0,
+      "language": "id",
+      "reference_transcript_path": "D:\\Eval\\public-id-sample-reference.txt",
+      "consent_status": "public-licensed",
+      "license_name": "CC-BY-4.0",
+      "condition": "clean",
+      "technical_terms": []
+    }
+  ],
+
+  "_FIELD_REFERENCE": {
+    "sample_uuid": "required. Any stable identifier; a UUID keeps it unambiguous.",
+    "audio_path": "required. Absolute local path, outside the repository. 16 kHz mono PCM16 WAV is the working-copy format; other formats are decoded by the library.",
+    "sha256": "required. Verified on load. A mismatch is refused: a run against different bytes than the manifest describes is not reproducible.",
+    "duration_seconds": "required, a number. Used for the real-time factor.",
+    "language": "optional, defaults to 'id'.",
+    "reference_transcript_path": "optional but WITHOUT IT THERE IS NO ACCURACY NUMBER. Plain UTF-8 text of exactly what was said.",
+    "consent_status": "required in practice. granted | public-licensed | synthetic. Anything else, including omitting it, is refused.",
+    "license_name": "optional, defaults to 'unknown'. Name the actual basis for using the audio.",
+    "technical_terms": "optional. Terms whose survival is measured as technical-term recall. Matched on word boundaries.",
+    "word_timestamp_reference_path": "optional. JSON list of {text, start} for word-timestamp error. Very laborious to produce by hand.",
+    "condition": "optional, free text. 'clean' and 'far-field' have their own targets in the gate."
+  }
+}

@@ -30,8 +30,9 @@ def stored_transcript(conn: sqlite3.Connection, meeting_id: int) -> int:
     """A recording with one complete transcript revision, written directly."""
     with conn:
         cursor = conn.execute(
-            "INSERT INTO recordings (meeting_id, recording_uuid, relative_dir, status) "
-            "VALUES (?, ?, 'm/r', 'RECORDED')",
+            "INSERT INTO recordings (meeting_id, recording_uuid, relative_dir, status, "
+            "chunk_count, duration_ms, manifest_status) "
+            "VALUES (?, ?, 'm/r', 'RECORDED', 2, 60000, 'VERIFIED')",
             (meeting_id, RECORDING_UUID),
         )
         recording_id = int(cursor.lastrowid or 0)
@@ -347,3 +348,123 @@ def test_no_route_accepts_a_free_form_path_parameter() -> None:
         for name in getattr(route, "param_convertors", {}):
             assert name in {"recording_uuid"}, name
         assert "path:" not in getattr(route, "path_format", ""), route
+
+
+# ===========================================================================
+# The recordings list and preflight the panel depends on
+# ===========================================================================
+
+
+@pytest.mark.parametrize("path", ["/asr/recordings", "/asr/preflight"])
+def test_the_new_reads_require_the_session_token(client: Any, path: str) -> None:
+    assert client.get(path).status_code == 401
+
+
+def test_the_recordings_list_offers_closed_recordings(
+    client: Any, auth: dict[str, str], stored_transcript: int
+) -> None:
+    payload = client.get("/asr/recordings", headers=auth).json()
+    entry = next(
+        row
+        for row in payload["recordings"]
+        if row["recording_uuid"] == RECORDING_UUID
+    )
+    assert entry["transcript_revision"] == 1
+    assert entry["eligible"] is False, "no model is provisioned in a test environment"
+    assert entry["ineligible_reason"] == "MODEL_UNAVAILABLE"
+    assert payload["active_capture"] is None
+
+
+def test_the_recordings_list_carries_no_path(
+    client: Any, auth: dict[str, str], stored_transcript: int, paths: Any
+) -> None:
+    body = client.get("/asr/recordings", headers=auth).text
+    assert str(paths.root) not in body
+    assert "working/a.wav" not in body
+    assert ":\\" not in body
+
+
+def test_the_recordings_limit_is_bounded(client: Any, auth: dict[str, str], conn) -> None:
+    """An unbounded list is a way to make one request expensive."""
+    assert client.get("/asr/recordings?limit=0", headers=auth).status_code == 422
+    assert client.get("/asr/recordings?limit=501", headers=auth).status_code == 422
+    assert client.get("/asr/recordings?limit=1", headers=auth).status_code == 200
+
+
+def test_preflight_reports_every_precondition(
+    client: Any, auth: dict[str, str], conn
+) -> None:
+    payload = client.get("/asr/preflight", headers=auth).json()
+    keys = {check["key"] for check in payload["checks"]}
+    assert {"model_pass1", "model_pass2", "no_active_recording", "worker_slot", "disk"} <= keys
+    assert payload["ok"] is False, "no model is provisioned in a test environment"
+
+
+def test_preflight_accepts_a_recording_and_validates_its_shape(
+    client: Any, auth: dict[str, str], stored_transcript: int
+) -> None:
+    good = client.get(
+        f"/asr/preflight?recording_uuid={RECORDING_UUID}", headers=auth
+    )
+    assert good.status_code == 200
+    assert good.json()["recording_uuid"] == RECORDING_UUID
+    bad = client.get("/asr/preflight?recording_uuid=not-a-uuid", headers=auth)
+    assert bad.status_code == 422
+
+
+def test_preflight_loads_no_model() -> None:
+    """Structural: it is called every time the panel opens.
+
+    Checked over identifiers rather than raw text -- the docstring explains what happens
+    when a model is not *provisioned*, and a substring search would flag that sentence.
+    """
+    import ast
+
+    tree = ast.parse(ROUTES.read_text(encoding="utf-8"))
+    function = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "asr_preflight"
+    )
+    identifiers: set[str] = set()
+    for node in ast.walk(function):
+        if isinstance(node, ast.Name):
+            identifiers.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            identifiers.add(node.attr)
+    for forbidden in ("FasterWhisperProvider", "run_in_worker", "provision_model", "load"):
+        assert forbidden not in identifiers, forbidden
+
+
+def test_transcribing_during_a_recording_is_a_conflict(
+    client: Any, auth: dict[str, str], conn, meeting_id: int
+) -> None:
+    """A recording must never be put at risk by post-processing competing with it."""
+    with conn:
+        conn.execute(
+            "INSERT INTO recordings (meeting_id, recording_uuid, relative_dir, status, "
+            "chunk_count) VALUES (?, 'cccccccc-0000-4000-8000-000000000001', 'm/live', "
+            "'RECORDING', 2)",
+            (meeting_id,),
+        )
+        conn.execute(
+            "INSERT INTO recordings (meeting_id, recording_uuid, relative_dir, status, "
+            "chunk_count) VALUES (?, 'cccccccc-0000-4000-8000-000000000002', 'm/done', "
+            "'RECORDED', 2)",
+            (meeting_id,),
+        )
+    payload = client.get("/asr/recordings", headers=auth).json()
+    assert payload["active_capture"] == "cccccccc-0000-4000-8000-000000000001"
+    check = next(
+        item
+        for item in client.get("/asr/preflight", headers=auth).json()["checks"]
+        if item["key"] == "no_active_recording"
+    )
+    assert check["ok"] is False
+    assert check["blocking"] is True
+
+
+def test_the_new_routes_are_on_the_shell_allowlist() -> None:
+    from mom_igd.shell.launcher import ALLOWED_PROXY_PATHS
+
+    assert {"/asr/recordings", "/asr/preflight"} <= ALLOWED_PROXY_PATHS

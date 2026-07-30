@@ -21,7 +21,15 @@ RECORDING_UUID = "88888888-8888-4888-8888-888888888888"
 
 
 @pytest.fixture()
-def service(config: Any, paths: Any, db_path: Path) -> AsrService:
+def service(
+    config: Any, paths: Any, db_path: Path, conn: sqlite3.Connection
+) -> AsrService:
+    """A service on a migrated database.
+
+    The `conn` dependency is not incidental: the service asks the database whether a
+    capture is in progress before every run, so a service without a schema is not a
+    meaningful subject.
+    """
     from mom_igd.db.connection import connect
 
     def _connect() -> sqlite3.Connection:
@@ -391,3 +399,257 @@ def test_the_service_does_not_import_the_participant_roster() -> None:
     assert not any("enrollment" in name or "participant" in name for name in modules), (
         sorted(modules)
     )
+
+
+# ===========================================================================
+# What can be transcribed, and the refusal that protects a live recording
+# ===========================================================================
+
+
+def _recording(
+    conn: sqlite3.Connection,
+    uuid: str,
+    *,
+    status: str = "RECORDED",
+    chunks: int = 3,
+    duration_ms: int = 60_000,
+    title: str = "Rapat",
+) -> int:
+    """One meeting and one recording, so each fixture row is independent."""
+    with conn:
+        cursor = conn.execute(
+            "INSERT INTO meetings (title) VALUES (?)", (f"{title} {uuid[-4:]}",)
+        )
+        meeting = int(cursor.lastrowid or 0)
+        cursor = conn.execute(
+            "INSERT INTO recordings (meeting_id, recording_uuid, relative_dir, status, "
+            "chunk_count, duration_ms, manifest_status) VALUES (?, ?, ?, ?, ?, ?, "
+            "'VERIFIED')",
+            # The full UUID, not a prefix: `relative_dir` is unique, and these fixture
+            # UUIDs deliberately share their first eight characters.
+            (meeting, uuid, f"m/{uuid}", status, chunks, duration_ms),
+        )
+        return int(cursor.lastrowid or 0)
+
+
+CLOSED = "aaaaaaaa-0000-4000-8000-000000000001"
+SECOND = "aaaaaaaa-0000-4000-8000-000000000002"
+NO_AUDIO = "aaaaaaaa-0000-4000-8000-000000000003"
+CAPTURING = "aaaaaaaa-0000-4000-8000-00000000000a"
+
+
+def test_only_closed_recordings_are_offered(
+    service: AsrService, conn: sqlite3.Connection
+) -> None:
+    _recording(conn, CLOSED)
+    _recording(conn, SECOND, status="FAILED")
+    offered = {row["recording_uuid"] for row in service.list_transcribable()}
+    assert offered == {CLOSED}
+
+
+def test_the_list_is_newest_first(service: AsrService, conn: sqlite3.Connection) -> None:
+    _recording(conn, CLOSED)
+    _recording(conn, SECOND)
+    rows = service.list_transcribable()
+    assert [row["recording_uuid"] for row in rows] == [SECOND, CLOSED]
+
+
+def test_the_list_carries_the_transcript_state(service: AsrService, stored: int) -> None:
+    row = next(
+        item
+        for item in service.list_transcribable()
+        if item["recording_uuid"] == RECORDING_UUID
+    )
+    assert row["transcript_revision"] == 2
+    assert row["transcript_status"] == "COMPLETE"
+    assert row["revision_count"] == 2
+    assert row["segment_count"] == 1
+
+
+def test_a_recording_with_no_transcript_reports_none(
+    service: AsrService, conn: sqlite3.Connection
+) -> None:
+    _recording(conn, CLOSED)
+    row = service.list_transcribable()[0]
+    assert row["transcript_revision"] is None
+    assert row["revision_count"] == 0
+
+
+def test_a_recording_with_no_audio_is_offered_but_not_eligible(
+    service: AsrService, conn: sqlite3.Connection
+) -> None:
+    """Shown with a reason rather than hidden: an operator needs to know it exists."""
+    _recording(conn, NO_AUDIO, chunks=0)
+    row = service.list_transcribable()[0]
+    assert row["eligible"] is False
+    assert row["ineligible_reason"] == "NO_AUDIO"
+
+
+def test_nothing_is_eligible_while_a_recording_is_in_progress(
+    service: AsrService, conn: sqlite3.Connection
+) -> None:
+    _recording(conn, CLOSED)
+    _recording(conn, CAPTURING, status="RECORDING")
+    assert service.active_capture() == CAPTURING
+    rows = service.list_transcribable()
+    assert rows, "the closed recording is still listed"
+    assert all(row["eligible"] is False for row in rows)
+
+
+def test_a_recording_specific_reason_beats_a_global_one(
+    service: AsrService, conn: sqlite3.Connection
+) -> None:
+    """"This recording has no audio" will never be fixed by provisioning a model.
+
+    Reporting the global blocker first hid every row-specific reason, so a recording with
+    no audio looked like it was only waiting for a model.
+    """
+    _recording(conn, NO_AUDIO, chunks=0)
+    _recording(conn, CLOSED)
+    reasons = {
+        row["recording_uuid"]: row["ineligible_reason"]
+        for row in service.list_transcribable()
+    }
+    assert reasons[NO_AUDIO] == "NO_AUDIO"
+    # No model is provisioned in the test environment, so the other row reports that.
+    assert reasons[CLOSED] == "MODEL_UNAVAILABLE"
+
+
+@pytest.mark.parametrize(
+    "state", ["PREFLIGHT", "ARMED", "RECORDING", "PAUSED", "STOPPING", "FINALIZING"]
+)
+def test_every_active_capture_state_blocks_transcription(
+    service: AsrService, conn: sqlite3.Connection, state: str
+) -> None:
+    """A recording must never be put at risk by post-processing competing with it."""
+    from mom_igd.asr.service import RecordingInProgressError
+
+    _recording(conn, CLOSED)
+    _recording(conn, CAPTURING, status=state)
+    with pytest.raises(RecordingInProgressError, match="in progress"):
+        service.transcribe(CLOSED)
+
+
+def test_a_closed_recording_does_not_block_transcription(
+    service: AsrService, conn: sqlite3.Connection
+) -> None:
+    _recording(conn, CLOSED)
+    assert service.active_capture() is None
+
+
+def test_the_active_capture_states_match_the_database_index() -> None:
+    """Mirrors migration 0002's partial unique index.
+
+    A drift would let a transcription start during a capture state the schema itself
+    considers active -- the two would then disagree about whether a microphone is open.
+    """
+    from pathlib import Path
+
+    from mom_igd.asr.service import ACTIVE_CAPTURE_STATES
+
+    sql = (
+        Path(__file__).resolve().parent.parent
+        / "mom_igd"
+        / "db"
+        / "migrations"
+        / "0002_audio_capture.sql"
+    ).read_text(encoding="utf-8")
+    index = sql[sql.index("ux_recordings_single_active") :]
+    clause = index[index.index("WHERE status IN (") : index.index(");")]
+    quoted = {chunk.strip().strip("'").strip() for chunk in clause.split("(")[1].split(",")}
+    quoted = {value.strip("')\n ") for value in quoted}
+    assert quoted == set(ACTIVE_CAPTURE_STATES), (quoted, ACTIVE_CAPTURE_STATES)
+
+
+# ===========================================================================
+# Preflight
+# ===========================================================================
+
+
+def test_preflight_blocks_when_no_model_is_provisioned(service: AsrService) -> None:
+    report = service.preflight()
+    assert report["ok"] is False
+    blocking = {
+        check["key"]
+        for check in report["checks"]
+        if check["blocking"] and not check["ok"]
+    }
+    assert "model_pass1" in blocking
+
+
+def test_preflight_treats_a_missing_pass2_model_as_non_blocking(
+    service: AsrService,
+) -> None:
+    """A complete first pass is worth more than no transcript at all."""
+    pass2 = next(
+        check for check in service.preflight()["checks"] if check["key"] == "model_pass2"
+    )
+    assert pass2["blocking"] is False
+    assert "PASS2_MODEL_UNAVAILABLE" in pass2["detail"]
+
+
+def test_preflight_blocks_while_a_recording_is_in_progress(
+    service: AsrService, conn: sqlite3.Connection
+) -> None:
+    _recording(conn, CAPTURING, status="RECORDING")
+    check = next(
+        item
+        for item in service.preflight()["checks"]
+        if item["key"] == "no_active_recording"
+    )
+    assert check["ok"] is False
+    assert check["blocking"] is True
+    assert "Stop the recording first" in check["detail"]
+
+
+def test_preflight_checks_that_the_named_recording_exists(
+    service: AsrService, conn: sqlite3.Connection
+) -> None:
+    _recording(conn, CLOSED)
+    good = service.preflight(CLOSED)
+    absent = service.preflight("ffffffff-0000-4000-8000-000000000000")
+    assert next(c for c in good["checks"] if c["key"] == "recording")["ok"] is True
+    assert next(c for c in absent["checks"] if c["key"] == "recording")["ok"] is False
+
+
+def test_preflight_measures_free_disk(service: AsrService) -> None:
+    check = next(item for item in service.preflight()["checks"] if item["key"] == "disk")
+    assert "GB free" in check["detail"]
+
+
+def test_preflight_loads_no_model_and_opens_no_microphone() -> None:
+    """Structural: it must stay cheap enough to run on every panel open."""
+    import ast
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent / "mom_igd" / "asr" / "service.py"
+    ).read_text(encoding="utf-8")
+    function = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "preflight"
+    )
+    body = ast.unparse(function)
+    for forbidden in ("FasterWhisperProvider", "run_in_worker", "sounddevice"):
+        assert forbidden not in body, forbidden
+
+
+def test_preflight_reports_every_check_even_when_one_blocks(
+    service: AsrService,
+) -> None:
+    """Stopping at the first failure makes an operator fix one thing at a time."""
+    report = service.preflight()
+    keys = {check["key"] for check in report["checks"]}
+    assert {
+        "model_pass1",
+        "model_pass2",
+        "no_active_recording",
+        "worker_slot",
+        "disk",
+    } <= keys
+    assert report["blocking_count"] >= 1
+
+
+def test_preflight_carries_no_filesystem_path(service: AsrService, paths) -> None:
+    assert str(paths.root) not in repr(service.preflight())
