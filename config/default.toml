@@ -15,7 +15,12 @@
 # understand instead of guessing.
 #   1 = Phase 1 foundation
 #   2 = Phase 2 adds the [audio] section below
-config_schema_version = 2
+#   3 = Phase 3 corrective adds [participants] (roster capacity + safety ceiling)
+#
+# A `local.toml` that omits this key, or omits [participants] entirely, keeps
+# working: every key in that section has a default, so the bump resets nothing an
+# operator has already configured.
+config_schema_version = 3
 
 # Runtime mode. Only "offline" is supported: there is no cloud or hybrid mode
 # and no cloud fallback (ADR-0002).
@@ -166,6 +171,38 @@ production_requires_usb = true
 # Any other host - including every hosted inference API - is rejected by
 # configuration validation.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Meeting roster capacity.
+#
+# `default_meeting_participant_capacity` is the capacity a NEW meeting starts
+# with. Nine is the backward-compatible default - the number the original
+# diarization sizing assumed - not a limit of the product. Every meeting that
+# existed before migration 0004 was given 9, so behaviour is unchanged.
+#
+# The value actually in force is stored PER MEETING in the database, so changing
+# this default never retunes a meeting created before the change. An operator
+# changes one meeting's capacity from the participant panel.
+#
+# `maximum_meeting_participant_capacity` is a safety ceiling: it stops a typo
+# turning one meeting into a thousand-row roster. It is NOT a claim that this
+# many speakers can be told apart. Real speaker recognition needs an approved
+# embedding model, a USB conference microphone and acceptance testing in the
+# actual room - none of which exist yet. Raising this number does not improve
+# accuracy, and the application never describes any roster as "unlimited".
+#
+# Neither value decides whether audio is recorded. Capture always takes the
+# whole room signal; the roster only decides who the KNOWN speaker candidates
+# are. A voice with no voiceprint, or one belonging to nobody on the roster,
+# becomes UNKNOWN from Phase 6 onwards - it is never discarded.
+#
+# The participant DIRECTORY has no size limit at all. It holds everyone ever
+# registered, and removing somebody from a roster does not remove them from it.
+# ---------------------------------------------------------------------------
+[participants]
+default_meeting_participant_capacity = 9
+maximum_meeting_participant_capacity = 50
+
 [providers]
 
 [providers.endpoints]

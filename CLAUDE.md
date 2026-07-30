@@ -6,11 +6,18 @@ product requirements and the Phase 0 audit, not style preferences.
 ## What this project is
 
 A **fully offline** desktop application that turns a recording of an in-person
-meeting (one room, up to nine registered participants, Indonesian with English
-technical terms) into a reviewed, structured Minutes of Meeting.
+meeting (one room, Indonesian with English technical terms) into a reviewed,
+structured Minutes of Meeting.
 
-**Current phase: 2 — offline audio capture.** See `docs/architecture.md` for the
-full roadmap, `docs/phase-2-audio-capture.md` for the capture engine, and
+Each meeting has its own participant roster with a configurable capacity. Nine is
+the **default**, kept for backward compatibility -- it is not a limit of the
+product. The participant directory itself is not size-limited, and the default
+safety ceiling is 50 participants per meeting. The system is never described as
+"unlimited".
+
+**Current phase: 3 — participants, biometric consent, voice enrollment.** See
+`docs/architecture.md` for the full roadmap, `docs/phase-2-audio-capture.md` for
+the capture engine, `docs/phase-3-participants-enrollment.md` for enrollment, and
 `README.md` for what exists.
 
 ## Non-negotiable constraints
@@ -125,6 +132,44 @@ quietly widening scope.
   dependency** — `RawInputStream` gives bytes, and the meter uses `array`.
 * **`audioop` is banned.** It was removed in Python 3.13; using it would block the
   next interpreter upgrade.
+
+### Phase 3 invariants (`mom_igd/enrollment/`)
+
+* **Nine is a default, not a limit.** Roster capacity is stored **per meeting**
+  (`meetings.participant_capacity`, migration 0004) and read from the meeting row --
+  never recomputed from configuration, which would retune historical meetings. The
+  participant *directory* has no size limit at all.
+* **The safety ceiling lives in configuration**
+  (`[participants].maximum_meeting_participant_capacity`, default 50), not in a
+  `CHECK` constraint. The database invariant is only `participant_capacity >= 1`;
+  encoding a business ceiling would force a table rebuild to change it.
+* **The ceiling is not a validated capability.** Never claim a roster size has been
+  proven accurate, and never describe the system as "unlimited".
+* **Roster size never gates recording.** Nothing under `mom_igd/audio/` may import
+  `mom_igd.enrollment` or the participant module. Capture takes the whole room signal;
+  an unenrolled or off-roster voice becomes `UNKNOWN` (Phase 6), never dropped. Do not
+  add a reason code meaning "speaker not registered".
+* **Lowering a capacity below the roster is refused (`409`)**, never resolved by
+  removing anybody.
+* **A stored capacity above a since-lowered ceiling is grandfathered.** Never clamp on
+  read, never adjust silently, never remove a participant. It may be lowered, not
+  raised. `settable_capacity_bounds()` is the single source of truth the API, the
+  service and the UI all read (ADR-0013 §6).
+* **A new meeting takes the *configured* default**, written explicitly. The `DEFAULT 9`
+  on the column exists only so migration 0004 can backfill; relying on it silently
+  ignores an operator's configuration.
+* **Always pass `config=` to `ParticipantService`.** Without it the service falls back
+  to its built-in 9/50 and two runtimes disagree about the same policy.
+* **`doctor` counts attendees, not seats, and checks whose voice it is.** Coverage
+  joins each active roster member to *that participant's own* live voiceprint. Never
+  reintroduce a global count or a "minimum voiceprints" constant (ADR-0013 §7).
+* **Identity is the participant UUID.** A display name is never a key, path
+  component, filename, URL segment or unique column (ADR-0009).
+* **`[hidden]` must keep beating every author `display` rule in `app.css`.** The
+  attribute works only through the UA stylesheet, so `display: flex` on a class
+  silently defeats `show(node, false)` -- that is what left the revoke dialog on
+  screen swallowing every click. The `!important` rule at the top of the file is load
+  bearing.
 
 ## Doctor classification contract
 

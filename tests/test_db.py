@@ -34,10 +34,22 @@ PHASE_1_TABLES = {
     "audit_events",
 }
 
-# Tables that belong to later phases and must NOT exist yet.
-FUTURE_TABLES = {
+# Phase 2 added no table -- 0002 only widened `recordings` / `recording_chunks`.
+# Phase 3 adds exactly these four (0003).
+PHASE_3_TABLES = {
     "meeting_participants",
+    "consent_events",
+    "enrollment_sessions",
     "voiceprints",
+}
+
+CURRENT_TABLES = PHASE_1_TABLES | PHASE_3_TABLES
+
+# Tables that belong to Phase 4 or later and must NOT exist yet. `consents` stays
+# on this list deliberately: Phase 3 stores consent as an append-only
+# `consent_events` log, and a mutable `consents` row with a boolean flag would
+# reintroduce exactly the design 0003 rejected.
+FUTURE_TABLES = {
     "consents",
     "asr_words",
     "diarization_turns",
@@ -139,8 +151,14 @@ def test_foreign_key_check_is_clean_after_migration(conn: sqlite3.Connection) ->
 # ------------------------------------------------- 13. Phase 1 schema surface
 
 
-def test_schema_contains_exactly_the_phase_1_tables(conn: sqlite3.Connection) -> None:
-    assert _tables(conn) == PHASE_1_TABLES
+def test_schema_contains_exactly_the_current_phase_tables(conn: sqlite3.Connection) -> None:
+    assert _tables(conn) == CURRENT_TABLES
+
+
+def test_the_phase_1_tables_all_survived_later_migrations(conn: sqlite3.Connection) -> None:
+    """0002 rebuilt two of them and 0003 altered a third; none may go missing."""
+    missing = PHASE_1_TABLES - _tables(conn)
+    assert missing == set(), f"a Phase 1 table was lost: {sorted(missing)}"
 
 
 def test_no_future_phase_table_exists(conn: sqlite3.Connection) -> None:
@@ -183,10 +201,41 @@ def test_blank_titles_and_names_are_rejected(conn: sqlite3.Connection) -> None:
         conn.execute("INSERT INTO participants (display_name) VALUES ('')")
 
 
-def test_participant_names_are_unique(conn: sqlite3.Connection) -> None:
-    conn.execute("INSERT INTO participants (display_name) VALUES ('Budi')")
+def test_participant_names_are_deliberately_not_unique(conn: sqlite3.Connection) -> None:
+    """Phase 3 reverses the Phase 1 unique index on `display_name`.
+
+    Two people in one organisation genuinely share a name. Refusing the second --
+    or making an operator type "Budi 2" -- corrupts the registry to satisfy an
+    index. Identity is the UUID (ADR-0009), so the name is free to repeat.
+    """
+    conn.execute(
+        "INSERT INTO participants (display_name, uuid) VALUES ('Budi', ?)",
+        ("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",),
+    )
+    conn.execute(
+        "INSERT INTO participants (display_name, uuid) VALUES ('Budi', ?)",
+        ("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",),
+    )
+    assert conn.execute(
+        "SELECT count(*) AS n FROM participants WHERE display_name = 'Budi'"
+    ).fetchone()["n"] == 2
+
+    # The identity, however, is still unique.
     with pytest.raises(sqlite3.IntegrityError):
-        conn.execute("INSERT INTO participants (display_name) VALUES ('Budi')")
+        conn.execute(
+            "INSERT INTO participants (display_name, uuid) VALUES ('Lain', ?)",
+            ("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",),
+        )
+
+
+def test_the_phase_1_unique_name_index_is_gone(conn: sqlite3.Connection) -> None:
+    """Guard the reversal itself: re-adding the index would break the registry."""
+    names = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
+    }
+    assert "ux_participants_display_name" not in names
+    assert "ux_participants_uuid" in names
 
 
 def test_timestamps_default_to_iso8601_utc(conn: sqlite3.Connection, meeting_id: int) -> None:

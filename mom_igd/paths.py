@@ -22,6 +22,7 @@ Design rules enforced by this module:
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,10 +52,23 @@ RUNTIME_SUBDIRS: Final[tuple[str, ...]] = (
     "models",
     "temp",
     "backups",
+    "voiceprints",
+    "keys",
 )
-"""Runtime subdirectories created under the data root by :meth:`ensure`."""
+"""Runtime subdirectories created under the data root by :meth:`ensure`.
+
+``voiceprints`` and ``keys`` arrived with Phase 3. Creating the *directories* is
+harmless and happens with every other one; what must stay lazy is the **content** --
+the DPAPI-protected master key is generated only when an explicit enrollment needs
+it, never by ``ensure()``, an import or ``doctor`` (ADR-0010).
+"""
 
 _WRITE_PROBE_PREFIX: Final[str] = ".mom_igd_write_probe_"
+
+_UUID_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+"""Canonical lower-case UUID. Used to validate identifiers that become filenames."""
 
 
 class PathValidationError(ValueError):
@@ -214,6 +228,31 @@ class RuntimePaths:
     @property
     def backups_dir(self) -> Path:
         return self.root / "backups"
+
+    @property
+    def voiceprints_dir(self) -> Path:
+        """Encrypted voiceprint envelopes. Never plaintext, never a display name."""
+        return self.root / "voiceprints"
+
+    @property
+    def keys_dir(self) -> Path:
+        """DPAPI-protected key material. Never committed, never logged."""
+        return self.root / "keys"
+
+    def voiceprint_path(self, voiceprint_uuid: str) -> Path:
+        """Return the envelope path for one voiceprint.
+
+        The file name is the UUID and nothing else: a participant's name must never
+        reach the filesystem, where it would leak into backups, file pickers and
+        error messages. The UUID shape is enforced rather than trusted, so a
+        traversal attempt cannot be smuggled through an identifier.
+        """
+        if not _UUID_RE.match(voiceprint_uuid):
+            raise PathValidationError(
+                f"Voiceprint identifier must be a lower-case UUID, got "
+                f"{voiceprint_uuid!r}."
+            )
+        return self.voiceprints_dir / f"{voiceprint_uuid}.vpx"
 
     @property
     def all_dirs(self) -> tuple[Path, ...]:

@@ -3,17 +3,34 @@
 Fully offline Minutes of Meeting application for in-person meetings, running
 natively on Windows 11 on a single laptop.
 
-* **Current phase: 2 — offline audio capture.**
+* **Current phase: 3 — participants, biometric consent, voice enrollment.**
 * Decisions already taken: [`adr/`](adr/)
 * Evidence behind those decisions: [`phase-0-summary.md`](phase-0-summary.md)
 * Capture engine detail: [`phase-2-audio-capture.md`](phase-2-audio-capture.md)
+* Enrollment detail: [`phase-3-participants-enrollment.md`](phase-3-participants-enrollment.md)
 
 ---
 
 ## 1. Product shape
 
-One physical room, up to nine registered participants, Indonesian speech with
-English technical terms. The application must:
+One physical room, Indonesian speech with English technical terms. Each meeting
+carries its own participant roster; the roster capacity defaults to nine for
+backward compatibility and is adjustable up to a configurable safety ceiling
+(default 50). The participant directory is not size-limited.
+
+Roster size decides who the *known speaker candidates* are. It never decides what
+is recorded: capture always takes the whole room signal, and a voice that has no
+voiceprint or belongs to nobody on the roster is labelled `UNKNOWN` rather than
+discarded.
+
+Four distinct quantities, kept distinct throughout: the **directory** (everyone ever
+registered, unbounded), a meeting's **roster** (who is expected), its **capacity**
+(how many seats, stored per meeting), and its **attendee count** (how many members it
+actually holds). Readiness is measured against the attendee count, per person -- never
+against the capacity, and never as a global total. A lowered configured ceiling
+grandfathers an existing meeting rather than clamping it (ADR-0013).
+
+The application must:
 
 record locally · transcribe · determine who spoke and map anonymous speaker
 segments to registered names · detect overlapping speech · produce a structured

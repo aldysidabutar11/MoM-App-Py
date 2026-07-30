@@ -45,6 +45,13 @@ ALLOWED_PROXY_PATHS: Final[frozenset[str]] = frozenset(
         "/audio/recordings/status",
         "/audio/quality",
         "/audio/recovery/pending",
+        # Phase 3, read-only. None of these opens the microphone, creates a key,
+        # decrypts a voiceprint or loads a model.
+        "/enrollment/participants",
+        "/enrollment/consent/text",
+        "/enrollment/sessions/current",
+        "/enrollment/cleanup/pending",
+        "/enrollment/meetings",
     }
 )
 """Explicit GET allowlist. The page cannot ask the proxy to call an arbitrary path."""
@@ -59,17 +66,95 @@ ALLOWED_POST_PATHS: Final[frozenset[str]] = frozenset(
         "/audio/recordings/resume",
         "/audio/recordings/stop",
         "/audio/recovery/run",
+        # Phase 3. `sessions/current/samples` is the one that engages the
+        # microphone, and it is reachable only from a wizard button press.
+        "/enrollment/participants",
+        "/enrollment/sessions",
+        "/enrollment/sessions/current/samples",
+        "/enrollment/sessions/current/finalize",
+        "/enrollment/sessions/current/cancel",
+        "/enrollment/cleanup/retry",
     }
 )
-"""Explicit POST allowlist. ``calibrate``, ``open-test`` and ``start`` engage the
-microphone, which is why they are reachable only from a button press."""
+"""Explicit POST allowlist. ``calibrate``, ``open-test``, ``recordings/start`` and
+``sessions/current/samples`` engage the microphone, which is why they are reachable
+only from a button press."""
 
-_VERIFY_PATH_RE: Final[re.Pattern[str]] = re.compile(
-    r"^/audio/recordings/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/verify$"
+# Templated paths. Each is anchored at both ends and each UUID segment must be a
+# canonical lower-case UUID, so a bounded set of shapes is permitted rather than a
+# prefix wildcard. `/enrollment/*` would let the page reach any future route,
+# including one added later without thinking about the shell.
+_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+
+
+def _templated(*suffixes: str) -> tuple[re.Pattern[str], ...]:
+    return tuple(re.compile(f"^{pattern}$") for pattern in suffixes)
+
+
+ALLOWED_GET_PATTERNS: Final[tuple[re.Pattern[str], ...]] = _templated(
+    rf"/audio/recordings/{_UUID}/verify",
+    rf"/enrollment/participants/{_UUID}",
+    rf"/enrollment/participants/{_UUID}/consent",
+    rf"/enrollment/participants/{_UUID}/readiness",
+    rf"/enrollment/participants/{_UUID}/voiceprint",
+    rf"/enrollment/participants/{_UUID}/eligibility",
+    rf"/enrollment/meetings/{_UUID}/participants",
+    rf"/enrollment/meetings/{_UUID}/roster",
 )
-"""The one templated path the page may call, matched exactly rather than by prefix."""
+"""Templated GET paths the page may call."""
+
+ALLOWED_POST_PATTERNS: Final[tuple[re.Pattern[str], ...]] = _templated(
+    rf"/enrollment/participants/{_UUID}/deactivate",
+    rf"/enrollment/participants/{_UUID}/reactivate",
+    rf"/enrollment/participants/{_UUID}/consent/grant",
+    rf"/enrollment/participants/{_UUID}/consent/revoke",
+    rf"/enrollment/meetings/{_UUID}/participants",
+    rf"/enrollment/voiceprints/{_UUID}/verify",
+)
+"""Templated POST paths the page may call."""
+
+ALLOWED_PATCH_PATTERNS: Final[tuple[re.Pattern[str], ...]] = _templated(
+    rf"/enrollment/participants/{_UUID}",
+    rf"/enrollment/meetings/{_UUID}/capacity",
+)
+"""The two PATCHes the page may issue: a participant's descriptive fields, and one
+meeting's roster capacity.
+
+Capacity is a PATCH rather than a POST because it replaces one field of an existing
+meeting. It cannot create a meeting, cannot touch a roster membership, and cannot
+reach any other meeting attribute -- the path is anchored and the body carries a
+single integer."""
+
+ALLOWED_DELETE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = _templated(
+    rf"/enrollment/meetings/{_UUID}/participants/{_UUID}",
+)
+"""The only DELETE the page may issue: removing a participant from a meeting.
+
+Note what this cannot reach: there is no route that deletes a participant, and no
+route that deletes a voiceprint directly. Deactivation and consent revocation are
+the supported paths, and both are POSTs.
+"""
 
 _PROXY_TIMEOUT_S: Final[float] = 60.0
+
+
+def _permitted(
+    path: str,
+    exact: frozenset[str],
+    patterns: tuple[re.Pattern[str], ...],
+) -> bool:
+    """Whether the page may call ``path``.
+
+    Exact match or one anchored template, never a prefix. A query string is refused
+    outright rather than stripped: the caller passes query values through the
+    ``query`` argument, so a ``?`` in the path means something is constructing URLs
+    by hand -- and that is how a credential ends up in one.
+    """
+    if "?" in path or "#" in path:
+        return False
+    if path in exact:
+        return True
+    return any(pattern.match(path) for pattern in patterns)
 
 
 class ShellApi:
@@ -99,7 +184,7 @@ class ShellApi:
         rather than raising, so the page can render a degraded state instead of
         breaking on an exception crossing the bridge.
         """
-        if path not in ALLOWED_PROXY_PATHS and not _VERIFY_PATH_RE.match(path):
+        if not _permitted(path, ALLOWED_PROXY_PATHS, ALLOWED_GET_PATTERNS):
             return {
                 "ok": False,
                 "status": 0,
@@ -122,7 +207,7 @@ class ShellApi:
         Separate from :meth:`api_get` and separately allowlisted, because these are
         the calls that change state or engage the microphone.
         """
-        if path not in ALLOWED_POST_PATHS:
+        if not _permitted(path, ALLOWED_POST_PATHS, ALLOWED_POST_PATTERNS):
             return {
                 "ok": False,
                 "status": 0,
@@ -130,6 +215,35 @@ class ShellApi:
             }
         body = json.dumps(payload or {}).encode("utf-8")
         return self._send(url=f"{self._base_url}{path}", method="POST", body=body)
+
+    def api_patch(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Perform an authenticated loopback PATCH. Separately allowlisted.
+
+        Only participant edits need it, so the pattern list has exactly one entry.
+        """
+        if not _permitted(path, frozenset(), ALLOWED_PATCH_PATTERNS):
+            return {
+                "ok": False,
+                "status": 0,
+                "error": f"Path {path!r} is not in the shell proxy PATCH allowlist.",
+            }
+        body = json.dumps(payload or {}).encode("utf-8")
+        return self._send(url=f"{self._base_url}{path}", method="PATCH", body=body)
+
+    def api_delete(self, path: str) -> dict[str, Any]:
+        """Perform an authenticated loopback DELETE. Separately allowlisted.
+
+        Only meeting-membership removal needs it. Nothing reachable here deletes a
+        participant or a voiceprint: those are deactivation and consent revocation,
+        and both are POSTs.
+        """
+        if not _permitted(path, frozenset(), ALLOWED_DELETE_PATTERNS):
+            return {
+                "ok": False,
+                "status": 0,
+                "error": f"Path {path!r} is not in the shell proxy DELETE allowlist.",
+            }
+        return self._send(url=f"{self._base_url}{path}", method="DELETE")
 
     def _send(self, url: str, *, method: str, body: bytes | None = None) -> dict[str, Any]:
         headers = {

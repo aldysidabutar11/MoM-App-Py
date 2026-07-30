@@ -17,7 +17,7 @@ because they violate an invariant that already applies.
 A missing *USB conference microphone* is the one check that is deliberately
 graded twice: ``WARN`` in the default run, because the built-in array is fine for
 development, and ``FAIL`` under ``--production``, because it is not fine for
-recording nine people. See :mod:`mom_igd.diagnostics.audio_checks`.
+recording a room full of people. See :mod:`mom_igd.diagnostics.audio_checks`.
 
 Exit codes (deterministic, tested):
 
@@ -776,7 +776,7 @@ def run_doctor(
         production: Apply the production gate. A built-in microphone, an
             unrecovered recording and a missing calibration are warnings in the
             default run and failures here, because a laptop array cannot record a
-            nine-person meeting usefully. No audio stream is opened either way.
+            multi-participant meeting usefully. No audio stream is opened either way.
     """
     results: list[CheckResult] = [_check_application(), _check_python(), _check_store_shim()]
 
@@ -833,6 +833,13 @@ def run_doctor(
     from mom_igd.diagnostics.audio_checks import audio_checks
 
     results += audio_checks(resolved, paths, production=production)
+
+    # Phase 3. Imported here for the same reason as the audio checks: neither the
+    # cipher nor the enrollment stack should load merely because `doctor` was asked
+    # about the interpreter version.
+    from mom_igd.diagnostics.enrollment_checks import enrollment_checks
+
+    results += enrollment_checks(resolved, paths, production=production)
     results += [
         _check_docker_wsl_presence(),
         _check_docker_wsl_memory(),

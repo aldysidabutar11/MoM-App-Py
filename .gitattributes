@@ -90,6 +90,17 @@
 *.spm         binary
 
 # ===========================================================================
+# BINARY: biometric material (Phase 3)
+# These must never be committed at all -- .gitignore covers that. The rules
+# here are the second layer: `* text=auto` would otherwise let Git guess, and
+# CRLF translation on an AES-GCM ciphertext or a DPAPI blob destroys it
+# silently, so a mistaken `git add -f` would produce an unopenable envelope
+# rather than an obvious one.
+# ===========================================================================
+*.vpx     binary
+*.dpapi   binary
+
+# ===========================================================================
 # BINARY: databases
 # ===========================================================================
 *.db        binary

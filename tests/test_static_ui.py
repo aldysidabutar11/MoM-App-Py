@@ -66,6 +66,16 @@ def test_no_remote_font_is_used(sources: dict[str, str]) -> None:
 
 
 def test_no_frontend_framework_or_build_pipeline(sources: dict[str, str]) -> None:
+    """No framework, no bundler, no npm.
+
+    Matched on word boundaries rather than as bare substrings. A plain `in` check
+    produced real false positives once the Phase 3 UI arrived: "re**act**ivate"
+    contains "react", and "in**vite**d" contains "vite". Those are English words, not
+    dependencies, and a check that cannot tell the difference gets weakened or
+    deleted the first time it cries wolf.
+    """
+    import re as _re
+
     combined = " ".join(sources.values()).lower()
     for banned in (
         "react",
@@ -75,10 +85,14 @@ def test_no_frontend_framework_or_build_pipeline(sources: dict[str, str]) -> Non
         "jquery",
         "webpack",
         "vite",
-        "require(",
-        "from 'react'",
         "electron",
     ):
+        pattern = r"(?<![a-z])" + _re.escape(banned) + r"(?![a-z])"
+        assert not _re.search(pattern, combined), (
+            f"the shell must stay framework-free ({banned})"
+        )
+    # These are unambiguous and need no boundary handling.
+    for banned in ("require(", "from 'react'", "import react"):
         assert banned not in combined, f"the shell must stay framework-free ({banned})"
 
 
@@ -141,9 +155,10 @@ def test_protected_data_is_fetched_through_the_python_bridge(sources: dict[str, 
 def test_the_shell_proxy_allowlist_is_closed() -> None:
     """The page may reach exactly these paths through the token-bearing proxy.
 
-    Phase 2 added the read-only capture endpoints. The list stays explicit rather
-    than becoming a prefix rule, so a new endpoint is never reachable from the page
-    by accident.
+    Phase 2 added the read-only capture endpoints; Phase 3 added the read-only
+    participant, consent and enrollment ones. The list stays explicit rather than
+    becoming a prefix rule, so a new endpoint is never reachable from the page by
+    accident -- including one added later by someone not thinking about the shell.
     """
     assert ALLOWED_PROXY_PATHS == frozenset(
         {
@@ -151,15 +166,76 @@ def test_the_shell_proxy_allowlist_is_closed() -> None:
             "/version",
             "/doctor",
             "/internal/ready",
+            # Phase 2
             "/audio/devices",
             "/audio/preflight",
             "/audio/recordings/status",
             "/audio/quality",
             "/audio/recovery/pending",
+            # Phase 3
+            "/enrollment/participants",
+            "/enrollment/consent/text",
+            "/enrollment/sessions/current",
+            "/enrollment/cleanup/pending",
+            # Phase 3 corrective: the roster panel needs to know which meetings
+            # exist before it can address one. Read-only, bounded, and it returns
+            # meeting UUIDs rather than internal row ids.
+            "/enrollment/meetings",
         }
     )
     assert "/openapi.json" not in ALLOWED_PROXY_PATHS
     assert "/docs" not in ALLOWED_PROXY_PATHS
+
+
+def test_the_templated_allowlists_are_bounded_not_wildcards() -> None:
+    """A prefix rule like `/enrollment/*` would expose every future route.
+
+    Each template is anchored at both ends and each variable segment must be a
+    canonical lower-case UUID, so the set of reachable shapes is enumerable.
+    """
+    from mom_igd.shell.launcher import (
+        ALLOWED_DELETE_PATTERNS,
+        ALLOWED_GET_PATTERNS,
+        ALLOWED_PATCH_PATTERNS,
+        ALLOWED_POST_PATTERNS,
+    )
+
+    every = (
+        ALLOWED_GET_PATTERNS
+        + ALLOWED_POST_PATTERNS
+        + ALLOWED_PATCH_PATTERNS
+        + ALLOWED_DELETE_PATTERNS
+    )
+    assert every, "no templated paths are declared"
+    for pattern in every:
+        text = pattern.pattern
+        assert text.startswith("^") and text.endswith("$"), text
+        assert "*" not in text and ".+" not in text and ".*" not in text, text
+        # Every variable segment is a UUID, never a free-form capture.
+        assert "[0-9a-f]{8}-" in text, text
+
+    # Nothing may reach a participant or voiceprint DELETE.
+    for pattern in ALLOWED_DELETE_PATTERNS:
+        assert "voiceprint" not in pattern.pattern
+        assert pattern.pattern.rstrip("$").endswith("/participants/" + "[0-9a-f]{8}-"
+            "[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def test_a_query_string_cannot_be_smuggled_into_an_allowlisted_path() -> None:
+    """Query values go through the `query` argument, not appended to the path.
+
+    A `?` in the path means something is building URLs by hand, which is how a
+    credential ends up in one.
+    """
+    from mom_igd.shell.launcher import _permitted
+
+    assert _permitted("/enrollment/participants", ALLOWED_PROXY_PATHS, ()) is True
+    for bad in (
+        "/enrollment/participants?token=abc",
+        "/enrollment/participants#frag",
+        "/health?x=1",
+    ):
+        assert _permitted(bad, ALLOWED_PROXY_PATHS, ()) is False, bad
 
 
 def test_the_proxy_refuses_a_path_outside_the_allowlist() -> None:
@@ -189,7 +265,11 @@ def test_manual_launch_command_is_documented() -> None:
 
 
 def test_future_features_are_shown_as_not_implemented(sources: dict[str, str]) -> None:
-    """Recording went live in Phase 2; the five later-phase cards stay disabled."""
+    """Recording went live in Phase 2 and Participants in Phase 3.
+
+    The remaining four later-phase cards stay disabled and say so. Counting them is
+    what stops a card being quietly enabled before the feature behind it exists.
+    """
     html = sources["index.html"]
     for feature in (
         "Meeting setup",
@@ -200,10 +280,11 @@ def test_future_features_are_shown_as_not_implemented(sources: dict[str, str]) -
         "Export",
     ):
         assert feature in html, f"the {feature} card must be present"
-    assert html.count('aria-disabled="true"') == 5
-    assert html.count("Belum diimplementasikan") == 5
+    assert html.count('aria-disabled="true"') == 4
+    assert html.count("Belum diimplementasikan") == 4
     assert 'id="card-recording"' in html, "Recording is implemented and must be enabled"
-    assert "feature-card-enabled" in html
+    assert 'id="card-participants"' in html, "Participants is implemented in Phase 3"
+    assert html.count("feature-card-enabled") == 2
 
 
 def test_offline_mode_is_displayed(sources: dict[str, str]) -> None:

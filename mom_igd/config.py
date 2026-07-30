@@ -51,6 +51,7 @@ __all__ = [
     "ConfigError",
     "DatabaseConfig",
     "PUBLIC_ENDPOINTS",
+    "ParticipantsConfig",
     "ProvidersConfig",
     "ResourceConfig",
     "SUPPORTED_RUNTIME_MODES",
@@ -281,6 +282,48 @@ class AudioConfig(BaseModel):
         )
 
 
+class ParticipantsConfig(BaseModel):
+    """Meeting roster capacity: the default, and the safety ceiling.
+
+    **This is the single source of truth for both numbers.** Before Phase 3's
+    corrective pass a module constant held a fixed nine and every meeting was
+    forced to it. Nine is the *default* the first deployment needs, not a property
+    of the product, so it lives here where an operator can change it -- while the
+    number actually in force for a given meeting is stored per meeting in the
+    database (migration 0004), so a later change to this default never retunes a
+    meeting recorded before it.
+
+    ``maximum_meeting_participant_capacity`` is a guard rail against a typo turning
+    one meeting into a thousand-row roster. It is **not** a claim that this many
+    speakers can be told apart: that needs a real embedding model, a USB conference
+    microphone and acceptance in the real room, none of which exist yet.
+
+    Neither number decides whether audio is recorded. Capture always takes the
+    whole room signal; the roster only decides who the *known* speaker candidates
+    are, and anyone outside it becomes ``UNKNOWN`` from Phase 6 onwards.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    default_meeting_participant_capacity: int = Field(default=9, ge=1)
+    maximum_meeting_participant_capacity: int = Field(default=50, ge=1)
+
+    @model_validator(mode="after")
+    def _default_within_ceiling(self) -> ParticipantsConfig:
+        if self.default_meeting_participant_capacity > (
+            self.maximum_meeting_participant_capacity
+        ):
+            raise ValueError(
+                "default_meeting_participant_capacity="
+                f"{self.default_meeting_participant_capacity} exceeds "
+                "maximum_meeting_participant_capacity="
+                f"{self.maximum_meeting_participant_capacity}. The default must be "
+                "a value the ceiling actually permits; raise the ceiling or lower "
+                "the default."
+            )
+        return self
+
+
 class ProvidersConfig(BaseModel):
     """Future AI provider endpoints.
 
@@ -329,6 +372,7 @@ class AppConfig(BaseModel):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     ui: UiConfig = Field(default_factory=UiConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
+    participants: ParticipantsConfig = Field(default_factory=ParticipantsConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
 
     # -- validators ---------------------------------------------------------
@@ -441,6 +485,14 @@ class AppConfig(BaseModel):
                 "status_poll_hz": self.audio.status_poll_hz,
                 "auto_recover_on_start": self.audio.auto_recover_on_start,
                 "production_requires_usb": self.audio.production_requires_usb,
+            },
+            "participants": {
+                "default_meeting_participant_capacity": (
+                    self.participants.default_meeting_participant_capacity
+                ),
+                "maximum_meeting_participant_capacity": (
+                    self.participants.maximum_meeting_participant_capacity
+                ),
             },
             "providers": {"endpoints": dict(self.providers.endpoints)},
         }

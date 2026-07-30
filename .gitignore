@@ -180,10 +180,19 @@ whisper_cache/
 openvino_cache/
 
 # --- Voiceprints / biometric data (NEVER commit) --------------------------
+# The extension rules are deliberately unanchored: `/voiceprints/` alone only
+# covers the repository root, and a sealed envelope copied anywhere else for
+# debugging would otherwise be committable. `.vpx` is the AES-256-GCM envelope
+# and `.dpapi` is the DPAPI-protected master key -- the two files that would
+# turn a repository into a biometric data breach.
 /voiceprints/
+/keys/
 *.voiceprint
 *.embedding
 *.emb
+*.vpx
+*.vpx.tmp
+*.dpapi
 
 # --- Generated MoM documents / exports ------------------------------------
 /exports/

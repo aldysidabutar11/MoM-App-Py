@@ -18,14 +18,25 @@
 #
 # Hash-pinned offline wheelhouse creation is deferred to Phase 11.
 # ---------------------------------------------------------------------------
-# DIRECT (5): fastapi, uvicorn, psutil, pywebview, sounddevice
-# Everything else below is a transitive dependency of those five.
+# DIRECT (6): fastapi, uvicorn, psutil, pywebview, sounddevice, cryptography
+# Everything else below is a transitive dependency of those six.
 #
 # `sounddevice` arrived with Phase 2 (offline audio capture). It is the only
 # audio dependency: it wraps PortAudio/WASAPI for input, and `RawInputStream`
 # hands us raw bytes, so NumPy is not required. WAV files are written with the
 # standard-library `wave` module and checksums with `hashlib`, so no codec,
 # resampler or DSP library is needed either.
+#
+# `cryptography` arrived with Phase 3 (voiceprint encryption at rest). It supplies
+# AES-256-GCM, which the standard library does not have. It is used for exactly
+# that: authenticated encryption of biometric templates. Notes:
+#   - the master key is protected by Windows DPAPI, reached through `ctypes` and
+#     `crypt32.dll`, so pywin32 is NOT required for two API calls;
+#   - the wheel is prebuilt (cp311-abi3-win_amd64), so no compiler is involved;
+#   - it makes no network call, and nothing in this project asks it to;
+#   - `cffi`/`pycparser` were already in the closure, so this adds exactly one
+#     distribution.
+# Base64 is NOT an alternative and must never be used as one (ADR-0010).
 #
 # Deliberately ABSENT and forbidden:
 #   - any cloud SDK (google-genai, openai, anthropic, boto3, azure-*, ...)
@@ -36,6 +47,7 @@
 # ===========================================================================
 
 # --- direct ---------------------------------------------------------------
+cryptography==49.0.0
 fastapi==0.140.7
 psutil==7.2.2
 pywebview==5.4
@@ -58,9 +70,10 @@ click==8.4.2
 colorama==0.4.6
 h11==0.16.0
 
-# --- transitive: pywebview (WebView2 binding on Windows) + sounddevice ----
-# cffi/pycparser are shared: pywebview needs them via clr-loader, sounddevice
-# needs them to bind PortAudio. The PortAudio binary ships inside the
+# --- transitive: pywebview + sounddevice + cryptography -------------------
+# cffi/pycparser are shared three ways: pywebview needs them via clr-loader,
+# sounddevice needs them to bind PortAudio, and cryptography needs them for its
+# Rust/OpenSSL binding. The PortAudio binary ships inside the
 # sounddevice wheel, so there is no separate native dependency to provision.
 bottle==0.13.4
 cffi==2.1.0

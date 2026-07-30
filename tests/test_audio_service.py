@@ -759,6 +759,85 @@ def test_a_stale_lock_from_a_dead_process_is_cleared(tmp_path: Path) -> None:
     lock.release()
 
 
+def test_read_live_holder_distinguishes_live_from_stale(tmp_path: Path) -> None:
+    """One public home for the staleness rule.
+
+    Both the recording preflight and Phase 3 enrollment ask this question, and they
+    must answer it identically -- duplicated staleness logic would eventually
+    diverge. It also keeps enrollment from reaching across modules into a private
+    helper.
+    """
+    import os
+
+    path = tmp_path / "recording.lock"
+    lock = SingleRecordingLock(path)
+
+    assert lock.read_live_holder() is None, "no lock file at all"
+
+    path.write_text(
+        json.dumps({"pid": 999_999_999, "recording_uuid": "ghost"}), encoding="utf-8"
+    )
+    assert lock.read_holder() is not None, "the file is there..."
+    assert lock.read_live_holder() is None, "...but its owner is gone"
+
+    path.write_text(
+        json.dumps({"pid": os.getpid(), "recording_uuid": "mine"}), encoding="utf-8"
+    )
+    live = lock.read_live_holder()
+    assert live is not None and live["recording_uuid"] == "mine"
+
+    path.write_text("{not json", encoding="utf-8")
+    assert lock.read_live_holder() is None, "a malformed lock has no live owner"
+
+
+def test_a_stale_lock_does_not_block_preflight(
+    service: RecordingService, backend: FakeAudioBackend
+) -> None:
+    """Regression: preflight runs *before* acquire, so it must ignore a dead holder.
+
+    `acquire()` clears a lock whose owning process is gone, but preflight happens
+    first -- and it used to read the holder without that check. A lock left by a
+    killed process therefore failed preflight forever, permanently preventing
+    recording. That is the exact failure `_owner_alive` was written to avoid, defeated
+    by the ordering. Found while wiring Phase 3 enrollment onto the same lock.
+    """
+    _select_mono_device(service, None)
+    lock_path = service._lock.path  # noqa: SLF001
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(
+        json.dumps({"pid": 999_999_999, "recording_uuid": "ghost"}), encoding="utf-8"
+    )
+
+    report = service.preflight()
+    single = next(i for i in report.items if i.key == "single_recording")
+    assert single.status.value == "PASS", single.detail
+
+    # And a real recording can therefore still start.
+    status = service.start(meeting_title="Setelah lock basi")
+    assert status["recording_active"] is True
+    service.stop()
+
+
+def test_a_live_lock_still_blocks_preflight(
+    service: RecordingService, backend: FakeAudioBackend
+) -> None:
+    """The stale-lock fix must not weaken the guard against a genuine holder."""
+    _select_mono_device(service, None)
+    lock_path = service._lock.path  # noqa: SLF001
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    import os
+
+    lock_path.write_text(
+        json.dumps({"pid": os.getpid(), "recording_uuid": "live-holder"}),
+        encoding="utf-8",
+    )
+    report = service.preflight()
+    single = next(i for i in report.items if i.key == "single_recording")
+    assert single.status.value == "FAIL"
+    assert "live-holder" in single.detail
+    lock_path.unlink()
+
+
 def test_active_lifecycle_states_match_the_database_index() -> None:
     """The in-flight set must equal the states the partial index treats as active."""
     from mom_igd.db.migrator import discover_migrations

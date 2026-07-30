@@ -122,6 +122,9 @@ def test_derived_locations_all_live_under_the_root(data_root: Path) -> None:
 
 
 def test_expected_subdirectories_are_exactly_the_documented_set() -> None:
+    # Pinned on purpose: a new runtime directory is a deliberate decision, so it has
+    # to be made here as well as in paths.py. `voiceprints` and `keys` arrived with
+    # Phase 3 (encrypted biometric templates and the DPAPI-protected master key).
     assert RUNTIME_SUBDIRS == (
         "db",
         "recordings",
@@ -130,6 +133,8 @@ def test_expected_subdirectories_are_exactly_the_documented_set() -> None:
         "models",
         "temp",
         "backups",
+        "voiceprints",
+        "keys",
     )
 
 

@@ -10,7 +10,7 @@ index is looked up fresh every time.
 
 **Never fall back silently.** If the microphone the operator chose is gone, the
 answer is an error that says so, not a quiet switch to whatever else is
-available. Recording a nine-person meeting through the wrong microphone -- or
+available. Recording a room full of people through the wrong microphone -- or
 through a laptop lid array when a conference microphone was expected -- produces
 audio nobody can fix afterwards.
 

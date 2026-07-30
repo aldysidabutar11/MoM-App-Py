@@ -37,7 +37,20 @@ PHASE_1_AND_2_TABLES = {
     "audit_events",
 }
 
+# Phase 3 (0003) adds exactly these four. Applying the whole migration set now
+# reaches schema 3, so the head assertions below include them.
+PHASE_3_TABLES = {
+    "meeting_participants",
+    "consent_events",
+    "enrollment_sessions",
+    "voiceprints",
+}
+
+HEAD_TABLES = PHASE_1_AND_2_TABLES | PHASE_3_TABLES
+
 MIGRATION_0001_SHA256 = "f1426fa94b8ae90e4c0b646c0f132ac4a483525165675c947649cad124e89796"
+MIGRATION_0002_SHA256 = "8d42086530a4560d28ca5cfd2707b5402c1b2872fea02a49ce3768106f570ded"
+MIGRATION_0003_SHA256 = "fb3220d96d9b9a711189ca2a3d275e0bb74e6d0043e86db17d122d3cf9079fc1"
 
 
 @pytest.fixture
@@ -70,15 +83,32 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
 # ---------------------------------------------------------------- discovery
 
 
-def test_two_migrations_ship(migrations) -> None:
-    assert [m.version for m in migrations] == [1, 2]
+def test_four_migrations_ship(migrations) -> None:
+    assert [m.version for m in migrations] == [1, 2, 3, 4]
     assert migrations[1].name == "audio_capture"
-    assert SCHEMA_VERSION_HEAD == 2
+    assert migrations[2].name == "participants_consent_voiceprints"
+    assert migrations[3].name == "meeting_participant_capacity"
+    assert SCHEMA_VERSION_HEAD == 4
 
 
 def test_migration_0001_is_immutable(migrations) -> None:
-    """Phase 2 must extend the schema, never edit the applied Phase 1 migration."""
+    """A later phase must extend the schema, never edit an applied migration."""
     assert migrations[0].checksum == MIGRATION_0001_SHA256
+
+
+def test_migration_0002_is_immutable(migrations) -> None:
+    """Phase 3 must not edit the applied Phase 2 migration either."""
+    assert migrations[1].checksum == MIGRATION_0002_SHA256
+
+
+def test_migration_0003_is_immutable(migrations) -> None:
+    """The corrective pass added 0004; it must not have touched 0003.
+
+    0003 creates the consent and voiceprint tables. Editing it after it has been
+    applied to an operator's database would make the recorded checksum disagree
+    with the file and, worse, would silently skip the change on that machine.
+    """
+    assert migrations[2].checksum == MIGRATION_0003_SHA256
 
 
 # ------------------------------------------------------------ fresh install
@@ -86,14 +116,14 @@ def test_migration_0001_is_immutable(migrations) -> None:
 
 def test_fresh_database_reaches_head_directly(db: sqlite3.Connection) -> None:
     applied = apply_migrations(db)
-    assert [m.version for m in applied] == [1, 2]
+    assert [m.version for m in applied] == [1, 2, 3, 4]
     assert current_schema_version(db) == SCHEMA_VERSION_HEAD
 
 
-def test_schema_holds_exactly_the_phase_1_and_2_tables(db: sqlite3.Connection) -> None:
+def test_schema_holds_exactly_the_expected_tables(db: sqlite3.Connection) -> None:
     apply_migrations(db)
     tables = _tables(db)
-    assert tables == PHASE_1_AND_2_TABLES
+    assert tables == HEAD_TABLES
     assert not any(name.endswith("_v2") for name in tables), "rebuild scaffolding left behind"
 
 
@@ -170,12 +200,16 @@ def test_meetings_gains_a_uuid_for_the_directory_layout(db: sqlite3.Connection) 
     assert row is not None
 
 
-def test_no_phase_3_table_is_created(db: sqlite3.Connection) -> None:
+def test_no_phase_4_or_later_table_is_created(db: sqlite3.Connection) -> None:
+    """Phase 3 arrived, so its four tables moved out of this list.
+
+    `consents` stays forbidden on purpose: Phase 3 records consent as an
+    append-only `consent_events` log, and a mutable `consents` row carrying a
+    boolean flag would reintroduce the design 0003 deliberately rejected.
+    """
     apply_migrations(db)
     forbidden = {
-        "voiceprints",
         "consents",
-        "meeting_participants",
         "asr_words",
         "diarization_turns",
         "speaker_assignments",
@@ -325,7 +359,8 @@ def upgraded(db: sqlite3.Connection, migrations):
         "VALUES (1,1,'chunk_000001.wav',500,1000)"
     )
     applied = apply_migrations(db)
-    assert [m.version for m in applied] == [2]
+    # A schema-1 database catches up to head, which is now 4.
+    assert [m.version for m in applied] == [2, 3, 4]
     return db
 
 
@@ -411,17 +446,19 @@ def test_a_failing_later_migration_does_not_advance_the_version(
     directory.mkdir()
     for migration in migrations:
         (directory / migration.path.name).write_bytes(migration.path.read_bytes())
-    (directory / "0003_broken.sql").write_text(
+    # Numbered past the real head, so it does not collide with a shipped migration.
+    (directory / "0005_broken.sql").write_text(
         "CREATE TABLE should_not_exist (x INTEGER);\nSELECT this_column_is_missing;\n",
         encoding="utf-8",
     )
 
-    with pytest.raises(MigrationError, match="0003_broken"):
+    with pytest.raises(MigrationError, match="0005_broken"):
         apply_migrations(db, discover_migrations(directory))
 
     assert current_schema_version(db) == SCHEMA_VERSION_HEAD
     assert "should_not_exist" not in _tables(db)
     assert "recordings" in _tables(db), "0002 stays applied"
+    assert "voiceprints" in _tables(db), "0003 stays applied"
 
 
 def test_0002_alone_cannot_be_applied_to_an_empty_database(

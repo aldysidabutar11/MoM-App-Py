@@ -199,6 +199,24 @@ class SingleRecordingLock:
         except (json.JSONDecodeError, OSError):
             return {"pid": None, "recording_uuid": None, "malformed": True}
 
+    def read_live_holder(self) -> dict[str, Any] | None:
+        """Return the holder only if its owning process is still running.
+
+        The public way to ask "is the microphone actually in use?". Callers must not
+        use :attr:`held` for that: this object is shared between the recording
+        service and Phase 3 enrollment, so ``held`` is true whenever *this process*
+        owns the lock -- including when it owns it for the other activity, which is
+        exactly the case to refuse.
+
+        A lock left behind by a killed process reports ``None``, because
+        :meth:`acquire` would clear it and a caller that treated it as live would
+        block forever on a holder that no longer exists.
+        """
+        holder = self.read_holder()
+        if holder is None or not self._owner_alive(holder):
+            return None
+        return holder
+
     def acquire(self, recording_uuid: str) -> None:
         """Take the lock, clearing it first if its owner is gone.
 
@@ -470,7 +488,12 @@ class RecordingService:
         """Run every pre-recording check. Opens no stream."""
         device, error = self.resolve_device()
         profile = self.profile_for(device) if device else None
-        holder = self._lock.read_holder()
+        # A lock whose owner is gone must not count. `acquire()` clears such a lock,
+        # but preflight runs *before* acquire -- so reading the raw holder here made a
+        # lock left by a killed process fail preflight forever and permanently prevent
+        # recording. That is precisely the failure `_owner_alive` exists to avoid,
+        # defeated by the ordering.
+        holder = self._lock.read_live_holder()
         active_db = self._active_recording_uuid()
         active = active_db or (holder.get("recording_uuid") if holder else None)
         return run_preflight(
@@ -592,9 +615,20 @@ class RecordingService:
             clean = f"Rapat {utc_now_iso()[:16].replace('T', ' ')} UTC"
         clean = clean[:200]
         meeting_uuid = str(uuid.uuid4())
+        # Roster capacity is written explicitly from configuration rather than left
+        # to the column DEFAULT. The DEFAULT is 9 because migration 0004 has to
+        # backfill meetings that predate the setting; it is *not* the policy for a
+        # new meeting. Relying on it would mean an operator who configured 15 got 9
+        # on every meeting the recording panel creates.
+        #
+        # This reads one validated integer out of the AppConfig the service already
+        # holds. It deliberately does NOT import the participant or enrollment
+        # package: that dependency direction is how a roster starts influencing
+        # capture, which must never happen.
+        capacity = int(self._config.participants.default_meeting_participant_capacity)
         cursor = conn.execute(
-            "INSERT INTO meetings (title, uuid) VALUES (?, ?)",
-            (clean, meeting_uuid),
+            "INSERT INTO meetings (title, uuid, participant_capacity) VALUES (?, ?, ?)",
+            (clean, meeting_uuid, capacity),
         )
         meeting_id = int(cursor.lastrowid or 0)
         self._audit(
@@ -604,6 +638,7 @@ class RecordingService:
             entity_type="meeting",
             entity_id=meeting_id,
             meeting_uuid=meeting_uuid,
+            participant_capacity=capacity,
         )
         return meeting_id, meeting_uuid
 

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mom-igd"
 # Must match mom_igd/version.py:APP_VERSION -- a test asserts it.
-version = "0.2.0"
+version = "0.3.0"
 description = "Fully offline Minutes of Meeting application for in-person meetings (Windows 11, native runtime)."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -21,7 +21,7 @@ classifiers = [
 ]
 
 # ---------------------------------------------------------------------------
-# Runtime dependencies (Phase 1 foundation + Phase 2 audio capture).
+# Runtime dependencies (Phase 1 foundation + Phase 2 capture + Phase 3 crypto).
 #
 # Deliberately minimal. NO cloud SDK, NO AI runtime, NO NumPy.
 # Exact reproducible versions live in requirements.txt (runtime) and
@@ -42,6 +42,7 @@ dependencies = [
   "psutil>=6.0,<8.0",        # doctor: RAM / disk / Docker-WSL memory reporting
   "pywebview>=5.3,<6.0",     # desktop shell on WebView2 (no Electron, no npm)
   "sounddevice>=0.4.6,<0.6", # Phase 2: PortAudio/WASAPI capture via RawInputStream
+  "cryptography>=45,<50",    # Phase 3: AES-256-GCM voiceprint encryption at rest
 ]
 
 [project.optional-dependencies]

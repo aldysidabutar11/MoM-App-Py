@@ -9,7 +9,7 @@ operator asks for a calibration or a recording.
 
 Development readiness and production readiness are deliberately different. A
 laptop with only its built-in array is fine for development and is *not* fine for
-recording a nine-person meeting, so the built-in array is a ``WARN`` in the
+recording a room with several people in it, so the built-in array is a ``WARN`` in the
 default run and a ``FAIL`` under ``--production``.
 """
 
@@ -236,7 +236,7 @@ def _check_usb_conference_microphone(devices: list[Any], *, production: bool) ->
         "conference microphone at the centre of the table is required before Phase 2 "
         "production acceptance: the built-in array applies beamforming and noise "
         "suppression that suppress non-dominant speakers, which is unusable for a "
-        "nine-person meeting."
+        "multi-participant room meeting -- and worse the larger the room."
     )
     if internal:
         detail += f" Present instead: {internal[0].name} (INTERNAL, development only)."

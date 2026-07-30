@@ -4,6 +4,31 @@
    supported through prefers-color-scheme.
    ========================================================================== */
 
+/* ==========================================================================
+   THE `hidden` ATTRIBUTE MUST ALWAYS WIN. READ BEFORE EDITING.
+
+   `hidden` works through one UA-stylesheet rule, `[hidden] { display: none }`,
+   and ANY author-level `display` declaration beats the UA stylesheet regardless
+   of specificity. This file sets `display` on 22 classes, and `show(node, false)`
+   in app.js toggles `hidden` -- so before this rule existed, hiding was silently
+   a no-op for every element carrying one of those classes.
+
+   The concrete damage: `.modal-backdrop { display: flex }` kept BOTH modal
+   backdrops laid out from page load. `#revoke-backdrop` is last in the document
+   at the same `z-index: 50`, so it painted on top of the whole application and
+   swallowed every pointer event. The revoke dialog looked open but had never
+   been opened, so it showed no participant, "Ya, cabut persetujuan" hit the
+   `if (!pendingRevokeUuid) return` guard and sent nothing, and "Batal" set
+   `hidden` to no effect.
+
+   `!important` is deliberate. Without it, `[hidden]` (specificity 0,1,0) merely
+   ties with `.modal-backdrop` (0,1,0) and source order decides -- which makes
+   correctness depend on where in this file someone adds the next `display`.
+   ========================================================================== */
+[hidden] {
+  display: none !important;
+}
+
 :root {
   color-scheme: light dark;
 
@@ -396,6 +421,36 @@ main {
 .field input[type="text"]:disabled { opacity: 0.55; }
 
 .btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Roster capacity: the number input and its Save button sit on one line, and
+   wrap together rather than the button drifting away from the field. */
+.capacity-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+.capacity-row .field { flex: 0 1 220px; }
+.capacity-row input[type="number"] { width: 100%; }
+
+/* Section heading inside a card, for the roster's member list and add panel. */
+.subhead {
+  margin: 16px 0 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* One candidate row in the directory search results. */
+.candidate-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+.candidate-row .candidate-name { font-weight: 600; }
 .btn-primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 .btn-danger { border-color: var(--fail); color: var(--fail); }
 .hint { font-size: 11.5px; color: var(--text-faint); }
@@ -455,3 +510,134 @@ main {
   border-radius: var(--radius-sm);
   padding: 10px 12px;
 }
+
+/* ==========================================================================
+   Phase 3: participants, consent dialog, enrollment wizard.
+
+   No remote asset, no webfont, no CDN -- system fonts and the variables above
+   only, exactly as Phase 1 and 2. Both light and dark themes inherit from the
+   same custom properties, so nothing here hardcodes a colour.
+   ========================================================================== */
+
+.status-card-wide { grid-column: 1 / -1; }
+
+.participant-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  margin-top: 10px;
+}
+.participant-table th,
+.participant-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.participant-table th {
+  color: var(--text-faint);
+  font-weight: 600;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.participant-table tbody tr:hover { background: var(--surface-2); }
+.participant-table td.actions { white-space: nowrap; }
+.participant-table .btn { padding: 3px 8px; font-size: 11.5px; }
+
+/* Small status badges. `data-state` is set from JavaScript, never a class name
+   built from user data. */
+.state-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.state-badge[data-state="ok"] {
+  color: var(--ok);
+  background: var(--ok-soft);
+  border-color: color-mix(in srgb, var(--ok) 30%, transparent);
+}
+.state-badge[data-state="warn"] {
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-color: color-mix(in srgb, var(--warn) 30%, transparent);
+}
+.state-badge[data-state="fail"] {
+  color: var(--fail);
+  background: var(--fail-soft, transparent);
+  border-color: color-mix(in srgb, var(--fail) 30%, transparent);
+}
+.state-badge[data-state="unknown"] {
+  color: var(--text-faint);
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+/* Modal dialogs: consent and revoke confirmation. */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 50;
+}
+.modal {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md, 8px);
+  max-width: 780px;
+  width: 100%;
+  max-height: 88vh;
+  overflow-y: auto;
+  padding: 20px 22px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+}
+.modal header { margin-bottom: 10px; }
+.modal h3 { margin: 0; font-size: 15px; }
+
+/* The consent wording is shown verbatim, in a monospace block, so line breaks
+   and numbering read exactly as the hashed text does. */
+.consent-text {
+  white-space: pre-wrap;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  max-height: 46vh;
+  overflow-y: auto;
+  margin: 10px 0;
+}
+.consent-check {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 12.5px;
+  margin: 12px 0;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+.consent-check input { margin-top: 2px; flex: 0 0 auto; }
+
+.consequence-list {
+  font-size: 12.5px;
+  line-height: 1.6;
+  margin: 10px 0 14px;
+  padding-left: 20px;
+}
+.consequence-list li { margin-bottom: 4px; }
+
+.sample-row { display: flex; gap: 8px; align-items: baseline; }
+.sample-row .tag { flex: 0 0 auto; }

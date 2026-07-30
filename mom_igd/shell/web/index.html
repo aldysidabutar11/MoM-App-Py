@@ -96,9 +96,10 @@
       <div class="section-head">
         <h2 id="recording-heading">Perekaman rapat</h2>
         <p class="muted">
-          Satu microphone menangkap suara campuran seluruh peserta (maksimal sembilan
-          orang). Phase 2 <strong>belum</strong> mengetahui siapa yang berbicara, dan
-          belum menghasilkan transkrip atau MoM. Seluruh audio tetap di perangkat ini.
+          Satu microphone menangkap suara campuran <strong>seluruh</strong> suara di
+          ruangan, tanpa memandang berapa orang yang ada di roster rapat. Phase 2
+          <strong>belum</strong> mengetahui siapa yang berbicara, dan belum
+          menghasilkan transkrip atau MoM. Seluruh audio tetap di perangkat ini.
         </p>
       </div>
 
@@ -197,6 +198,286 @@
       </p>
     </section>
 
+    <!-- ================= PHASE 3: PARTICIPANTS, CONSENT, ENROLLMENT =========
+         No audio is ever handled here. The browser has no microphone access at
+         all: capture runs inside the Python process and this page only sends
+         commands and renders levels, duration and quality verdicts (ADR-0012).
+    ==================================================================== -->
+    <section aria-labelledby="participants-heading" id="participants-panel" hidden>
+      <div class="section-head">
+        <h2 id="participants-heading">Peserta &amp; enrollment suara</h2>
+        <p class="muted">
+          Identitas peserta memakai UUID, bukan nama, sehingga dua orang boleh
+          memiliki nama yang sama. Nama tidak pernah dipakai sebagai nama berkas.
+        </p>
+      </div>
+
+      <!-- Two distinct concepts, kept visually distinct on purpose:
+           the DIRECTORY is every person ever registered and has no size limit;
+           the ROSTER is who is expected in one meeting and has a capacity. -->
+      <div class="status-grid">
+        <!-- meeting roster capacity -->
+        <article class="status-card status-card-wide" id="roster-card">
+          <header>
+            <span class="status-pill" id="roster-count-pill" data-state="unknown">0 / 0</span>
+            <h3>Roster rapat</h3>
+          </header>
+          <div class="field">
+            <label for="roster-meeting-select">Rapat</label>
+            <select id="roster-meeting-select"></select>
+          </div>
+          <p class="muted" id="roster-meeting-label">Belum ada rapat dipilih.</p>
+          <div class="capacity-row">
+            <div class="field">
+              <label for="roster-capacity-input">Kapasitas roster rapat ini</label>
+              <input type="number" id="roster-capacity-input" min="1" step="1"
+                     inputmode="numeric" autocomplete="off" />
+            </div>
+            <button type="button" class="btn" id="roster-capacity-save-btn" disabled>
+              Simpan kapasitas
+            </button>
+          </div>
+          <p class="hint" id="roster-capacity-range"></p>
+          <p class="warn-line" id="roster-capacity-warning" hidden></p>
+          <p class="warn-line" id="roster-capacity-error" hidden></p>
+          <p class="status-detail" id="roster-capacity-result"></p>
+
+          <!-- Roster membership. The roster is a subset of the directory; adding
+               somebody here never copies them, and removing them never deletes
+               them from the directory. -->
+          <h4 class="subhead">Anggota roster aktif</h4>
+          <p class="status-detail" id="roster-slots"></p>
+          <table class="participant-table" id="roster-table">
+            <thead>
+              <tr>
+                <th scope="col">Nama</th>
+                <th scope="col">Peran</th>
+                <th scope="col">Status</th>
+                <th scope="col">Consent</th>
+                <th scope="col">Voiceprint</th>
+                <th scope="col">Tindakan</th>
+              </tr>
+            </thead>
+            <tbody id="roster-rows"></tbody>
+          </table>
+          <p class="status-detail" id="roster-empty">Belum ada anggota pada roster ini.</p>
+
+          <h4 class="subhead">Tambahkan dari direktori peserta</h4>
+          <div class="capacity-row">
+            <div class="field">
+              <label for="roster-add-search">Cari nama atau peran</label>
+              <input type="text" id="roster-add-search" maxlength="120"
+                     autocomplete="off" placeholder="mis. Budi" />
+            </div>
+            <button type="button" class="btn" id="roster-add-search-btn">Cari</button>
+          </div>
+          <ul class="checklist" id="roster-candidates"></ul>
+          <p class="status-detail" id="roster-candidates-note"></p>
+          <p class="warn-line" id="roster-member-error" hidden></p>
+          <p class="status-detail" id="roster-member-result"></p>
+
+          <p class="hint">
+            Roster menentukan siapa saja <em>kandidat pembicara yang dikenal</em>, bukan
+            suara mana yang direkam. Rekaman selalu menangkap seluruh suara yang
+            terdengar mikrofon; suara di luar roster atau tanpa voiceprint kelak
+            ditandai <strong>UNKNOWN</strong>, tidak dibuang.
+          </p>
+          <p class="hint">
+            Mengeluarkan peserta dari roster <strong>tidak</strong> menghapusnya dari
+            direktori, dan tidak menghapus rapat, rekaman, atau notulen lama.
+          </p>
+        </article>
+
+        <!-- participant registry -->
+        <article class="status-card status-card-wide">
+          <header>
+            <span class="status-pill" id="participant-count-pill" data-state="unknown">0</span>
+            <h3>Direktori peserta</h3>
+          </header>
+          <p class="muted">
+            Seluruh peserta yang pernah didaftarkan. Direktori ini tidak dibatasi
+            jumlah tertentu, dan mengeluarkan seseorang dari roster tidak
+            menghapusnya dari sini.
+          </p>
+          <div class="field">
+            <label for="participant-search">Cari nama atau peran</label>
+            <input type="text" id="participant-search" maxlength="120" autocomplete="off"
+                   placeholder="mis. Budi" />
+          </div>
+          <div class="btn-row">
+            <button type="button" class="btn" id="refresh-participants-btn">Muat ulang</button>
+            <button type="button" class="btn btn-primary" id="new-participant-btn">
+              Tambah peserta
+            </button>
+          </div>
+          <table class="participant-table" id="participant-table">
+            <thead>
+              <tr>
+                <th scope="col">Nama</th>
+                <th scope="col">Peran</th>
+                <th scope="col">Status</th>
+                <th scope="col">Consent</th>
+                <th scope="col">Voiceprint</th>
+                <th scope="col">Tindakan</th>
+              </tr>
+            </thead>
+            <tbody id="participant-rows"></tbody>
+          </table>
+          <p class="status-detail" id="participant-empty">Belum ada peserta terdaftar.</p>
+        </article>
+
+        <!-- add / edit -->
+        <article class="status-card" id="participant-form-card" hidden>
+          <header><h3 id="participant-form-title">Tambah peserta</h3></header>
+          <div class="field">
+            <label for="participant-name">Nama tampilan <span aria-hidden="true">*</span></label>
+            <input type="text" id="participant-name" maxlength="120" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="participant-role">Peran</label>
+            <input type="text" id="participant-role" maxlength="80" autocomplete="off" />
+          </div>
+          <div class="btn-row">
+            <button type="button" class="btn btn-primary" id="save-participant-btn">Simpan</button>
+            <button type="button" class="btn" id="cancel-participant-btn">Batal</button>
+          </div>
+          <p class="warn-line" id="participant-form-error" hidden></p>
+          <p class="hint">
+            Nama duplikat diperbolehkan. Aplikasi tidak meminta data pribadi lain
+            karena identifikasi pembicara tidak memerlukannya.
+          </p>
+        </article>
+
+        <!-- enrollment readiness / wizard -->
+        <article class="status-card status-card-wide" id="enrollment-card" hidden>
+          <header>
+            <span class="status-pill" id="enrollment-pill" data-state="unknown">IDLE</span>
+            <h3>Enrollment suara — <span id="enrollment-who"></span></h3>
+          </header>
+
+          <dl class="kv" id="readiness-detail"></dl>
+
+          <p class="notice" id="model-unavailable-notice" hidden>
+            <strong>MODEL_UNAVAILABLE.</strong>
+            <span id="model-unavailable-detail"></span>
+          </p>
+
+          <div class="btn-row">
+            <button type="button" class="btn" id="refresh-readiness-btn">Periksa kesiapan</button>
+            <button type="button" class="btn btn-primary" id="start-enrollment-btn" disabled>
+              Mulai enrollment
+            </button>
+            <button type="button" class="btn" id="capture-sample-btn" disabled>
+              Rekam sample
+            </button>
+            <button type="button" class="btn btn-primary" id="finalize-enrollment-btn" disabled>
+              Selesaikan
+            </button>
+            <button type="button" class="btn btn-danger" id="cancel-enrollment-btn" disabled>
+              Batalkan
+            </button>
+          </div>
+
+          <p class="status-detail" id="enrollment-progress">Belum ada sesi.</p>
+
+          <div class="meter" id="enrollment-meter" hidden>
+            <div class="meter-bar" id="enrollment-rms"></div>
+            <div class="meter-peak" id="enrollment-peak"></div>
+          </div>
+          <p class="status-detail" id="enrollment-levels"></p>
+
+          <ul class="checklist" id="sample-list"></ul>
+          <p class="warn-line" id="enrollment-warning" hidden></p>
+        </article>
+
+        <!-- voiceprint / cleanup -->
+        <article class="status-card" id="voiceprint-card" hidden>
+          <header><h3>Voiceprint</h3></header>
+          <dl class="kv" id="voiceprint-detail"></dl>
+          <div class="btn-row">
+            <button type="button" class="btn" id="verify-voiceprint-btn" disabled>
+              Verifikasi integritas
+            </button>
+            <button type="button" class="btn btn-danger" id="revoke-consent-btn" disabled>
+              Cabut persetujuan
+            </button>
+          </div>
+          <p class="status-detail" id="voiceprint-result"></p>
+        </article>
+      </div>
+
+      <p class="notice">
+        Voiceprint disimpan <strong>terenkripsi</strong> (AES-256-GCM, kunci dilindungi
+        Windows DPAPI). Audio enrollment <strong>tidak pernah ditulis ke disk</strong> dan
+        tidak pernah melewati halaman ini.
+      </p>
+    </section>
+
+    <!-- ================= CONSENT DIALOG ================= -->
+    <div class="modal-backdrop" id="consent-backdrop" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="consent-title">
+        <header>
+          <h3 id="consent-title">Persetujuan pemrosesan data biometrik suara</h3>
+        </header>
+        <dl class="kv" id="consent-meta"></dl>
+        <p class="warn-line" id="consent-draft-warning"></p>
+        <pre class="consent-text" id="consent-text"></pre>
+        <label class="consent-check">
+          <!-- Deliberately NOT checked. A prechecked box is not consent. -->
+          <input type="checkbox" id="consent-agree" />
+          <span id="consent-agree-label"></span>
+        </label>
+        <div class="btn-row">
+          <button type="button" class="btn btn-primary" id="consent-confirm-btn" disabled>
+            Saya setuju
+          </button>
+          <button type="button" class="btn" id="consent-cancel-btn">Batal</button>
+        </div>
+        <p class="warn-line" id="consent-error" hidden></p>
+      </div>
+    </div>
+
+    <!-- ================= REVOKE CONFIRMATION ================= -->
+    <div class="modal-backdrop" id="revoke-backdrop" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="revoke-title">
+        <header><h3 id="revoke-title">Cabut persetujuan?</h3></header>
+        <!-- Identity is rendered from the selected participant, never typed in and
+             never used to address the API: the UUID does that. An empty name here
+             means nothing was selected, and the confirm button stays disabled. -->
+        <p id="revoke-who">
+          Anda akan mencabut persetujuan milik:
+          <strong id="revoke-who-name"></strong><span id="revoke-who-role"></span>
+        </p>
+        <ul class="consequence-list">
+          <li>
+            Template suara peserta ini, jika sudah tersedia, akan
+            <strong>dihapus</strong> dari penyimpanan.
+          </li>
+          <li>Aplikasi tidak lagi berupaya mengenali suara peserta ini.</li>
+          <li>
+            Pada pemrosesan meeting berikutnya, suara peserta akan ditandai
+            <strong>UNKNOWN</strong>, bukan dengan namanya.
+          </li>
+          <li>
+            Notulen dan rekaman rapat yang sudah ada <strong>tidak</strong> otomatis
+            terhapus.
+          </li>
+          <li>
+            Persetujuan lama tidak dapat menghidupkan kembali templat yang telah
+            dihapus. Jika kelak peserta setuju lagi, pendaftaran suara harus
+            dilakukan dari awal.
+          </li>
+        </ul>
+        <div class="btn-row">
+          <button type="button" class="btn btn-danger" id="revoke-confirm-btn" disabled>
+            Ya, cabut persetujuan
+          </button>
+          <button type="button" class="btn" id="revoke-cancel-btn">Batal</button>
+        </div>
+        <p class="warn-line" id="revoke-error" hidden></p>
+      </div>
+    </div>
+
     <!-- ================= FUTURE FEATURES ================= -->
     <section aria-labelledby="features-heading">
       <div class="section-head">
@@ -230,13 +511,19 @@
           </button>
         </article>
 
-        <article class="feature-card" aria-disabled="true">
+        <article class="feature-card feature-card-enabled" id="card-participants">
           <div class="feature-head">
             <h3>Participants</h3>
-            <span class="phase-tag">Phase 3</span>
+            <span class="phase-tag phase-tag-live">Phase 3 · aktif</span>
           </div>
-          <p>Registrasi hingga sembilan peserta dan enrollment suara terenkripsi.</p>
-          <p class="not-implemented">Belum diimplementasikan</p>
+          <p>
+            Direktori peserta, roster per rapat dengan kapasitas yang dapat diatur,
+            persetujuan biometrik, dan voiceprint terenkripsi.
+          </p>
+          <p class="implemented">Tersedia</p>
+          <button type="button" class="btn btn-primary" id="open-participants-btn">
+            Buka panel peserta
+          </button>
         </article>
 
         <article class="feature-card" aria-disabled="true">

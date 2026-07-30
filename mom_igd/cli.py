@@ -48,8 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             f"{APP_NAME} {APP_VERSION} - fully offline Minutes of Meeting "
             f"application (roadmap phase {CURRENT_PHASE}). "
-            "Phase 2 implements the foundation and offline audio capture: still "
-            "no ASR, no diarization, no speaker identification, no LLM, no export."
+            "Phase 3 adds participants, biometric consent and encrypted voice "
+            "enrollment on top of the Phase 2 capture engine: still no ASR, no "
+            "diarization, no speaker identification, no LLM, no export."
         ),
         epilog=(
             "Runtime data lives outside this repository (default "
@@ -229,6 +230,122 @@ def build_parser() -> argparse.ArgumentParser:
     audio_bench.add_argument(
         "--speed", type=float, default=60.0, help="Times faster than real time."
     )
+
+    # -- participant -------------------------------------------------------
+    participant = sub.add_parser(
+        "participant",
+        parents=[common],
+        help="Participants, biometric consent, enrollment and voiceprints.",
+        description=(
+            "Phase 3 tooling. Every subcommand here is read-only EXCEPT `create`, "
+            "`update`, `deactivate`, `consent grant`, `consent revoke`, "
+            "`enrollment cancel` and `cleanup-retry`. None of them opens the "
+            "microphone, creates the encryption key or loads a model. "
+            "`consent grant` and `consent revoke` require an exact typed "
+            "confirmation: consent is a decision, not a flag."
+        ),
+    )
+    participant_sub = participant.add_subparsers(
+        dest="participant_command", metavar="SUBCOMMAND"
+    )
+
+    p_list = participant_sub.add_parser(
+        "list", parents=[common], help="List participants with consent state."
+    )
+    p_list.add_argument("--json", action="store_true")
+    p_list.add_argument("--search", default=None, help="Filter by name or role.")
+    p_list.add_argument("--limit", type=int, default=50)
+
+    p_create = participant_sub.add_parser(
+        "create",
+        parents=[common],
+        help="Register a participant. Duplicate names are allowed.",
+    )
+    p_create.add_argument("name", help="Display name (not an identifier).")
+    p_create.add_argument("--role", default=None)
+    p_create.add_argument("--json", action="store_true")
+
+    p_update = participant_sub.add_parser(
+        "update", parents=[common], help="Edit descriptive fields."
+    )
+    p_update.add_argument("participant_uuid")
+    p_update.add_argument("--name", default=None)
+    p_update.add_argument("--role", default=None)
+    p_update.add_argument("--json", action="store_true")
+
+    p_deact = participant_sub.add_parser(
+        "deactivate",
+        parents=[common],
+        help="Deactivate a participant. Never deletes the row.",
+    )
+    p_deact.add_argument("participant_uuid")
+    p_deact.add_argument("--reason", default=None)
+    p_deact.add_argument(
+        "--reactivate",
+        action="store_true",
+        help="Reactivate instead of deactivating.",
+    )
+    p_deact.add_argument("--json", action="store_true")
+
+    p_consent = participant_sub.add_parser(
+        "consent", parents=[common], help="Biometric consent status, grant and revoke."
+    )
+    p_consent.add_argument("participant_uuid")
+    p_consent.add_argument(
+        "--action",
+        choices=["status", "grant", "revoke"],
+        default="status",
+        help="Default `status`, which changes nothing.",
+    )
+    p_consent.add_argument(
+        "--confirm",
+        default=None,
+        metavar="PHRASE",
+        help=(
+            'Exact confirmation phrase. Grant requires "SAYA SETUJU"; revoke '
+            'requires "CABUT". Without it the command explains and changes nothing.'
+        ),
+    )
+    p_consent.add_argument("--reason", default=None)
+    p_consent.add_argument("--limit", type=int, default=20)
+    p_consent.add_argument("--json", action="store_true")
+
+    p_enroll = participant_sub.add_parser(
+        "enrollment",
+        parents=[common],
+        help="Enrollment readiness and status. Opens no microphone.",
+    )
+    p_enroll.add_argument("participant_uuid", nargs="?", default=None)
+    p_enroll.add_argument(
+        "--cancel", action="store_true", help="Abandon the live enrollment session."
+    )
+    p_enroll.add_argument("--reason", default=None)
+    p_enroll.add_argument("--json", action="store_true")
+
+    p_vp = participant_sub.add_parser(
+        "voiceprint",
+        parents=[common],
+        help="Voiceprint status, and keyless integrity verification.",
+    )
+    p_vp.add_argument("participant_uuid")
+    p_vp.add_argument(
+        "--verify",
+        action="store_true",
+        help="Verify the envelope hash and bindings. Unwraps no key.",
+    )
+    p_vp.add_argument("--json", action="store_true")
+
+    p_cleanup = participant_sub.add_parser(
+        "cleanup",
+        parents=[common],
+        help="Voiceprints awaiting deletion or finalisation.",
+    )
+    p_cleanup.add_argument(
+        "--retry",
+        action="store_true",
+        help="Retry deletion for DELETE_PENDING templates. Idempotent.",
+    )
+    p_cleanup.add_argument("--json", action="store_true")
 
     # -- serve -------------------------------------------------------------
     serve = sub.add_parser(
@@ -584,7 +701,8 @@ def _cmd_audio_devices(args: argparse.Namespace) -> int:
         print(
             "\nNo USB conference microphone verified by Windows. The built-in array is\n"
             "development only: its beamforming suppresses speakers who are not facing\n"
-            "the laptop, which loses voices in a nine-person meeting."
+            "the laptop, which loses voices in any meeting with several people around\n"
+            "a table, and progressively more as the room gets larger."
         )
     return EXIT_OK if payload["devices"] else EXIT_FAILURE
 
@@ -822,6 +940,488 @@ def _cmd_shell(args: argparse.Namespace) -> int:
 # Entry point
 # ---------------------------------------------------------------------------
 
+
+# ---------------------------------------------------------------------------
+# Phase 3: participants, consent, enrollment, voiceprints
+#
+# `list`, `status`, `readiness`, `verify` and `cleanup-status` are read-only:
+# they open no microphone, create no DPAPI key, decrypt nothing and load no
+# model. `consent grant` and `consent revoke` change what the application is
+# permitted to do with a person's biometric data, so both demand an explicit
+# typed confirmation -- there is deliberately no flag that grants consent
+# silently, because consent obtained without someone deciding is not consent.
+# ---------------------------------------------------------------------------
+
+
+def _participant_services(args: argparse.Namespace):
+    """Build the Phase 3 services. Imports the enrollment stack lazily."""
+    from mom_igd.db.connection import connect
+    from mom_igd.enrollment.consent import ConsentService
+    from mom_igd.enrollment.participants import ParticipantService
+
+    config = _load(args)
+    paths = config.runtime_paths()
+
+    def _connect():
+        return connect(
+            paths.database_path(config.database.filename),
+            busy_timeout_ms=config.database.busy_timeout_ms,
+        )
+
+    # `config=` is not optional in practice. Without it the service falls back to
+    # its built-in 9/50, so an operator who configured a different default or
+    # ceiling would silently get the shipped numbers on every CLI command while the
+    # GUI honoured their configuration. Two runtimes disagreeing about the same
+    # policy is worse than either answer.
+    return (
+        config,
+        paths,
+        ParticipantService(_connect, config=config),
+        ConsentService(_connect),
+        _connect,
+    )
+
+
+def _participant_id(connect_fn, participant_uuid: str) -> int:
+    conn = connect_fn()
+    try:
+        row = conn.execute(
+            "SELECT id FROM participants WHERE uuid = ?", (participant_uuid,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        raise SystemExit(f"No participant with uuid={participant_uuid!r}.")
+    return int(row["id"])
+
+
+def _voiceprint_store(config, paths):
+    from mom_igd.db.connection import connect
+    from mom_igd.enrollment.store import VoiceprintStore
+
+    def _connect():
+        return connect(
+            paths.database_path(config.database.filename),
+            busy_timeout_ms=config.database.busy_timeout_ms,
+        )
+
+    return VoiceprintStore(paths.voiceprints_dir, _connect)
+
+
+def _cmd_participant_list(args: argparse.Namespace) -> int:
+    config, paths, people, consent, connect_fn = _participant_services(args)
+    listing = people.list(
+        search=args.search, include_inactive=True, limit=args.limit, offset=0
+    )
+    rows = []
+    conn = connect_fn()
+    try:
+        for entry in listing["participants"]:
+            pid = int(
+                conn.execute(
+                    "SELECT id FROM participants WHERE uuid = ?", (entry["uuid"],)
+                ).fetchone()["id"]
+            )
+            state = consent.state(conn, pid)
+            entry["consent_active"] = state.active
+            rows.append(entry)
+    finally:
+        conn.close()
+
+    if args.json:
+        _emit({"total": listing["total"], "participants": rows}, as_json=True, text="")
+        return EXIT_OK
+
+    lines = [
+        f"{listing['total']} participant(s) registered",
+        "",
+        f"{'UUID':38s} {'NAME':26s} {'ROLE':16s} {'ACTIVE':7s} CONSENT",
+        "-" * 100,
+    ]
+    for entry in rows:
+        lines.append(
+            f"{entry['uuid']:38s} {(entry['display_name'] or '')[:25]:26s} "
+            f"{(entry['role'] or '-')[:15]:16s} "
+            f"{'yes' if entry['is_active'] else 'no':7s} "
+            f"{'active' if entry['consent_active'] else 'none/revoked'}"
+        )
+    if not rows:
+        lines.append("(none)")
+    _emit(None, as_json=False, text="\n".join(lines))
+    return EXIT_OK
+
+
+def _cmd_participant_create(args: argparse.Namespace) -> int:
+    _config, _paths, people, _consent, _connect = _participant_services(args)
+    person = people.create(display_name=args.name, role=args.role)
+    _emit(
+        person.to_dict(),
+        as_json=args.json,
+        text=f"Created participant {person.uuid} ({person.display_name}).",
+    )
+    return EXIT_OK
+
+
+def _cmd_participant_update(args: argparse.Namespace) -> int:
+    _config, _paths, people, _consent, _connect = _participant_services(args)
+    person = people.update(
+        args.participant_uuid.lower(), display_name=args.name, role=args.role
+    )
+    _emit(
+        person.to_dict(),
+        as_json=args.json,
+        text=f"Updated participant {person.uuid} ({person.display_name}).",
+    )
+    return EXIT_OK
+
+
+def _cmd_participant_deactivate(args: argparse.Namespace) -> int:
+    _config, _paths, people, _consent, _connect = _participant_services(args)
+    person = people.set_active(
+        args.participant_uuid.lower(),
+        active=bool(args.reactivate),
+        reason=args.reason,
+    )
+    verb = "Reactivated" if person.is_active else "Deactivated"
+    _emit(
+        person.to_dict(),
+        as_json=args.json,
+        text=(
+            f"{verb} participant {person.uuid} ({person.display_name}). "
+            "The row is never deleted: history references it."
+        ),
+    )
+    return EXIT_OK
+
+
+def _cmd_participant_consent_status(args: argparse.Namespace) -> int:
+    _config, _paths, _people, consent, connect_fn = _participant_services(args)
+    pid = _participant_id(connect_fn, args.participant_uuid.lower())
+    conn = connect_fn()
+    try:
+        state = consent.state(conn, pid)
+        history = consent.history(conn, pid, limit=args.limit)
+    finally:
+        conn.close()
+    if args.json:
+        _emit({"consent": state.to_dict(), "history": history}, as_json=True, text="")
+        return EXIT_OK
+    lines = [
+        f"Consent for {args.participant_uuid.lower()}",
+        f"  active          : {state.active}",
+        f"  version         : {state.consent_version or '-'}",
+        f"  text sha256     : {(state.consent_text_sha256 or '-')[:16]}",
+        f"  matches current : {state.text_matches_current}",
+        f"  purpose         : {state.purpose or '-'}",
+        f"  recorded        : {state.occurred_at or '-'}",
+        "",
+        "History (newest first, append-only):",
+    ]
+    for event in history:
+        lines.append(
+            f"  {event['occurred_at']}  {event['action']:8s} "
+            f"v{event['consent_version']}  {event['confirmation_method']}"
+        )
+    if not history:
+        lines.append("  (no consent event recorded)")
+    _emit(None, as_json=False, text="\n".join(lines))
+    return EXIT_OK
+
+
+_CONSENT_GRANT_PHRASE = "SAYA SETUJU"
+_CONSENT_REVOKE_PHRASE = "CABUT"
+
+
+def _cmd_participant_consent_grant(args: argparse.Namespace) -> int:
+    """Record consent. Requires the operator to type an exact phrase.
+
+    Consent is not a flag. A ``--yes`` switch would let a script grant biometric
+    permission for someone who never agreed, which is the one thing this whole
+    subsystem exists to prevent.
+    """
+    from mom_igd.enrollment.consent import (
+        CONSENT_PURPOSE,
+        CONSENT_TEXT_SHA256,
+        CONSENT_TEXT_V1,
+        CONSENT_VERSION,
+        ConfirmationMethod,
+    )
+
+    _config, _paths, _people, consent, connect_fn = _participant_services(args)
+    pid = _participant_id(connect_fn, args.participant_uuid.lower())
+
+    if args.confirm != _CONSENT_GRANT_PHRASE:
+        print(CONSENT_TEXT_V1)
+        print("-" * 78)
+        print(f"Version : {CONSENT_VERSION}")
+        print(f"Purpose : {CONSENT_PURPOSE}")
+        print(f"SHA-256 : {CONSENT_TEXT_SHA256}")
+        print("-" * 78)
+        print(
+            "The text above must be read to the participant, by them or with them.\n"
+            "To record their consent, re-run this command with:\n"
+            f'    --confirm "{_CONSENT_GRANT_PHRASE}"\n'
+            "Nothing has been recorded.",
+            file=sys.stderr,
+        )
+        return EXIT_FAILURE
+
+    result = consent.grant(
+        pid,
+        confirmation_method=ConfirmationMethod.OPERATOR_CONFIRMED_IN_PERSON,
+        acknowledged_text_sha256=CONSENT_TEXT_SHA256,
+    )
+    _emit(
+        result,
+        as_json=args.json,
+        text=(
+            f"Consent recorded for {args.participant_uuid.lower()} "
+            f"(event {result['event_uuid']}, version {CONSENT_VERSION})."
+            + (" Already active; no duplicate event was appended."
+               if result.get("already_active") else "")
+        ),
+    )
+    return EXIT_OK
+
+
+def _cmd_participant_consent_revoke(args: argparse.Namespace) -> int:
+    """Withdraw consent and destroy every voiceprint for that participant."""
+    from mom_igd.audio.service import RecordingService
+    from mom_igd.enrollment.service import EnrollmentService
+
+    config, paths, _people, _consent, connect_fn = _participant_services(args)
+    _participant_id(connect_fn, args.participant_uuid.lower())
+
+    if args.confirm != _CONSENT_REVOKE_PHRASE:
+        print(
+            "Revoking consent will:\n"
+            "  - delete this participant's encrypted voiceprint;\n"
+            "  - make future speaker identification report UNKNOWN for them;\n"
+            "  - NOT delete existing minutes or meeting recordings;\n"
+            "  - require a completely new enrollment if they consent again.\n"
+            "To proceed, re-run with:\n"
+            f'    --confirm "{_CONSENT_REVOKE_PHRASE}"\n'
+            "Nothing has been changed.",
+            file=sys.stderr,
+        )
+        return EXIT_FAILURE
+
+    service = EnrollmentService(
+        config, paths, recording_service=RecordingService(config, paths)
+    )
+    result = service.revoke_consent_and_delete(
+        args.participant_uuid.lower(), reason=args.reason or "revoked via CLI"
+    )
+    deletion = result["deletion"]
+    lines = [
+        f"Consent revoked for {args.participant_uuid.lower()}.",
+        f"  voiceprints deleted      : {len(deletion['deleted'])}",
+        f"  deletion still pending   : {len(deletion['delete_pending'])}",
+        f"  eligible for identification: {result['eligible']}",
+    ]
+    if deletion["delete_pending"]:
+        lines.append(
+            "  The pending templates are already unusable. Run "
+            "`participant cleanup-retry` to finish removing the files."
+        )
+    _emit(result, as_json=args.json, text="\n".join(lines))
+    return EXIT_OK
+
+
+def _cmd_participant_enrollment_status(args: argparse.Namespace) -> int:
+    """Report enrollment readiness and any live session. Opens no device."""
+    from mom_igd.audio.service import RecordingService
+    from mom_igd.enrollment.service import EnrollmentService
+
+    config, paths, _people, _consent, connect_fn = _participant_services(args)
+    service = EnrollmentService(
+        config, paths, recording_service=RecordingService(config, paths)
+    )
+    payload: dict[str, Any] = {"session": service.status()}
+    if args.participant_uuid:
+        uuid_value = args.participant_uuid.lower()
+        _participant_id(connect_fn, uuid_value)
+        payload["readiness"] = service.readiness(uuid_value)
+        payload["eligibility"] = service.eligibility(uuid_value)
+
+    if args.json:
+        _emit(payload, as_json=True, text="")
+        return EXIT_OK
+
+    session = payload["session"]
+    lines = [
+        "Enrollment session:",
+        f"  active         : {session['active']}",
+        f"  state          : {session['state']}",
+        f"  samples        : {session['samples_accepted']} / {session['samples_target']}",
+    ]
+    readiness = payload.get("readiness")
+    if readiness:
+        model = readiness["model"]
+        device = readiness["device"]
+        lines += [
+            "",
+            f"Readiness for {args.participant_uuid.lower()}:",
+            f"  can start      : {readiness['can_start']}",
+            f"  blockers       : {', '.join(readiness['blockers']) or 'none'}",
+            f"  consent active : {readiness['consent']['active']}",
+            f"  model ready    : {model['ready']}",
+            f"  device         : {device['detail']} ({device['transport']})",
+            f"  USB verified   : {device['production_eligible_device']}",
+            f"  calibration    : {readiness['calibration']['verdict']} "
+            f"({readiness['calibration']['age_days']} days)",
+        ]
+        if not model["ready"]:
+            lines.append(
+                "  NOTE: no speaker embedding model is provisioned, so enrollment "
+                "cannot start and the microphone will not be opened."
+            )
+    _emit(None, as_json=False, text="\n".join(lines))
+    return EXIT_OK
+
+
+def _cmd_participant_enrollment_cancel(args: argparse.Namespace) -> int:
+    from mom_igd.audio.service import RecordingService
+    from mom_igd.enrollment.service import EnrollmentService
+
+    config, paths, _people, _consent, _connect = _participant_services(args)
+    service = EnrollmentService(
+        config, paths, recording_service=RecordingService(config, paths)
+    )
+    status = service.cancel(reason=args.reason or "cancelled via CLI")
+    _emit(
+        status,
+        as_json=args.json,
+        text=(
+            f"Enrollment state: {status['state']}. Any captured audio has been "
+            "discarded and the shared capture lock is released."
+        ),
+    )
+    return EXIT_OK
+
+
+def _cmd_participant_voiceprint(args: argparse.Namespace) -> int:
+    """Voiceprint status, and optionally a keyless integrity verification."""
+    config, paths, _people, _consent, connect_fn = _participant_services(args)
+    store = _voiceprint_store(config, paths)
+    pid = _participant_id(connect_fn, args.participant_uuid.lower())
+    payload = store.status_for_participant(pid)
+
+    if args.verify and payload["current"]:
+        payload["verification"] = store.verify(
+            payload["current"]["voiceprint_uuid"]
+        ).to_dict()
+
+    if args.json:
+        _emit(payload, as_json=True, text="")
+        return EXIT_OK
+
+    current = payload["current"]
+    lines = [
+        f"Voiceprint for {args.participant_uuid.lower()}:",
+        f"  usable            : {payload['has_usable_voiceprint']}",
+        f"  production eligible: {payload['production_eligible']}",
+    ]
+    if current:
+        lines += [
+            f"  uuid              : {current['voiceprint_uuid']}",
+            f"  status            : {current['status']}",
+            f"  model             : {current['model']['name']} {current['model']['version']}",
+            f"  quality           : {current['quality_verdict']}",
+            f"  min pair cosine   : {current['min_pair_cosine']}",
+            f"  device transport  : {current['device_transport']}",
+        ]
+    else:
+        lines.append("  (no voiceprint has been created)")
+    verification = payload.get("verification")
+    if verification:
+        lines += [
+            "",
+            f"Integrity: {'OK' if verification['ok'] else 'PROBLEM'} "
+            f"(status {verification['status']})",
+        ]
+        for problem in verification["problems"]:
+            lines.append(f"  - {problem}")
+    lines.append("")
+    lines.append(
+        f"History: {len(payload['history'])} record(s). No biometric payload is ever "
+        "printed."
+    )
+    _emit(None, as_json=False, text="\n".join(lines))
+    return EXIT_OK
+
+
+def _cmd_participant_cleanup_status(args: argparse.Namespace) -> int:
+    config, paths, _people, _consent, connect_fn = _participant_services(args)
+    conn = connect_fn()
+    try:
+        rows = conn.execute(
+            "SELECT voiceprint_uuid, status, delete_error FROM voiceprints "
+            "WHERE status IN ('DELETE_PENDING','PENDING_WRITE','INTEGRITY_FAILED') "
+            "ORDER BY id DESC"
+        ).fetchall()
+    finally:
+        conn.close()
+    payload = {
+        "pending": [
+            {
+                "voiceprint_uuid": str(r["voiceprint_uuid"]),
+                "status": str(r["status"]),
+                "delete_error": r["delete_error"],
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+    }
+    lines = [f"{len(rows)} voiceprint(s) need attention:"]
+    for entry in payload["pending"]:
+        lines.append(
+            f"  {entry['voiceprint_uuid']}  {entry['status']}"
+            + (f"  ({entry['delete_error']})" if entry["delete_error"] else "")
+        )
+    if not rows:
+        lines = ["No voiceprint is awaiting deletion or finalisation."]
+    _emit(payload, as_json=args.json, text="\n".join(lines))
+    return EXIT_OK
+
+
+def _cmd_participant_consent(args: argparse.Namespace) -> int:
+    """Route `consent` by its --action. Default `status` changes nothing."""
+    if args.action == "grant":
+        return _cmd_participant_consent_grant(args)
+    if args.action == "revoke":
+        return _cmd_participant_consent_revoke(args)
+    return _cmd_participant_consent_status(args)
+
+
+def _cmd_participant_enrollment(args: argparse.Namespace) -> int:
+    if args.cancel:
+        return _cmd_participant_enrollment_cancel(args)
+    return _cmd_participant_enrollment_status(args)
+
+
+def _cmd_participant_cleanup(args: argparse.Namespace) -> int:
+    if args.retry:
+        return _cmd_participant_cleanup_retry(args)
+    return _cmd_participant_cleanup_status(args)
+
+
+def _cmd_participant_cleanup_retry(args: argparse.Namespace) -> int:
+    """Retry deletion for DELETE_PENDING voiceprints. Idempotent."""
+    config, paths, _people, _consent, _connect = _participant_services(args)
+    report = _voiceprint_store(config, paths).retry_pending_cleanup()
+    payload = report.to_dict()
+    _emit(
+        payload,
+        as_json=args.json,
+        text=(
+            f"Cleanup retried: {payload['cleanup_retried']} deleted, "
+            f"{payload['cleanup_still_pending']} still pending. Safe to run again."
+        ),
+    )
+    return EXIT_OK
+
+
 _DISPATCH: dict[tuple[str, str | None], Any] = {
     ("doctor", None): _cmd_doctor,
     ("db", "init"): _cmd_db_init,
@@ -836,6 +1436,14 @@ _DISPATCH: dict[tuple[str, str | None], Any] = {
     ("audio", "recover"): _cmd_audio_recover,
     ("audio", "smoke"): _cmd_audio_smoke,
     ("audio", "bench"): _cmd_audio_bench,
+    ("participant", "list"): _cmd_participant_list,
+    ("participant", "create"): _cmd_participant_create,
+    ("participant", "update"): _cmd_participant_update,
+    ("participant", "deactivate"): _cmd_participant_deactivate,
+    ("participant", "consent"): _cmd_participant_consent,
+    ("participant", "enrollment"): _cmd_participant_enrollment,
+    ("participant", "voiceprint"): _cmd_participant_voiceprint,
+    ("participant", "cleanup"): _cmd_participant_cleanup,
     ("serve", None): _cmd_serve,
     ("smoke", None): _cmd_smoke,
     ("shell", None): _cmd_shell,
@@ -860,8 +1468,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         sub_name = getattr(args, "registry_command", None)
     elif args.command == "audio":
         sub_name = getattr(args, "audio_command", None)
+    elif args.command == "participant":
+        sub_name = getattr(args, "participant_command", None)
 
-    if args.command in {"db", "config", "registry", "audio"} and not sub_name:
+    if args.command in {"db", "config", "registry", "audio", "participant"} and not sub_name:
         print(f"`{_PROG} {args.command}` requires a subcommand.", file=sys.stderr)
         print(f"Try `{_PROG} {args.command} --help`.", file=sys.stderr)
         return EXIT_FAILURE

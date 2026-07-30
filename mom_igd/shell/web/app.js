@@ -797,3 +797,1243 @@
       data.quarantined_chunks + ' dikarantina sebagai bukti.';
   });
 })();
+
+/* ==========================================================================
+   PHASE 3 -- participants, biometric consent, voice enrollment.
+
+   THE ARCHITECTURAL RULE THIS BLOCK EXISTS TO HONOUR: this page never touches
+   audio. There is no getUserMedia, no AudioContext, no MediaRecorder and no PCM
+   anywhere below. Voice capture runs inside the Python process
+   (mom_igd/enrollment/capture.py); the page sends "record a sample" and receives
+   levels, a duration and a quality verdict. A biometric sample never becomes a
+   base64 blob in a request body and never enters browser memory. See ADR-0012.
+
+   Every value that came from the backend is rendered with textContent or
+   createTextNode. There is no innerHTML in this block: a participant's display
+   name is operator-supplied text, and it is the obvious injection vector here.
+   ========================================================================== */
+(function () {
+  'use strict';
+
+  var READINESS_POLL_MS = 1500;   /* only while the wizard is open */
+  var pollTimer = null;
+  var pollStopped = false;
+  var busy = false;               /* single in-flight guard for every action */
+  var participants = [];
+  var selected = null;            /* the participant object, never a DOM id */
+  var consentBundle = null;
+  var pendingConsentUuid = null;
+
+  /* The revoke dialog owns its own state, deliberately not the global `busy`
+     flag. `busy` is shared by every action button, so a dialog that read it
+     could not tell "another action is running" from "my own submit is running",
+     and its Batal button would go dead for reasons unrelated to the dialog. */
+  var revokeTarget = null;    /* {uuid, name, role} or null */
+  var revokeSubmitting = false;
+  var revokeReturnFocus = null;
+
+  var UUID_RE =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+  /* Meeting roster capacity. `null` until the backend has answered; the Save
+     button stays disabled until then so a stale ceiling can never be sent. */
+  var rosterMeetingUuid = null;
+  var rosterState = null;     /* the last roster response, verbatim */
+  var rosterFull = false;     /* derived from the server's own counts, never guessed */
+
+  /* Directory search results are paged. Fifty participants is the safety ceiling for
+     one roster, not for the directory, which has no limit -- so the candidate list
+     must stay bounded and searchable rather than rendering everyone. */
+  var CANDIDATE_PAGE = 25;
+
+  var el = {
+    open: document.getElementById('open-participants-btn'),
+    panel: document.getElementById('participants-panel'),
+    countPill: document.getElementById('participant-count-pill'),
+    search: document.getElementById('participant-search'),
+    refresh: document.getElementById('refresh-participants-btn'),
+    newBtn: document.getElementById('new-participant-btn'),
+    rows: document.getElementById('participant-rows'),
+    empty: document.getElementById('participant-empty'),
+
+    formCard: document.getElementById('participant-form-card'),
+    formTitle: document.getElementById('participant-form-title'),
+    name: document.getElementById('participant-name'),
+    role: document.getElementById('participant-role'),
+    save: document.getElementById('save-participant-btn'),
+    cancelForm: document.getElementById('cancel-participant-btn'),
+    formError: document.getElementById('participant-form-error'),
+
+    enrollCard: document.getElementById('enrollment-card'),
+    enrollPill: document.getElementById('enrollment-pill'),
+    enrollWho: document.getElementById('enrollment-who'),
+    readiness: document.getElementById('readiness-detail'),
+    modelNotice: document.getElementById('model-unavailable-notice'),
+    modelDetail: document.getElementById('model-unavailable-detail'),
+    refreshReady: document.getElementById('refresh-readiness-btn'),
+    startEnroll: document.getElementById('start-enrollment-btn'),
+    captureSample: document.getElementById('capture-sample-btn'),
+    finalize: document.getElementById('finalize-enrollment-btn'),
+    cancelEnroll: document.getElementById('cancel-enrollment-btn'),
+    progress: document.getElementById('enrollment-progress'),
+    meter: document.getElementById('enrollment-meter'),
+    meterRms: document.getElementById('enrollment-rms'),
+    meterPeak: document.getElementById('enrollment-peak'),
+    levels: document.getElementById('enrollment-levels'),
+    sampleList: document.getElementById('sample-list'),
+    enrollWarn: document.getElementById('enrollment-warning'),
+
+    vpCard: document.getElementById('voiceprint-card'),
+    vpDetail: document.getElementById('voiceprint-detail'),
+    vpVerify: document.getElementById('verify-voiceprint-btn'),
+    vpRevoke: document.getElementById('revoke-consent-btn'),
+    vpResult: document.getElementById('voiceprint-result'),
+
+    consentBackdrop: document.getElementById('consent-backdrop'),
+    consentMeta: document.getElementById('consent-meta'),
+    consentDraft: document.getElementById('consent-draft-warning'),
+    consentText: document.getElementById('consent-text'),
+    consentAgree: document.getElementById('consent-agree'),
+    consentAgreeLabel: document.getElementById('consent-agree-label'),
+    consentConfirm: document.getElementById('consent-confirm-btn'),
+    consentCancel: document.getElementById('consent-cancel-btn'),
+    consentError: document.getElementById('consent-error'),
+
+    revokeBackdrop: document.getElementById('revoke-backdrop'),
+    revokeWho: document.getElementById('revoke-who'),
+    revokeWhoName: document.getElementById('revoke-who-name'),
+    revokeWhoRole: document.getElementById('revoke-who-role'),
+    revokeConfirm: document.getElementById('revoke-confirm-btn'),
+    revokeCancel: document.getElementById('revoke-cancel-btn'),
+    revokeError: document.getElementById('revoke-error'),
+
+    rosterCard: document.getElementById('roster-card'),
+    rosterSelect: document.getElementById('roster-meeting-select'),
+    rosterPill: document.getElementById('roster-count-pill'),
+    rosterSlots: document.getElementById('roster-slots'),
+    rosterRows: document.getElementById('roster-rows'),
+    rosterEmpty: document.getElementById('roster-empty'),
+    rosterAddSearch: document.getElementById('roster-add-search'),
+    rosterAddSearchBtn: document.getElementById('roster-add-search-btn'),
+    rosterCandidates: document.getElementById('roster-candidates'),
+    rosterCandidatesNote: document.getElementById('roster-candidates-note'),
+    rosterMemberError: document.getElementById('roster-member-error'),
+    rosterMemberResult: document.getElementById('roster-member-result'),
+    rosterLabel: document.getElementById('roster-meeting-label'),
+    rosterCapacity: document.getElementById('roster-capacity-input'),
+    rosterSave: document.getElementById('roster-capacity-save-btn'),
+    rosterRange: document.getElementById('roster-capacity-range'),
+    rosterWarning: document.getElementById('roster-capacity-warning'),
+    rosterError: document.getElementById('roster-capacity-error'),
+    rosterResult: document.getElementById('roster-capacity-result')
+  };
+
+  if (!el.panel) return;   /* the Phase 3 markup is absent; nothing to wire */
+
+  /* ------------------------------------------------------------- bridge -- */
+
+  function api() {
+    return window.pywebview && window.pywebview.api ? window.pywebview.api : null;
+  }
+
+  function unavailable() {
+    return {
+      ok: false,
+      status: 0,
+      error: 'Panel ini hanya berfungsi di dalam shell desktop (butuh session token).'
+    };
+  }
+
+  async function httpGet(path, query) {
+    var a = api();
+    return a ? a.api_get(path, query || null) : unavailable();
+  }
+
+  async function httpPost(path, payload) {
+    var a = api();
+    return a ? a.api_post(path, payload || null) : unavailable();
+  }
+
+  async function httpPatch(path, payload) {
+    var a = api();
+    return a ? a.api_patch(path, payload || null) : unavailable();
+  }
+
+  async function httpDelete(path) {
+    var a = api();
+    return a ? a.api_delete(path) : unavailable();
+  }
+
+  function failureText(envelope) {
+    if (!envelope) return 'kesalahan tidak diketahui';
+    var e = envelope.error;
+    if (typeof e === 'string') return e;
+    if (e && typeof e === 'object') {
+      /* Enrollment errors arrive as {reason, message}. */
+      if (e.message) return (e.reason ? '[' + e.reason + '] ' : '') + e.message;
+      if (e.detail) return String(e.detail);
+    }
+    return 'HTTP ' + envelope.status;
+  }
+
+  /* --------------------------------------------------------- safe render -- */
+
+  function textCell(value) {
+    var td = document.createElement('td');
+    td.textContent = (value === null || value === undefined || value === '')
+      ? '—' : String(value);
+    return td;
+  }
+
+  function stateBadge(label, state) {
+    var span = document.createElement('span');
+    span.className = 'state-badge';
+    span.dataset.state = state;   /* never interpolated into a class name */
+    span.textContent = label;
+    return span;
+  }
+
+  function setKvSafe(node, pairs) {
+    node.textContent = '';
+    pairs.forEach(function (pair) {
+      var dt = document.createElement('dt');
+      dt.textContent = pair[0];
+      var dd = document.createElement('dd');
+      dd.textContent = (pair[1] === null || pair[1] === undefined)
+        ? '—' : String(pair[1]);
+      node.appendChild(dt);
+      node.appendChild(dd);
+    });
+  }
+
+  function show(node, visible) {
+    if (node) node.hidden = !visible;
+  }
+
+  function makeButton(label, handler) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn';
+    b.textContent = label;
+    b.addEventListener('click', handler);
+    return b;
+  }
+
+  /* ------------------------------------------------------------- guards -- */
+
+  /* The two dialog confirm buttons are NOT in this list, and must never be added
+     to it. Each dialog gates its own confirm button on its own precondition --
+     consent on the checkbox, revoke on having a valid selected participant -- and
+     a blanket `disabled = false` here would re-enable them regardless. That is
+     how a "Ya, cabut persetujuan" button becomes clickable with nothing
+     selected. Dialog state is re-applied by syncDialogButtons(). */
+  function setActionsDisabled(disabled) {
+    [
+      el.refresh, el.newBtn, el.save, el.refreshReady, el.startEnroll,
+      el.captureSample, el.finalize, el.cancelEnroll, el.vpVerify, el.vpRevoke,
+      el.rosterSave
+    ].forEach(function (b) {
+      if (b) b.disabled = disabled;
+    });
+  }
+
+  function syncDialogButtons() {
+    if (el.consentConfirm) {
+      el.consentConfirm.disabled =
+        !pendingConsentUuid || !consentBundle || !el.consentAgree.checked;
+    }
+    if (el.revokeConfirm) {
+      el.revokeConfirm.disabled = !revokeTarget || revokeSubmitting;
+    }
+    /* Batal is usable whenever a submit is not in flight -- including before any
+       request has ever been made. */
+    if (el.revokeCancel) el.revokeCancel.disabled = revokeSubmitting;
+  }
+
+  /* Runs `fn` with every action button disabled, so a double click cannot
+     submit the same thing twice. */
+  async function once(fn) {
+    if (busy) return null;
+    busy = true;
+    setActionsDisabled(true);
+    try {
+      return await fn();
+    } finally {
+      busy = false;
+      setActionsDisabled(false);
+      syncDialogButtons();
+      await refreshEnrollmentButtons();
+    }
+  }
+
+  /* -------------------------------------------------------- participants -- */
+
+  function consentBadge(entry) {
+    var c = entry.consent || {};
+    if (c.active) return stateBadge('AKTIF', 'ok');
+    if (c.action === 'REVOKED') return stateBadge('DICABUT', 'fail');
+    return stateBadge('BELUM ADA', 'unknown');
+  }
+
+  function voiceprintBadge(entry) {
+    var v = entry.voiceprint;
+    if (!v) return stateBadge('BELUM ADA', 'unknown');
+    if (v.status === 'ACTIVE') return stateBadge('ACTIVE', 'ok');
+    if (v.status === 'DEVELOPMENT_ONLY') return stateBadge('DEV ONLY', 'warn');
+    if (v.status === 'RE_ENROLL_REQUIRED') return stateBadge('RE-ENROLL', 'warn');
+    return stateBadge(String(v.status), 'fail');
+  }
+
+  function renderParticipants(listing) {
+    participants = listing.participants || [];
+    el.countPill.textContent = String(listing.total || 0);
+    el.countPill.dataset.state = listing.total ? 'ok' : 'unknown';
+    el.rows.textContent = '';
+    show(el.empty, participants.length === 0);
+    if (participants.length === 0) {
+      el.empty.textContent = 'Belum ada peserta terdaftar.';
+    }
+
+    participants.forEach(function (entry) {
+      var tr = document.createElement('tr');
+      tr.appendChild(textCell(entry.display_name));
+      tr.appendChild(textCell(entry.role));
+
+      var statusTd = document.createElement('td');
+      statusTd.appendChild(entry.is_active
+        ? stateBadge('AKTIF', 'ok') : stateBadge('NONAKTIF', 'unknown'));
+      tr.appendChild(statusTd);
+
+      var consentTd = document.createElement('td');
+      consentTd.appendChild(consentBadge(entry));
+      tr.appendChild(consentTd);
+
+      var vpTd = document.createElement('td');
+      vpTd.appendChild(voiceprintBadge(entry));
+      tr.appendChild(vpTd);
+
+      var actions = document.createElement('td');
+      actions.className = 'actions';
+      actions.appendChild(makeButton('Enrollment', function () {
+        openEnrollment(entry);
+      }));
+      actions.appendChild(makeButton('Edit', function () { openForm(entry); }));
+      actions.appendChild(makeButton(
+        entry.is_active ? 'Nonaktifkan' : 'Aktifkan',
+        function () { once(function () { return toggleActive(entry); }); }
+      ));
+      tr.appendChild(actions);
+      el.rows.appendChild(tr);
+    });
+  }
+
+  async function loadParticipants() {
+    var query = { limit: 100 };
+    var term = el.search.value.trim();
+    if (term) query.search = term;
+    var envelope = await httpGet('/enrollment/participants', query);
+    if (!envelope.ok) {
+      show(el.empty, true);
+      el.empty.textContent = 'Gagal memuat peserta: ' + failureText(envelope);
+      return;
+    }
+    renderParticipants(envelope.data);
+    /* Keep the selected participant's decorated copy fresh. */
+    if (selected) {
+      participants.forEach(function (entry) {
+        if (entry.uuid === selected.uuid) selected = entry;
+      });
+    }
+  }
+
+  function openForm(entry) {
+    selected = entry || null;
+    el.formTitle.textContent = entry ? 'Edit peserta' : 'Tambah peserta';
+    el.name.value = entry ? entry.display_name : '';
+    el.role.value = (entry && entry.role) ? entry.role : '';
+    show(el.formError, false);
+    show(el.formCard, true);
+    el.name.focus();
+  }
+
+  async function saveParticipant() {
+    var name = el.name.value.trim();
+    if (!name) {
+      show(el.formError, true);
+      el.formError.textContent = 'Nama tampilan wajib diisi.';
+      return;
+    }
+    var body = { display_name: name, role: el.role.value.trim() || null };
+    var envelope = selected
+      ? await httpPatch('/enrollment/participants/' + selected.uuid, body)
+      : await httpPost('/enrollment/participants', body);
+    if (!envelope.ok) {
+      show(el.formError, true);
+      el.formError.textContent = 'Gagal menyimpan: ' + failureText(envelope);
+      return;
+    }
+    show(el.formCard, false);
+    selected = null;
+    await loadParticipants();
+  }
+
+  async function toggleActive(entry) {
+    var suffix = entry.is_active ? '/deactivate' : '/reactivate';
+    var envelope = await httpPost(
+      '/enrollment/participants/' + entry.uuid + suffix, {}
+    );
+    if (!envelope.ok) {
+      show(el.empty, true);
+      el.empty.textContent = 'Gagal mengubah status: ' + failureText(envelope);
+      return;
+    }
+    await loadParticipants();
+  }
+
+  /* ------------------------------------------------------------- consent -- */
+
+  async function openConsentDialog(entry) {
+    var envelope = await httpGet('/enrollment/consent/text');
+    if (!envelope.ok) {
+      show(el.enrollWarn, true);
+      el.enrollWarn.textContent =
+        'Tidak dapat memuat teks persetujuan: ' + failureText(envelope);
+      return;
+    }
+    consentBundle = envelope.data;
+    pendingConsentUuid = entry.uuid;
+
+    setKvSafe(el.consentMeta, [
+      ['peserta', entry.display_name],
+      ['versi', consentBundle.version],
+      ['bahasa', consentBundle.language],
+      ['tujuan', consentBundle.purpose],
+      ['sha-256 teks', String(consentBundle.text_sha256).slice(0, 16) + '…']
+    ]);
+    el.consentDraft.textContent = consentBundle.review_pending
+      ? consentBundle.review_note : '';
+    show(el.consentDraft, Boolean(consentBundle.review_pending));
+    el.consentText.textContent = consentBundle.text;
+    el.consentAgreeLabel.textContent =
+      'Peserta telah membaca dan memahami keterangan di atas, dan memberikan ' +
+      'persetujuan untuk pembuatan serta penyimpanan templat biometrik suaranya ' +
+      'untuk tujuan tersebut saja.';
+    /* Never pre-checked: a prechecked box is not consent. */
+    el.consentAgree.checked = false;
+    el.consentConfirm.disabled = true;
+    show(el.consentError, false);
+    show(el.consentBackdrop, true);
+  }
+
+  function closeConsentDialog() {
+    show(el.consentBackdrop, false);
+    pendingConsentUuid = null;
+    el.consentAgree.checked = false;
+    el.consentConfirm.disabled = true;
+  }
+
+  async function confirmConsent() {
+    if (!pendingConsentUuid || !consentBundle || !el.consentAgree.checked) return;
+    var envelope = await httpPost(
+      '/enrollment/participants/' + pendingConsentUuid + '/consent/grant',
+      {
+        acknowledged_text_sha256: consentBundle.text_sha256,
+        confirmed_by_participant: true
+      }
+    );
+    if (!envelope.ok) {
+      show(el.consentError, true);
+      el.consentError.textContent =
+        'Gagal mencatat persetujuan: ' + failureText(envelope);
+      return;
+    }
+    closeConsentDialog();
+    await loadParticipants();
+    if (selected) await refreshReadiness();
+  }
+
+  function revokeError(message) {
+    show(el.revokeError, true);
+    el.revokeError.textContent = message;
+  }
+
+  /* `trigger` is the element that opened the dialog, so focus can go back where
+     the operator left it. Identity is rendered for the human; the UUID is what
+     the request uses. A name is never sent, and never trusted as an identifier. */
+  function openRevokeDialog(entry, trigger) {
+    revokeReturnFocus = trigger || null;
+    revokeSubmitting = false;
+    show(el.revokeError, false);
+
+    var uuid = entry && typeof entry.uuid === 'string' ? entry.uuid.toLowerCase() : '';
+    if (!UUID_RE.test(uuid)) {
+      /* Refuse rather than guess. Revoking the wrong person's consent destroys a
+         voiceprint that cannot be restored, so an unidentified target is fatal. */
+      revokeTarget = null;
+      el.revokeWhoName.textContent = '(peserta tidak dikenali)';
+      el.revokeWhoRole.textContent = '';
+      revokeError(
+        'Peserta yang dipilih tidak dapat dikenali, jadi tidak ada yang dicabut. ' +
+        'Tutup dialog ini, muat ulang daftar peserta, lalu pilih peserta kembali.'
+      );
+    } else {
+      revokeTarget = {
+        uuid: uuid,
+        name: String(entry.display_name || '(tanpa nama)'),
+        role: entry.role ? String(entry.role) : ''
+      };
+      el.revokeWhoName.textContent = revokeTarget.name;
+      el.revokeWhoRole.textContent = revokeTarget.role
+        ? ' — ' + revokeTarget.role
+        : '';
+    }
+
+    syncDialogButtons();
+    show(el.revokeBackdrop, true);
+    /* Focus lands inside the dialog. Batal first, not the destructive button:
+       a stray Enter must not revoke anyone's consent. */
+    if (el.revokeCancel) el.revokeCancel.focus();
+  }
+
+  function closeRevokeDialog() {
+    if (revokeSubmitting) return;          /* never close mid-request */
+    show(el.revokeBackdrop, false);
+    show(el.revokeError, false);
+    revokeTarget = null;
+    el.revokeWhoName.textContent = '';
+    el.revokeWhoRole.textContent = '';
+    syncDialogButtons();
+    var back = revokeReturnFocus;
+    revokeReturnFocus = null;
+    if (back && typeof back.focus === 'function' && !back.disabled) back.focus();
+  }
+
+  async function submitRevoke() {
+    /* Three separate guards, because they fail for different reasons:
+       no target  -> nothing to send, and the button should already be disabled;
+       submitting -> a second click or a double-click; must not send twice. */
+    if (revokeSubmitting) return;
+    if (!revokeTarget) {
+      revokeError('Tidak ada peserta yang dipilih, jadi tidak ada yang dicabut.');
+      syncDialogButtons();
+      return;
+    }
+
+    var target = revokeTarget;
+    revokeSubmitting = true;
+    syncDialogButtons();
+    var label = el.revokeConfirm.textContent;
+    el.revokeConfirm.textContent = 'Mencabut…';
+    show(el.revokeError, false);
+
+    try {
+      var envelope = await httpPost(
+        '/enrollment/participants/' + target.uuid + '/consent/revoke',
+        { reason: 'dicabut melalui panel peserta' }
+      );
+      if (!envelope.ok) {
+        /* Stay open so the operator can retry or cancel. failureText() carries a
+           reason and a message, never a traceback, path, token or key. */
+        revokeError('Gagal mencabut: ' + failureText(envelope));
+        return;
+      }
+
+      var deletion = (envelope.data && envelope.data.deletion) || {};
+      var deleted = (deletion.deleted || []).length;
+      var pending = (deletion.delete_pending || []).length;
+      var summary;
+      if (pending > 0) {
+        summary =
+          'Persetujuan dicabut. Penghapusan berkas GAGAL untuk ' + pending +
+          ' template; template sudah tidak dapat dipakai dan pembersihan akan diulang.';
+      } else if (deleted > 0) {
+        summary = 'Persetujuan dicabut dan template terenkripsi telah dihapus.';
+      } else {
+        /* No voiceprint existed. That is a success, not an error, and saying so
+           plainly stops an operator hunting for a failure that did not happen. */
+        summary =
+          'Persetujuan dicabut. Peserta ini belum memiliki template suara, jadi ' +
+          'tidak ada berkas yang perlu dihapus.';
+      }
+
+      revokeSubmitting = false;            /* allow the close below */
+      closeRevokeDialog();
+      el.vpResult.textContent = summary;
+      await loadParticipants();
+      if (selected) await refreshReadiness();
+    } finally {
+      revokeSubmitting = false;
+      el.revokeConfirm.textContent = label;
+      syncDialogButtons();
+    }
+  }
+
+  /* ------------------------------------------------------- roster capacity -- */
+
+  /* Nine is the backward-compatible default, not a limit of the product. The
+     ceiling is configuration, and a bigger roster changes who the KNOWN speaker
+     candidates are -- never whether audio is recorded. */
+  var BASELINE_CAPACITY = 9;
+
+  function renderRoster(data) {
+    rosterState = data;
+    var count = Number(data.active_count) || 0;
+    var capacity = Number(data.capacity) || 0;
+    el.rosterPill.textContent = count + ' / ' + capacity;
+    el.rosterPill.dataset.state =
+      count > capacity ? 'fail' : (count === capacity ? 'warn' : 'ok');
+
+    /* The bounds come from the server, which knows whether this meeting is
+       grandfathered above a since-lowered ceiling. Rendering `maximum_capacity`
+       here would show a range the meeting does not actually have. */
+    var lowest = Number(data.capacity_min_settable);
+    var highest = Number(data.capacity_max_settable);
+    el.rosterCapacity.min = String(lowest);
+    el.rosterCapacity.max = String(highest);
+    el.rosterCapacity.value = String(capacity);
+
+    var range = 'Nilai yang diperbolehkan untuk rapat ini: ' + lowest + '–' + highest +
+      '. Batas atas adalah pagar keamanan yang dapat dikonfigurasi (saat ini ' +
+      data.maximum_capacity + '), bukan pernyataan bahwa ' + data.maximum_capacity +
+      ' pembicara sudah terbukti dikenali dengan akurat.';
+    if (!data.capacity_changeable) {
+      range += ' Kapasitas tidak dapat diubah sekarang karena roster aktif (' +
+        count + ') sudah melebihi nilai tertinggi yang boleh disetel.';
+    }
+    el.rosterRange.textContent = range;
+
+    var notes = [];
+    if (data.capacity_above_ceiling && data.capacity_notice) {
+      /* Grandfathered: say so plainly rather than pretending the stored value is
+         within the configured ceiling. */
+      notes.push(data.capacity_notice);
+    }
+    if (capacity > BASELINE_CAPACITY) {
+      notes.push('Kapasitas lebih besar membutuhkan conference microphone dan ' +
+        'pengujian ruangan. Menambah roster tidak menjamin akurasi pengenalan suara.');
+    }
+    el.rosterWarning.textContent = notes.join(' ');
+    show(el.rosterWarning, notes.length > 0);
+
+    el.rosterSave.disabled = busy || !data.capacity_changeable;
+    renderRosterMembers(data);
+  }
+
+  /* ------------------------------------------------- roster membership -- */
+
+  function renderRosterMembers(data) {
+    var members = (data.participants || []).filter(function (m) {
+      return m.membership_active;
+    });
+    var capacity = Number(data.capacity) || 0;
+    var remaining = Number(data.slots_remaining);
+    rosterFull = members.length >= capacity;
+
+    el.rosterSlots.textContent = members.length + ' anggota aktif, ' +
+      (isFinite(remaining) ? remaining : 0) + ' kursi tersisa dari kapasitas ' +
+      capacity + '.' + (rosterFull ? ' Roster penuh.' : '');
+
+    el.rosterRows.textContent = '';
+    show(el.rosterEmpty, members.length === 0);
+
+    members.forEach(function (entry) {
+      var tr = document.createElement('tr');
+      tr.appendChild(textCell(entry.display_name));
+      tr.appendChild(textCell(entry.role));
+
+      var statusTd = document.createElement('td');
+      statusTd.appendChild(entry.is_active
+        ? stateBadge('AKTIF', 'ok') : stateBadge('NONAKTIF', 'unknown'));
+      tr.appendChild(statusTd);
+
+      var consentTd = document.createElement('td');
+      consentTd.appendChild(consentBadge(entry));
+      tr.appendChild(consentTd);
+
+      var vpTd = document.createElement('td');
+      vpTd.appendChild(voiceprintBadge(entry));
+      tr.appendChild(vpTd);
+
+      var actions = document.createElement('td');
+      actions.className = 'actions';
+      actions.appendChild(makeButton('Keluarkan dari roster', function () {
+        once(function () { return removeFromRoster(entry); });
+      }));
+      tr.appendChild(actions);
+      el.rosterRows.appendChild(tr);
+    });
+  }
+
+  /* One request for the whole candidate page. The roster response already carries
+     every member's consent and voiceprint state, so nothing here needs a call per
+     participant, and nothing polls. */
+  async function searchCandidates() {
+    if (!rosterMeetingUuid) return;
+    show(el.rosterMemberError, false);
+    var query = { limit: CANDIDATE_PAGE, include_inactive: false };
+    var text = el.rosterAddSearch.value.trim();
+    if (text) query.search = text;
+    var envelope = await httpGet('/enrollment/participants', query);
+    if (!envelope.ok) {
+      rosterMemberError('Direktori tidak dapat dimuat: ' + failureText(envelope));
+      return;
+    }
+    var onRoster = {};
+    ((rosterState && rosterState.participants) || []).forEach(function (m) {
+      if (m.membership_active) onRoster[m.uuid] = true;
+    });
+    var candidates = (envelope.data.participants || []).filter(function (p) {
+      return !onRoster[p.uuid];
+    });
+
+    el.rosterCandidates.textContent = '';
+    candidates.forEach(function (entry) {
+      var li = document.createElement('li');
+      li.className = 'candidate-row';
+      var name = document.createElement('span');
+      name.className = 'candidate-name';
+      name.textContent = entry.display_name;
+      li.appendChild(name);
+      if (entry.role) {
+        var role = document.createElement('span');
+        role.className = 'muted';
+        role.textContent = entry.role;
+        li.appendChild(role);
+      }
+      var add = makeButton('Tambahkan ke roster', function () {
+        once(function () { return addToRoster(entry); });
+      });
+      /* A full roster disables Add up front; the server still answers 409 if the
+         page's view is stale, and that path is handled below. */
+      add.disabled = rosterFull;
+      li.appendChild(add);
+      el.rosterCandidates.appendChild(li);
+    });
+
+    var total = Number(envelope.data.total) || 0;
+    var shown = candidates.length;
+    el.rosterCandidatesNote.textContent = shown === 0
+      ? (total === 0
+        ? 'Tidak ada peserta aktif yang cocok. Tambahkan peserta baru di direktori.'
+        : 'Semua peserta yang cocok sudah ada di roster ini.')
+      : (shown + ' kandidat ditampilkan dari ' + total + ' peserta aktif yang cocok' +
+         (total > CANDIDATE_PAGE
+           ? '. Persempit pencarian untuk melihat sisanya.' : '.'));
+  }
+
+  function rosterMemberError(message) {
+    show(el.rosterMemberError, true);
+    el.rosterMemberError.textContent = message;
+  }
+
+  async function addToRoster(entry) {
+    if (!rosterMeetingUuid) return;
+    show(el.rosterMemberError, false);
+    var envelope = await httpPost(
+      '/enrollment/meetings/' + rosterMeetingUuid + '/participants',
+      { participant_uuid: entry.uuid }
+    );
+    if (!envelope.ok) {
+      rosterMemberError('Tidak dapat menambahkan: ' + failureText(envelope));
+      /* Refresh anyway: a 409 usually means this page's counter is stale. */
+      await loadRoster();
+      await searchCandidates();
+      return;
+    }
+    el.rosterMemberResult.textContent = 'Ditambahkan ke roster. Sekarang ' +
+      envelope.data.active_count + ' / ' + envelope.data.capacity + '.';
+    renderRoster(await refreshedRoster(envelope.data));
+    await searchCandidates();
+    await loadMeetings();
+  }
+
+  async function removeFromRoster(entry) {
+    if (!rosterMeetingUuid) return;
+    show(el.rosterMemberError, false);
+    var envelope = await httpDelete(
+      '/enrollment/meetings/' + rosterMeetingUuid + '/participants/' + entry.uuid
+    );
+    if (!envelope.ok) {
+      rosterMemberError('Tidak dapat mengeluarkan: ' + failureText(envelope));
+      await loadRoster();
+      return;
+    }
+    el.rosterMemberResult.textContent = 'Dikeluarkan dari roster. Sekarang ' +
+      envelope.data.active_count + ' / ' + envelope.data.capacity +
+      '. Peserta tetap ada di direktori.';
+    renderRoster(await refreshedRoster(envelope.data));
+    await searchCandidates();
+    await loadMeetings();
+  }
+
+  /* add/remove answer with a summary but no member list, so re-read the roster to
+     get the rows. Falls back to the summary if that read fails. */
+  async function refreshedRoster(summary) {
+    var envelope = await httpGet(
+      '/enrollment/meetings/' + rosterMeetingUuid + '/roster'
+    );
+    return envelope.ok ? envelope.data : summary;
+  }
+
+  /* One request for the whole list, not one per meeting: each option already
+     carries its own count and capacity. */
+  async function loadMeetings() {
+    var envelope = await httpGet('/enrollment/meetings', { limit: 200 });
+    if (!envelope.ok) {
+      el.rosterLabel.textContent = 'Daftar rapat tidak dapat dimuat: ' +
+        failureText(envelope);
+      el.rosterSave.disabled = true;
+      return;
+    }
+    var meetings = envelope.data.meetings || [];
+    var previous = rosterMeetingUuid;
+    el.rosterSelect.textContent = '';
+    if (meetings.length === 0) {
+      var none = document.createElement('option');
+      none.value = '';
+      none.textContent = '(belum ada rapat)';
+      el.rosterSelect.appendChild(none);
+      rosterMeetingUuid = null;
+      await loadRoster();
+      return;
+    }
+    meetings.forEach(function (m) {
+      var option = document.createElement('option');
+      option.value = m.meeting_uuid;
+      /* textContent, never innerHTML: a meeting title is operator-supplied. */
+      option.textContent =
+        m.title + '  (' + m.active_count + ' / ' + m.capacity + ')';
+      el.rosterSelect.appendChild(option);
+    });
+    var keep = meetings.some(function (m) { return m.meeting_uuid === previous; });
+    rosterMeetingUuid = keep ? previous : meetings[0].meeting_uuid;
+    el.rosterSelect.value = rosterMeetingUuid;
+    await loadRoster();
+  }
+
+  async function loadRoster() {
+    if (!rosterMeetingUuid) {
+      el.rosterLabel.textContent =
+        'Belum ada rapat. Mulai satu perekaman untuk membuat rapat, lalu atur ' +
+        'roster dan kapasitasnya di sini.';
+      el.rosterPill.textContent = '0 / 0';
+      el.rosterPill.dataset.state = 'unknown';
+      el.rosterSave.disabled = true;
+      return;
+    }
+    var envelope = await httpGet(
+      '/enrollment/meetings/' + rosterMeetingUuid + '/roster'
+    );
+    if (!envelope.ok) {
+      el.rosterLabel.textContent = 'Roster tidak dapat dimuat: ' + failureText(envelope);
+      el.rosterSave.disabled = true;
+      return;
+    }
+    el.rosterLabel.textContent = 'Rapat: ' + String(envelope.data.meeting_title || '—');
+    renderRoster(envelope.data);
+  }
+
+  async function saveCapacity() {
+    if (!rosterMeetingUuid || !rosterState) return;
+    show(el.rosterError, false);
+    /* Reject client-side too, so an obvious mistake does not need a round trip.
+       The server validates independently -- this is convenience, not the rule. */
+    var raw = el.rosterCapacity.value.trim();
+    if (!/^[0-9]+$/.test(raw)) {
+      show(el.rosterError, true);
+      el.rosterError.textContent =
+        'Kapasitas harus berupa bilangan bulat, misalnya 15.';
+      return;
+    }
+    var wanted = parseInt(raw, 10);
+    var envelope = await httpPatch(
+      '/enrollment/meetings/' + rosterMeetingUuid + '/capacity',
+      { capacity: wanted }
+    );
+    if (!envelope.ok) {
+      show(el.rosterError, true);
+      el.rosterError.textContent = 'Kapasitas tidak diubah: ' + failureText(envelope);
+      /* Put the stored value back, so the field never shows a rejected number as
+         if it had been saved. */
+      el.rosterCapacity.value = String(rosterState.capacity);
+      return;
+    }
+    renderRoster(envelope.data);
+    el.rosterResult.textContent =
+      'Kapasitas roster disimpan: ' + envelope.data.capacity + '.';
+    /* The selector labels carry "count / capacity", so they are now stale. */
+    await loadMeetings();
+  }
+
+  /* ---------------------------------------------------------- enrollment -- */
+
+  function openEnrollment(entry) {
+    selected = entry;
+    el.enrollWho.textContent = entry.display_name;
+    show(el.enrollCard, true);
+    show(el.vpCard, true);
+    el.sampleList.textContent = '';
+    el.vpResult.textContent = '';
+    once(refreshReadiness);
+    startPolling();
+  }
+
+  async function refreshReadiness() {
+    if (!selected) return;
+    var envelope = await httpGet(
+      '/enrollment/participants/' + selected.uuid + '/readiness'
+    );
+    if (!envelope.ok) {
+      el.progress.textContent =
+        'Tidak dapat memeriksa kesiapan: ' + failureText(envelope);
+      return;
+    }
+    var r = envelope.data;
+    var device = r.device || {};
+    var cal = r.calibration || {};
+    var model = r.model || {};
+    var lock = r.capture_lock || {};
+
+    setKvSafe(el.readiness, [
+      ['peserta aktif', r.participant_active ? 'ya' : 'tidak'],
+      ['consent', (r.consent && r.consent.active) ? 'aktif' : 'belum/dicabut'],
+      ['model', model.ready ? 'siap' : 'BELUM TERSEDIA'],
+      ['perangkat', device.detail],
+      ['transport', device.transport],
+      ['layak produksi', device.production_eligible_device
+        ? 'ya (USB terverifikasi)'
+        : 'tidak (mikrofon internal akan menghasilkan DEVELOPMENT_ONLY)'],
+      ['kalibrasi', cal.verdict
+        ? (cal.verdict + ' (' + cal.age_days + ' hari)') : 'belum ada'],
+      ['mikrofon dipakai proses lain', lock.held_by_other ? 'ya' : 'tidak'],
+      ['penghalang', (r.blockers || []).join(', ') || 'tidak ada']
+    ]);
+
+    var noModel = !model.ready;
+    show(el.modelNotice, noModel);
+    if (noModel) {
+      el.modelDetail.textContent =
+        'Model speaker embedding lokal belum diprovision, sehingga enrollment ' +
+        'suara belum dapat dijalankan dan mikrofon tidak akan dibuka. Ini bukan ' +
+        'kerusakan aplikasi: pemilihan dan provisioning model adalah langkah ' +
+        'terpisah yang harus disetujui lebih dulu. Rincian: ' +
+        String(model.detail || '');
+      el.progress.textContent =
+        'Enrollment dinonaktifkan: MODEL_UNAVAILABLE. Mikrofon tidak akan dibuka.';
+    }
+
+    el.startEnroll.disabled = !r.can_start;
+  }
+
+  async function refreshEnrollmentButtons() {
+    if (!el.enrollCard || el.enrollCard.hidden) return;
+    var envelope = await httpGet('/enrollment/sessions/current');
+    if (!envelope.ok) return;
+    var s = envelope.data;
+    var live = s.active === true;
+
+    el.enrollPill.textContent = s.state || 'IDLE';
+    el.enrollPill.dataset.state = live
+      ? 'ok'
+      : ((s.state === 'REJECTED' || s.state === 'FAILED') ? 'fail' : 'unknown');
+
+    if (!busy) {
+      el.captureSample.disabled = !live;
+      el.cancelEnroll.disabled = !live;
+      el.finalize.disabled = !live ||
+        (s.samples_accepted || 0) < (s.samples_target || 5);
+    }
+
+    if (live) {
+      el.progress.textContent = 'Sample ' + s.samples_accepted + ' dari ' +
+        s.samples_target + ' diterima.' +
+        (s.will_be_development_only
+          ? ' Perangkat bukan USB terverifikasi, sehingga hasilnya DEVELOPMENT_ONLY.'
+          : '');
+      renderSamples(s.samples || []);
+    }
+    await loadVoiceprint();
+  }
+
+  function renderSamples(samples) {
+    el.sampleList.textContent = '';
+    samples.forEach(function (sample) {
+      var li = document.createElement('li');
+      li.className = 'sample-row';
+      var tag = document.createElement('span');
+      var kind = sample.status === 'PASS' ? 'pass'
+        : (sample.status === 'WARN' ? 'warn' : 'fail');
+      tag.className = 'tag tag-' + kind;
+      tag.textContent = sample.status;
+      var levels = sample.levels || {};
+      var text = document.createElement('span');
+      text.textContent = 'sample ' + (sample.index + 1) + ' · ' +
+        sample.seconds + ' s · RMS ' + levels.rms_dbfs + ' dBFS · peak ' +
+        levels.peak_dbfs + ' dBFS · clipping ' + levels.clipping_percent + '%';
+      li.appendChild(tag);
+      li.appendChild(text);
+      el.sampleList.appendChild(li);
+    });
+    if (samples.length) {
+      var last = samples[samples.length - 1].levels || {};
+      show(el.meter, true);
+      setMeter(last.rms_dbfs, last.peak_dbfs);
+      el.levels.textContent = 'Terakhir: RMS ' + last.rms_dbfs +
+        ' dBFS, peak ' + last.peak_dbfs + ' dBFS, senyap ' +
+        last.silence_percent + '%.';
+    }
+  }
+
+  function setMeter(rms, peak) {
+    /* -60..0 dBFS mapped to 0..100%, the same scale as the recording panel. */
+    function pct(v) {
+      if (typeof v !== 'number' || !isFinite(v)) return 0;
+      return Math.max(0, Math.min(100, ((v + 60) / 60) * 100));
+    }
+    el.meterRms.style.width = pct(rms) + '%';
+    el.meterPeak.style.left = pct(peak) + '%';
+  }
+
+  async function loadVoiceprint() {
+    if (!selected) return;
+    var envelope = await httpGet(
+      '/enrollment/participants/' + selected.uuid + '/voiceprint'
+    );
+    if (!envelope.ok) return;
+    var v = envelope.data;
+    var current = v.current;
+    setKvSafe(el.vpDetail, [
+      ['status', current ? current.status : 'belum ada'],
+      ['dapat dipakai', v.has_usable_voiceprint ? 'ya' : 'tidak'],
+      ['layak produksi', v.production_eligible ? 'ya' : 'tidak'],
+      ['model', (current && current.model) ? current.model.name : '—'],
+      ['kualitas', current ? current.quality_verdict : '—'],
+      ['kemiripan minimum', current ? current.min_pair_cosine : '—'],
+      ['diaktifkan', current ? current.activated_at : '—']
+    ]);
+    if (!busy) {
+      el.vpVerify.disabled = !current;
+      el.vpRevoke.disabled = !(selected.consent && selected.consent.active);
+    }
+  }
+
+  /* ------------------------------------------------------------- polling -- */
+
+  async function poll() {
+    if (pollStopped) return;
+    if (!busy) await refreshEnrollmentButtons();
+    if (pollStopped) return;
+    pollTimer = window.setTimeout(poll, READINESS_POLL_MS);
+  }
+
+  function startPolling() {
+    pollStopped = false;
+    if (pollTimer === null) poll();
+  }
+
+  function stopPolling() {
+    pollStopped = true;
+    if (pollTimer !== null) {
+      window.clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  /* The panel polls only while it is open, and the timer is cleared when the
+     window goes away -- otherwise it would keep calling into a bridge whose
+     Python side is shutting down. */
+  window.addEventListener('pagehide', stopPolling);
+  window.addEventListener('beforeunload', stopPolling);
+
+  /* ----------------------------------------------------------- listeners -- */
+
+  if (el.open) {
+    el.open.addEventListener('click', function () {
+      once(async function () {
+        show(el.panel, true);
+        el.open.disabled = true;
+        el.open.textContent = 'Panel terbuka';
+        await loadParticipants();
+        await loadMeetings();
+        await searchCandidates();
+        el.panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
+  }
+
+  el.refresh.addEventListener('click', function () { once(loadParticipants); });
+  el.newBtn.addEventListener('click', function () { openForm(null); });
+  el.save.addEventListener('click', function () { once(saveParticipant); });
+  el.cancelForm.addEventListener('click', function () {
+    show(el.formCard, false);
+    selected = null;
+  });
+  el.search.addEventListener('change', function () { once(loadParticipants); });
+  el.refreshReady.addEventListener('click', function () { once(refreshReadiness); });
+
+  el.startEnroll.addEventListener('click', function () {
+    once(async function () {
+      if (!selected) return;
+      /* Consent must be recorded first, and the dialog is the only way. */
+      if (!(selected.consent && selected.consent.active)) {
+        await openConsentDialog(selected);
+        return;
+      }
+      var envelope = await httpPost('/enrollment/sessions',
+        { participant_uuid: selected.uuid, samples_target: 5 });
+      if (!envelope.ok) {
+        show(el.enrollWarn, true);
+        el.enrollWarn.textContent =
+          'Tidak dapat memulai: ' + failureText(envelope);
+        return;
+      }
+      show(el.enrollWarn, false);
+      startPolling();
+    });
+  });
+
+  el.captureSample.addEventListener('click', function () {
+    once(async function () {
+      el.progress.textContent = 'Merekam sample — silakan berbicara…';
+      var envelope = await httpPost('/enrollment/sessions/current/samples',
+        { seconds: 10 });
+      if (!envelope.ok) {
+        show(el.enrollWarn, true);
+        el.enrollWarn.textContent = 'Sample gagal: ' + failureText(envelope);
+        return;
+      }
+      var sample = envelope.data.last_sample;
+      if (envelope.data.sample_accepted === false && sample) {
+        show(el.enrollWarn, true);
+        el.enrollWarn.textContent = 'Sample ditolak: ' + (sample.gates || [])
+          .filter(function (g) { return g.status === 'REJECT'; })
+          .map(function (g) { return g.detail; })
+          .join(' ');
+      } else {
+        show(el.enrollWarn, false);
+      }
+    });
+  });
+
+  el.finalize.addEventListener('click', function () {
+    once(async function () {
+      var envelope = await httpPost('/enrollment/sessions/current/finalize', {});
+      if (!envelope.ok) {
+        show(el.enrollWarn, true);
+        el.enrollWarn.textContent = 'Finalisasi gagal: ' + failureText(envelope);
+        return;
+      }
+      var data = envelope.data;
+      if (!data.voiceprint) {
+        show(el.enrollWarn, true);
+        el.enrollWarn.textContent = 'Enrollment ditolak kualitas: ' +
+          (((data.quality || {}).gates) || [])
+            .filter(function (g) { return g.status === 'REJECT'; })
+            .map(function (g) { return g.detail; })
+            .join(' ');
+        return;
+      }
+      show(el.enrollWarn, false);
+      el.progress.textContent = 'Selesai. Status voiceprint: ' +
+        data.voiceprint.status +
+        (data.voiceprint.production_eligible
+          ? ' (layak produksi).' : ' (belum layak produksi).');
+      stopPolling();
+      await loadParticipants();
+      await loadVoiceprint();
+    });
+  });
+
+  el.cancelEnroll.addEventListener('click', function () {
+    if (!window.confirm(
+      'Batalkan enrollment? Audio yang sudah direkam akan dibuang.'
+    )) return;
+    once(async function () {
+      await httpPost('/enrollment/sessions/current/cancel',
+        { reason: 'dibatalkan operator' });
+      stopPolling();
+      el.progress.textContent =
+        'Enrollment dibatalkan. Tidak ada audio yang disimpan.';
+    });
+  });
+
+  el.vpVerify.addEventListener('click', function () {
+    once(async function () {
+      if (!selected) return;
+      var status = await httpGet(
+        '/enrollment/participants/' + selected.uuid + '/voiceprint'
+      );
+      if (!status.ok || !status.data.current) return;
+      var uuid = status.data.current.voiceprint_uuid;
+      var verified = await httpPost(
+        '/enrollment/voiceprints/' + uuid + '/verify', {}
+      );
+      if (!verified.ok) {
+        el.vpResult.textContent = 'Verifikasi gagal: ' + failureText(verified);
+        return;
+      }
+      var report = verified.data;
+      el.vpResult.textContent = report.ok
+        ? ('Integritas terverifikasi (' + report.status + ').')
+        : ('MASALAH INTEGRITAS: ' + (report.problems || []).join('; '));
+    });
+  });
+
+  el.vpRevoke.addEventListener('click', function (event) {
+    /* Always open the dialog, even with nothing selected: it then names the
+       problem instead of the click appearing to do nothing at all. */
+    openRevokeDialog(selected, event.currentTarget);
+  });
+
+  el.consentAgree.addEventListener('change', syncDialogButtons);
+  el.consentConfirm.addEventListener('click', function () { once(confirmConsent); });
+  el.consentCancel.addEventListener('click', closeConsentDialog);
+
+  /* NOT wrapped in once(): the dialog has its own in-flight guard, and once()'s
+     shared `busy` flag would let an unrelated action make Batal unresponsive. */
+  el.revokeConfirm.addEventListener('click', submitRevoke);
+  el.revokeCancel.addEventListener('click', closeRevokeDialog);
+
+  /* A click on the dimmed area must not reach the page underneath, and must not
+     close a dialog whose confirm button destroys data by accident either. */
+  el.revokeBackdrop.addEventListener('click', function (event) {
+    if (event.target === el.revokeBackdrop) event.stopPropagation();
+  });
+
+  /* Escape closes -- unless a revoke is in flight, when closing would leave the
+     operator unsure whether it happened. */
+  document.addEventListener('keydown', function (event) {
+    if (event.key !== 'Escape') return;
+    if (!el.revokeBackdrop.hidden) {
+      if (!revokeSubmitting) closeRevokeDialog();
+      return;
+    }
+    if (!el.consentBackdrop.hidden) closeConsentDialog();
+  });
+
+  el.rosterSelect.addEventListener('change', function () {
+    rosterMeetingUuid = el.rosterSelect.value || null;
+    el.rosterResult.textContent = '';
+    el.rosterMemberResult.textContent = '';
+    show(el.rosterError, false);
+    show(el.rosterMemberError, false);
+    once(async function () {
+      await loadRoster();
+      await searchCandidates();
+    });
+  });
+
+  el.rosterAddSearchBtn.addEventListener('click', function () {
+    once(searchCandidates);
+  });
+  el.rosterAddSearch.addEventListener('change', function () {
+    once(searchCandidates);
+  });
+  el.rosterAddSearch.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter') once(searchCandidates);
+  });
+  el.rosterSave.addEventListener('click', function () { once(saveCapacity); });
+  el.rosterCapacity.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter') once(saveCapacity);
+  });
+})();

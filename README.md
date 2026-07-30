@@ -4,7 +4,7 @@ A fully offline desktop application for producing Minutes of Meeting from
 in-person meetings held in one physical room. Native Windows 11, CPU-first, no
 cloud API, no CUDA, no Docker in production.
 
-> **Current phase: 2 — offline audio capture.**
+> **Current phase: 3 — participants, biometric consent, voice enrollment.**
 > The Phase 1 foundation (configuration, runtime paths, SQLite with migrations, a
 > workflow state machine, a loopback-only API, diagnostics, a static shell) is in
 > place, and this build **records audio**: device discovery, preflight and
@@ -406,12 +406,46 @@ abandon · crash recovery with quarantine · single-recording lock · recording 
 UI panel and CLI · `doctor --production` gate · fake-backend test suite and soak
 tooling.
 
-**Still not implemented, by design:** VAD · ASR · diarization · voice enrollment ·
-voice identification · speaker labelling · LLM integration · MoM generation ·
-PDF/Word/JSON/Markdown export · action tracking · encryption at rest · consent
-workflow · model download · OpenVINO installation or benchmarking · retention
+**Phase 3 — implemented:** participant directory with UUID identity and **no size
+limit** · per-meeting roster with a **configurable capacity** (default 9, safety
+ceiling default 50) · append-only biometric consent with versioned, hashed text and
+a grant / revoke / re-grant lifecycle · AES-256-GCM voiceprint envelopes under a
+DPAPI-protected master key · crash-consistent voiceprint storage with recovery and
+quarantine · consent revocation that deletes the ciphertext · an eleven-state
+enrollment machine reusing the Phase 2 capture path and its lock · enrollment quality
+gates · a narrow speaker-embedding provider boundary · 24 token-protected API routes
+· participant, roster and consent UI · diagnostics · CLI · migrations 0003 and 0004.
+
+Phase 3 **creates** voice templates. It does not compare them — there is no speaker
+identification here.
+
+**Still not implemented, by design:** VAD · ASR · diarization · voice
+identification · speaker labelling · LLM integration · MoM generation ·
+PDF/Word/JSON/Markdown export · action tracking · encryption of meeting audio and
+transcripts · model download · OpenVINO installation or benchmarking · retention
 enforcement · firewall configuration · resampling and the 16 kHz ASR working copy
 (Phase 4) · FLAC.
+
+**What roster size does and does not mean.** A meeting's roster decides who the
+*known speaker candidates* are. It never decides what is recorded: capture always
+takes the whole room signal, and a voice with no voiceprint — or one belonging to
+nobody on the roster — is labelled `UNKNOWN` from Phase 6 onwards rather than
+discarded. Raising a roster's capacity does not improve recognition accuracy, and no
+head count has been validated in a real room yet.
+
+**Directory, roster, capacity and attendees are four different things.** The
+*directory* holds everyone ever registered and has no size limit. A *roster* is who is
+expected in one meeting. *Capacity* is how many seats that roster has — stored per
+meeting, default 9, adjustable up to a configurable ceiling (default 50). The
+*attendee count* is how many members the roster actually holds, and that — not the
+capacity — is how many voiceprints the meeting needs. `doctor` measures it per roster
+and per person: it checks that each active member owns their *own* production-eligible
+voiceprint, so a pile of templates belonging to people outside the roster proves
+nothing.
+
+If the configured ceiling is later lowered below a meeting's stored capacity, that
+meeting is **grandfathered**: the stored value is kept, it may be lowered but not
+raised, nothing is clamped, and no participant is ever removed.
 
 **No AI provider or model has been selected.** ASR, diarization,
 speaker-embedding and LLM choices are deferred to a real-device benchmark in
@@ -423,8 +457,8 @@ Phase 4A — see
 A **USB conference microphone** (omnidirectional, placed at the centre of the
 table) is required. The internal laptop array is an Intel Smart Sound digital
 microphone array whose beamforming and noise suppression actively suppress
-non-dominant speakers — that destroys diarization for nine participants and
-makes voiceprints inconsistent. The internal microphone is acceptable for
+non-dominant speakers — that destroys diarization around a table and makes
+voiceprints inconsistent, and it gets worse as the room gets larger. The internal microphone is acceptable for
 **early development only**.
 
 The development machine currently has **no verified USB capture device**, so the

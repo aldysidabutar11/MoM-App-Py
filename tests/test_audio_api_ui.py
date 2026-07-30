@@ -305,9 +305,17 @@ def test_ui_uses_no_browser_storage(ui_sources: dict[str, str]) -> None:
 
 
 def test_ui_adds_no_frontend_framework(ui_sources: dict[str, str]) -> None:
+    """Word boundaries, not substrings.
+
+    "re**act**ivate" and "in**vite**d" are English words that appear in the Phase 3
+    UI. The exhaustive framework check is in `tests/test_static_ui.py`.
+    """
+    import re as _re
+
     combined = " ".join(ui_sources.values()).lower()
     for banned in ("react", "vue.js", "svelte", "angular", "jquery", "webpack", "vite"):
-        assert banned not in combined, banned
+        pattern = r"(?<![a-z])" + _re.escape(banned) + r"(?![a-z])"
+        assert not _re.search(pattern, combined), banned
 
 
 def test_ui_never_holds_the_token(ui_sources: dict[str, str]) -> None:
@@ -342,9 +350,10 @@ def test_recording_card_is_enabled_and_the_rest_stay_disabled(
     html = ui_sources["index.html"]
     assert 'id="card-recording"' in html
     assert "feature-card-enabled" in html
-    # Recording is live; the five later-phase cards remain disabled.
-    assert html.count('aria-disabled="true"') == 5
-    assert html.count("Belum diimplementasikan") == 5
+    # Recording went live in Phase 2 and Participants in Phase 3, so four later-phase
+    # cards remain disabled. The authoritative count is in tests/test_static_ui.py.
+    assert html.count('aria-disabled="true"') == 4
+    assert html.count("Belum diimplementasikan") == 4
     for feature in ("Meeting setup", "Participants", "Processing", "Review", "Export"):
         assert feature in html
 
@@ -380,7 +389,28 @@ def test_ui_states_what_phase_2_cannot_do(ui_sources: dict[str, str]) -> None:
     assert "belum" in html.lower()
     assert "siapa yang berbicara" in html
     assert "tanpa enkripsi" in html
-    assert "sembilan" in html
+
+
+def test_the_recording_panel_does_not_tie_capture_to_a_roster_size(
+    ui_sources: dict[str, str],
+) -> None:
+    """This assertion replaces one that required the words "maksimal sembilan".
+
+    That copy was accurate while nine was a hard cap and is now wrong twice over:
+    capacity is per meeting, and capture never depended on it in the first place.
+    Recording takes the whole room signal, so promising a maximum head count in the
+    recording panel would misdescribe what the microphone does.
+    """
+    html = ui_sources["index.html"]
+    panel = html[html.index('id="recording-panel"') :]
+    panel = panel[: panel.index("</section>")]
+    assert "seluruh" in panel, (
+        "the recording panel must say it captures every voice in the room"
+    )
+    for stale in ("maksimal sembilan", "maksimal 9", "hingga sembilan"):
+        assert stale not in panel, (
+            f"{stale!r} states a head-count limit on capture, which does not exist"
+        )
 
 
 def test_ui_shows_no_fake_transcript_or_speaker_label(ui_sources: dict[str, str]) -> None:
@@ -405,11 +435,22 @@ def test_ui_polls_at_a_gentle_rate(ui_sources: dict[str, str]) -> None:
 
 
 def test_the_bridge_allowlists_are_closed() -> None:
+    """Every Phase 2 audio path is reachable, and nothing outside the lists is.
+
+    Phase 3 added enrollment paths to the same lists, so the audio sets are now a
+    subset rather than the whole. The closed property is asserted exactly in
+    `tests/test_static_ui.py`, which pins full membership.
+    """
     from mom_igd.shell.launcher import ALLOWED_POST_PATHS, ALLOWED_PROXY_PATHS
 
     assert set(AUDIO_GET_PATHS) <= ALLOWED_PROXY_PATHS
-    assert set(AUDIO_POST_PATHS) == ALLOWED_POST_PATHS
+    assert set(AUDIO_POST_PATHS) <= ALLOWED_POST_PATHS
     assert "/openapi.json" not in ALLOWED_PROXY_PATHS
+    # Every extra entry belongs to Phase 3 and nothing else crept in.
+    for extra in (ALLOWED_PROXY_PATHS | ALLOWED_POST_PATHS) - set(
+        AUDIO_GET_PATHS
+    ) - set(AUDIO_POST_PATHS):
+        assert extra.startswith(("/health", "/version", "/doctor", "/internal", "/enrollment")), extra
 
 
 def test_the_bridge_refuses_paths_outside_the_allowlist(config: AppConfig) -> None:

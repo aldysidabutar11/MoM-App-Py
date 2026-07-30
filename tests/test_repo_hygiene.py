@@ -112,6 +112,16 @@ def test_migrations_and_static_assets_are_tracked() -> None:
         "models/whisper-small.gguf",
         "capture.pcm",
         "capture.raw",
+        # Phase 3 biometric material, in and out of its own directory. The
+        # anchored `/voiceprints/` rule only covers the repository root, so the
+        # extension rules have to carry the rest: a sealed envelope copied
+        # somewhere else while debugging was committable until these were added.
+        "voiceprints/0189d3f1-1c2e-4a5b-8c7d-9e0f1a2b3c4d.vpx",
+        "mom_igd/enrollment/leaked.vpx",
+        "some/deep/path/sample.vpx",
+        "voiceprints/0189d3f1-1c2e-4a5b-8c7d-9e0f1a2b3c4d.vpx.tmp",
+        "keys/voiceprint_master.dpapi",
+        "mom_igd/leaked.dpapi",
     ],
 )
 def test_runtime_artefacts_are_ignored(artefact: str) -> None:
@@ -139,6 +149,11 @@ def test_no_audio_or_runtime_artefact_exists_in_the_tree() -> None:
         ".onnx",
         ".pt",
         ".safetensors",
+        ".vpx",
+        ".dpapi",
+        ".emb",
+        ".embedding",
+        ".voiceprint",
     }
     offenders = [
         p.relative_to(REPO).as_posix()
@@ -164,7 +179,17 @@ def test_runtime_directory_patterns_stay_anchored() -> None:
     """Anchored so they can never shadow a source package of the same name."""
     rules = (REPO / ".gitignore").read_text(encoding="utf-8").splitlines()
     stripped = [line.strip() for line in rules]
-    for name in ("audio", "recordings", "logs", "temp", "exports", "backups", "voiceprints", "data"):
+    for name in (
+        "audio",
+        "recordings",
+        "logs",
+        "temp",
+        "exports",
+        "backups",
+        "voiceprints",
+        "keys",
+        "data",
+    ):
         assert f"{name}/" not in stripped, (
             f"'{name}/' is unanchored and would match mom_igd/{name}/ as well; "
             f"use '/{name}/'"
@@ -175,6 +200,18 @@ def test_runtime_directory_patterns_stay_anchored() -> None:
 def test_gitattributes_marks_capture_artefacts_binary() -> None:
     rules = (REPO / ".gitattributes").read_text(encoding="utf-8")
     for pattern in ("*.wav   binary", "*.flac  binary", "*.raw   binary", "*.pcm   binary"):
+        assert pattern in rules, pattern
+
+
+def test_gitattributes_marks_biometric_artefacts_binary() -> None:
+    """`* text=auto` would let Git guess, and a guess corrupts ciphertext.
+
+    These files must never be committed at all; this is the layer that makes a
+    mistaken ``git add -f`` produce a byte-exact file rather than one silently
+    mangled by CRLF translation.
+    """
+    rules = (REPO / ".gitattributes").read_text(encoding="utf-8")
+    for pattern in ("*.vpx     binary", "*.dpapi   binary"):
         assert pattern in rules, pattern
 
 

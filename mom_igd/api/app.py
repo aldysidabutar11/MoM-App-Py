@@ -127,6 +127,24 @@ def create_app(
                         service.stop()
                 except Exception as exc:  # noqa: BLE001 - shutdown must not raise
                     _LOG.error("Could not finalise the recording on shutdown: %s", exc)
+
+            # A voice enrollment in progress is ABANDONED rather than finalised --
+            # the opposite of a recording, and deliberately so. Enrollment audio is
+            # held in memory only and there is no partial voiceprint worth keeping;
+            # completing one without the operator present would store biometric data
+            # nobody watched being created. What matters is that the stream closes,
+            # the buffer is released and the shared capture lock is freed.
+            context = getattr(app.state, "enrollment_context", None)
+            if context is not None:
+                for label, closer in (
+                    ("capture controller", context.capture.shutdown),
+                    ("enrollment session", context.enrollment.shutdown),
+                ):
+                    try:
+                        closer()
+                    except Exception as exc:  # noqa: BLE001 - shutdown must not raise
+                        _LOG.error("Could not close the %s cleanly: %s", label, exc)
+
             _LOG.info("%s shutting down cleanly", APP_NAME)
 
     app = FastAPI(
@@ -153,6 +171,13 @@ def create_app(
     from mom_igd.api.audio_routes import audio_router
 
     app.include_router(audio_router)
+
+    # Phase 3 participants, consent, enrollment and voiceprints. Imported here for
+    # the same reason: the enrollment stack pulls in the cipher and the device
+    # backend, and neither should load merely because the app object was built.
+    from mom_igd.api.enrollment_routes import enrollment_router
+
+    app.include_router(enrollment_router)
 
     @app.get("/", include_in_schema=False)
     def _root() -> RedirectResponse:

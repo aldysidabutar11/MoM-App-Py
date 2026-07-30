@@ -175,7 +175,8 @@ def run_preflight(
                     PreflightStatus.WARN,
                     "This is the built-in microphone array. Its beamforming and noise "
                     "suppression suppress speakers who are not facing the laptop, so a "
-                    "nine-person meeting will lose voices. Acceptable for development; "
+                    "meeting with several people around a table will lose voices. "
+                    "Acceptable for development; "
                     "a USB conference microphone at the centre of the table is required "
                     "for production.",
                     transport=device.transport.value,

@@ -262,6 +262,12 @@ def test_required_documentation_exists() -> None:
         "docs/adr/0006-capture-format-pcm16-device-native.md",
         "docs/adr/0007-chunking-checksums-and-crash-recovery.md",
         "docs/adr/0008-device-identity-and-no-silent-fallback.md",
+        "docs/phase-3-participants-enrollment.md",
+        "docs/phase-3-speaker-model-selection.md",
+        "docs/adr/0009-participant-identity-and-append-only-consent.md",
+        "docs/adr/0010-voiceprint-encryption-aes-gcm-under-dpapi.md",
+        "docs/adr/0011-voiceprint-storage-crash-consistency-and-deletion.md",
+        "docs/adr/0012-enrollment-capture-in-python-no-raw-audio-retention.md",
     ):
         assert (REPO / relative).is_file(), f"missing {relative}"
 
@@ -408,31 +414,38 @@ def test_gitattributes_protects_binary_formats() -> None:
     assert "tests/fixtures/binary/**  binary" in rules
 
 
-def test_no_phase_3_or_later_module_was_created() -> None:
+def test_no_phase_4_or_later_module_was_created() -> None:
     """Scope boundary, moved forward by one phase rather than removed.
 
     Phase 1 asserted that no capture package existed. Phase 2 implements capture,
-    so ``mom_igd/audio`` is now expected -- but everything downstream of it must
-    still be absent. Deleting this test when ``audio`` appeared would have thrown
-    away the guard instead of advancing it.
+    so ``mom_igd/audio`` became expected. Phase 3 implements the participant
+    registry, consent and voice enrollment, so ``mom_igd/enrollment`` is expected
+    now -- but everything downstream of it must still be absent. Deleting this test
+    each time a package appeared would have thrown the guard away instead of
+    advancing it.
     """
     package = REPO / "mom_igd"
-    allowed_now = {"api", "audio", "db", "diagnostics", "jobs", "shell"}
+    allowed_now = {
+        "api",
+        "audio",        # Phase 2
+        "db",
+        "diagnostics",
+        "enrollment",   # Phase 3
+        "jobs",
+        "shell",
+    }
     forbidden_until_later_phases = {
         "asr",              # Phase 4
-        "vad",              # Phase 4 (model-based; Phase 2 has none)
+        "vad",              # Phase 4 (model-based; Phase 2/3 have none)
         "diarization",      # Phase 5
-        "speaker",          # Phase 6
-        "voiceprint",       # Phase 3
-        "enrollment",       # Phase 3
-        "consent",          # Phase 3
+        "speaker",          # Phase 6 -- identification, distinct from enrollment
         "reconciliation",   # Phase 7
         "llm",              # Phase 8
         "mom",              # Phase 8
         "exporters",        # Phase 10
         "review",           # Phase 9
         "providers",        # Phase 4A onwards
-        "encryption",       # Phase 11
+        "encryption",       # Phase 11 -- at-rest encryption for everything else
     }
     present = {p.name for p in package.iterdir() if p.is_dir() and not p.name.startswith("_")}
 
@@ -444,6 +457,37 @@ def test_no_phase_3_or_later_module_was_created() -> None:
         "with the phase that introduced them, so this boundary keeps meaning "
         "something"
     )
+
+
+def test_phase_3_enrollment_contains_no_identification_or_ai_runtime() -> None:
+    """Phase 3 *creates* voice templates; Phase 6 compares them.
+
+    The distinction matters because it is easy to blur: an "is this the same
+    speaker?" helper added here would quietly become speaker identification without
+    the calibrated thresholds, the injective assignment or the UNKNOWN outcome that
+    Phase 6 is required to have. Intra-speaker consistency *within one enrollment*
+    is allowed and necessary -- that is a quality check on five samples from one
+    consenting person, not a decision about who spoke in a meeting.
+    """
+    import re
+
+    enrollment = REPO / "mom_igd" / "enrollment"
+    assert enrollment.is_dir(), "Phase 3 package is missing"
+
+    forbidden = re.compile(
+        r"\b(?:import\s+(?:torch|openvino|onnxruntime|faster_whisper|ctranslate2"
+        r"|pyannote|transformers|numpy)"
+        r"|from\s+(?:torch|openvino|onnxruntime|faster_whisper|ctranslate2"
+        r"|pyannote|transformers|numpy)"
+        r"|transcrib\w*\s*\(|diariz\w*\s*\(|identify_speaker|match_speaker"
+        r"|assign_speaker|cluster_speakers)",
+        re.IGNORECASE,
+    )
+    offenders: list[str] = []
+    for path in sorted(enrollment.rglob("*.py")):
+        for match in forbidden.finditer(path.read_text(encoding="utf-8")):
+            offenders.append(f"{path.name}: {match.group(0)}")
+    assert offenders == [], f"identification or AI runtime in enrollment: {offenders}"
 
 
 def test_phase_2_capture_engine_contains_no_speech_or_ai_code() -> None:

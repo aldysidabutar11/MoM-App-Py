@@ -3,8 +3,9 @@
 Phase 2 captures meeting audio with correct quality, ordering, integrity and
 metadata. It deliberately knows **nothing** about who is speaking.
 
-> **One microphone captures the mixed voices of up to nine people.** Phase 2 does
-> not separate them, does not identify them, and produces no transcript and no
+> **One microphone captures every voice in the room, mixed.** How many people are
+> on a meeting's roster is irrelevant here -- capture never consults it. Phase 2 does
+> not separate voices, does not identify them, and produces no transcript and no
 > Minutes of Meeting. Those arrive in Phases 4–8. Level metering (RMS, peak,
 > clipping, silence, noise floor, per-channel activity) is signal-quality
 > measurement, not speech detection: it answers *is this recording usable?*, never
@@ -211,7 +212,7 @@ unplugged or after a reboot. Devices are identified by a fingerprint over host A
 normalised name and input-channel count; the index is looked up fresh every time.
 
 **Never fall back silently.** If the chosen microphone is gone, the answer names the
-device that was expected and lists what is present instead. Recording a nine-person
+device that was expected and lists what is present instead. Recording a multi-participant
 meeting through the wrong microphone cannot be undone.
 
 **Never guess the transport.** `USB` is reported only when Windows says so, read
@@ -416,7 +417,8 @@ enhancement, no permission, no registry, no power plan. It reports and recommend
 
 **The built-in array is development only.** Its beamforming and noise suppression
 suppress speakers who are not facing the laptop, which loses voices in a
-nine-person meeting and makes voiceprints inconsistent for Phase 6.
+meeting with several people around a table and makes voiceprints inconsistent
+for Phase 6.
 
 ---
 

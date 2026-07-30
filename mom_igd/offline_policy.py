@@ -165,14 +165,22 @@ DEFERRED_HEAVY_DISTRIBUTIONS: Final[frozenset[str]] = frozenset(
         "webrtcvad",
         "silero-vad",
         # numpy is not needed: capture uses sounddevice.RawInputStream (bytes),
-        # and the quality meter uses array.array from the standard library.
+        # the quality meter uses array.array, and Phase 3 embeddings are handled
+        # as `array`/`bytes` through the provider boundary.
         "numpy",
         "llama-cpp-python",
         "sentence-transformers",
         "transformers",
     }
 )
-"""Heavy AI/audio distributions that must not be present during Phase 1."""
+"""Heavy AI/audio distributions that must not be present in the current phase.
+
+`cryptography` is deliberately NOT listed: it became a required runtime dependency
+in Phase 3 for AES-256-GCM voiceprint encryption, and it is neither AI nor audio.
+`onnxruntime` IS still listed even though Phase 3 declares an ONNX-first preference
+for the speaker-embedding model -- no artefact has been approved or provisioned, so
+its presence would mean a future phase's dependency arrived early (ADR-0011).
+"""
 
 NETWORK_CAPABLE_REQUIRES_JUSTIFICATION: Final[frozenset[str]] = frozenset(
     {
