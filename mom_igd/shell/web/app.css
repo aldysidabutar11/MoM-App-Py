@@ -724,3 +724,175 @@ main {
   margin-left: 6px;
 }
 .segment-low .segment-text { color: var(--warn); }
+
+/* ==========================================================================
+   Minutes panel.
+
+   No `display` is set on any class a script toggles with `show()` -- see the
+   warning at the top of this file. `#mom-export-row` is a bare wrapper for
+   exactly that reason: the `.btn-row` inside it carries the flex.
+   ========================================================================== */
+
+.field-check {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+}
+.field-check input[type='checkbox'] {
+  margin-top: 3px;
+  flex: 0 0 auto;
+}
+.field-check small { display: block; margin-top: 2px; }
+
+/* --- headline counts ------------------------------------------------------
+   Four numbers an operator reads before reading anything else: how many points,
+   how many the recording actually supports, how many it does not, and how much
+   of the transcript was covered. */
+.mom-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin: 4px 0 14px;
+}
+.mom-stat {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: 10px 12px;
+}
+.mom-stat-value { font-size: 21px; font-weight: 650; line-height: 1.1; }
+.mom-stat-label { font-size: 11px; color: var(--text-faint); margin-top: 3px; }
+.mom-stat-ok .mom-stat-value { color: var(--ok); }
+.mom-stat-warn .mom-stat-value { color: var(--warn); }
+.mom-stat-fail .mom-stat-value { color: var(--fail); }
+
+/* --- sections and item cards --------------------------------------------- */
+.mom-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 20px 0 8px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--border);
+}
+.mom-section-head h4 { font-size: 14px; margin: 0; }
+.mom-section-count { font-size: 11px; color: var(--text-faint); }
+
+.mom-items { list-style: none; margin: 0; padding: 0; }
+
+.mom-item {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+/* Colour carries the *kind*; it is never the only signal -- the section heading
+   above says the same thing in words, because colour alone excludes anyone who
+   cannot distinguish these two. */
+.mom-item-decision { border-left-color: var(--accent); }
+.mom-item-action   { border-left-color: var(--ok); }
+.mom-item-issue    { border-left-color: var(--warn); }
+.mom-item-discussion { border-left-color: var(--border-strong); }
+/* An unverified point is tinted as well as badged. It is the one state a reader
+   must not skim past. */
+.mom-item-unverified { background: var(--fail-soft); border-left-color: var(--fail); }
+
+.mom-item-text { font-size: 13px; line-height: 1.45; }
+.mom-item-time {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-right: 6px;
+}
+
+.mom-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.mom-badge {
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: 20px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.mom-badge-ok   { background: var(--ok-soft);   color: var(--ok);   border-color: var(--ok); }
+.mom-badge-warn { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+.mom-badge-fail { background: var(--fail-soft); color: var(--fail); border-color: var(--fail); }
+.mom-badge-info { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.mom-badge-plain { background: var(--surface-2); color: var(--text-muted); border-color: var(--border); }
+
+.mom-quote {
+  margin-top: 7px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.mom-note {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--warn);
+}
+.mom-note-fail { color: var(--fail); font-weight: 600; }
+
+/* --- action table ---------------------------------------------------------
+   Action items get a table as well as cards. It is the part somebody has to act
+   on, and a table is what gets copied into an email. */
+.mom-action-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin: 4px 0 12px;
+}
+.mom-action-table th,
+.mom-action-table td {
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.mom-action-table th { background: var(--surface-2); font-weight: 600; font-size: 11px; }
+.mom-action-table td.mom-unstated { color: var(--text-faint); font-style: italic; }
+
+/* --- summary -------------------------------------------------------------- */
+.mom-summary {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  padding: 12px 14px;
+  margin: 4px 0 8px;
+}
+.mom-summary ul { margin: 0; padding-left: 18px; }
+.mom-summary li { margin: 3px 0; font-size: 13px; line-height: 1.45; }
+
+/* --- progress ------------------------------------------------------------- */
+.mom-progress {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+  margin: 8px 0 4px;
+}
+.mom-progress-bar {
+  height: 100%;
+  width: 30%;
+  border-radius: 3px;
+  background: var(--accent);
+  animation: mom-indeterminate 1.6s ease-in-out infinite;
+}
+/* Indeterminate on purpose: the run has no honest percentage. The number of
+   windows is known, but they do not take equal time, and a bar that reaches 90 %
+   and sits there for four minutes is a lie told smoothly. */
+@keyframes mom-indeterminate {
+  0%   { margin-left: -30%; }
+  100% { margin-left: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mom-progress-bar { animation: none; width: 100%; opacity: 0.45; }
+}
+
+#mom-minute-card { grid-column: 1 / -1; }

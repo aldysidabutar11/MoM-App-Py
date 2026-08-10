@@ -55,6 +55,7 @@ RUNTIME_SUBDIRS: Final[tuple[str, ...]] = (
     "voiceprints",
     "keys",
     "working",
+    "branding",
 )
 """Runtime subdirectories created under the data root by :meth:`ensure`.
 
@@ -62,6 +63,11 @@ RUNTIME_SUBDIRS: Final[tuple[str, ...]] = (
 harmless and happens with every other one; what must stay lazy is the **content** --
 the DPAPI-protected master key is generated only when an explicit enrollment needs
 it, never by ``ensure()``, an import or ``doctor`` (ADR-0010).
+
+``branding`` holds the operator's letterhead logo, and nothing else. It is a
+directory the operator *writes into* rather than one the application fills: the only
+thing read from it is an image named in configuration, and it is read at export time
+only. An absent or unreadable logo is not an error -- the letterhead falls back to text.
 
 ``working`` arrived with Phase 4 and holds 16 kHz mono derivatives of master
 recordings. It is deliberately *not* inside ``recordings``: a working copy is a
@@ -247,6 +253,35 @@ class RuntimePaths:
         return self.root / "keys"
 
     @property
+    def branding_dir(self) -> Path:
+        """Operator-supplied letterhead assets. Read-only to this application."""
+        return self.root / "branding"
+
+    def branding_asset(self, filename: str) -> Path:
+        """Resolve one branding file by **bare filename**, never by path.
+
+        A configured value is still a value from outside the code, so it is treated the
+        way every other external identifier here is: the shape is enforced rather than
+        trusted. Without this, `logo_filename = "..\\..\\keys\\master.bin"` would make the
+        letterhead a file-read primitive pointed at the key store.
+        """
+        name = str(filename).strip()
+        if (
+            not name
+            or "/" in name
+            or "\\" in name
+            or ".." in name
+            or ":" in name
+            or name.startswith(".")
+        ):
+            raise PathValidationError(
+                f"Branding asset must be a bare filename inside the branding directory, "
+                f"got {filename!r}. Put the file in {self.branding_dir} and name it "
+                "without any path separator."
+            )
+        return self.branding_dir / name
+
+    @property
     def working_dir(self) -> Path:
         """16 kHz mono working copies. Derived, reproducible, never the evidence."""
         return self.root / "working"
@@ -352,6 +387,7 @@ class RuntimePaths:
             "missing": [str(p) for p in self.missing_dirs()],
             "db_dir": str(self.db_dir),
             "recordings_dir": str(self.recordings_dir),
+            "branding_dir": str(self.branding_dir),
             "exports_dir": str(self.exports_dir),
             "logs_dir": str(self.logs_dir),
             "models_dir": str(self.models_dir),

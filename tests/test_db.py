@@ -55,7 +55,16 @@ PHASE_4_TABLES = {
     "transcript_words",
 }
 
-CURRENT_TABLES = PHASE_1_TABLES | PHASE_3_TABLES | PHASE_4_TABLES
+# Minutes: the last link of the evidence chain (migration 0006). Still no speaker column
+# -- an owner here is a name the transcript said out loud, never an inference about who
+# was talking. Diarization is Phase 5 and voice identification is Phase 6.
+MINUTES_TABLES = {
+    "minutes",
+    "minute_items",
+    "minute_exports",
+}
+
+CURRENT_TABLES = PHASE_1_TABLES | PHASE_3_TABLES | PHASE_4_TABLES | MINUTES_TABLES
 
 # Tables that belong to Phase 4 or later and must NOT exist yet. `consents` stays
 # on this list deliberately: Phase 3 stores consent as an append-only

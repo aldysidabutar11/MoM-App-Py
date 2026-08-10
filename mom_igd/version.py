@@ -27,7 +27,7 @@ Advancing this changes what ``doctor`` calls a FAIL rather than a WARN, so it is
 raised only once the phase's automated gate is green -- never in anticipation.
 """
 
-CONFIG_SCHEMA_VERSION: int = 4
+CONFIG_SCHEMA_VERSION: int = 6
 """Version of the configuration file schema (``config/default.toml``).
 
 The validator demands an exact match, and ``AppConfig`` forbids unknown keys -- so
@@ -47,12 +47,17 @@ this build no longer speaks.
 4 -- Phase 4 adds ``[asr]``: thread counts and decode settings measured on the target
      device, the pass-2 selection thresholds and budget, VAD tuning, and the
      terminology glossary. No key in it selects a provider implementation.
+5 -- Adds ``[mom]``: the local language model's window, thread count, window overlap
+     and export defaults. Like ``[asr]``, no key in it selects or locates a model.
+6 -- Adds ``[mom.document]``: letterhead, filing-reference format and signature block.
+     Presentation only -- the draft banner and the verification marks are deliberately
+     not configurable.
 """
 
 REGISTRY_SCHEMA_VERSION: int = 1
 """Version of the model registry schema (``models/registry.json``)."""
 
-SCHEMA_VERSION_HEAD: int = 5
+SCHEMA_VERSION_HEAD: int = 7
 """Highest database migration version shipped with this build.
 
 1 -- Phase 1 foundation (nine tables).
@@ -61,6 +66,12 @@ SCHEMA_VERSION_HEAD: int = 5
 4 -- Phase 3 corrective: per-meeting ``participant_capacity``, defaulting to 9.
 5 -- Phase 4 offline ASR: working copy, VAD run, speech regions, transcript
      revisions, segments and word timings. No speaker column -- that is Phase 5/6.
+6 -- Minutes: generated minute revisions, evidenced items, export records. Still no
+     speaker column: an owner here is a name the transcript said, never an inference
+     about who was talking.
+7 -- The minute's filing reference, assigned once and inherited by later revisions.
+     Stored rather than derived, because a reference that renumbers itself is not a
+     reference.
 """
 
 USER_AGENT: str = f"{APP_NAME}/{APP_VERSION} (offline; loopback-only)"

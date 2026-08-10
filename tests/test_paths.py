@@ -127,7 +127,8 @@ def test_expected_subdirectories_are_exactly_the_documented_set() -> None:
     # Phase 3 (encrypted biometric templates and the DPAPI-protected master key);
     # `working` arrived with Phase 4 and holds 16 kHz mono derivatives of recordings,
     # deliberately outside `recordings` so a backup of the evidence carries no
-    # duplicate of it.
+    # duplicate of it. `branding` holds the operator's letterhead logo -- the one
+    # directory the application only ever reads from, never writes to.
     assert RUNTIME_SUBDIRS == (
         "db",
         "recordings",
@@ -139,6 +140,7 @@ def test_expected_subdirectories_are_exactly_the_documented_set() -> None:
         "voiceprints",
         "keys",
         "working",
+        "branding",
     )
 
 

@@ -167,7 +167,11 @@ DEFERRED_HEAVY_DISTRIBUTIONS: Final[frozenset[str]] = frozenset(
         "soxr",
         "webrtcvad",
         "silero-vad",
-        "llama-cpp-python",
+        # NOTE: `llama-cpp-python` is deliberately NOT listed here any more. It
+        # became a real runtime dependency when minutes generation landed, and it
+        # is declared in requirements.txt. `transformers` and
+        # `sentence-transformers` stay deferred: GGUF needs neither, and pulling
+        # either in would drag `torch` behind it.
         "sentence-transformers",
         "transformers",
     }
@@ -190,13 +194,21 @@ Graduated out of this set, each in the phase that genuinely needed it:
 * `numpy` -- Phase 4. A hard requirement of ctranslate2/faster-whisper. The Phase 2
   capture path and the Phase 3 quality meter still do not use it: capture reads bytes
   from `RawInputStream` and metering uses `array.array`, and that must not change.
+* `llama-cpp-python` -- minutes generation. GGUF inference on CPU with
+  grammar-constrained sampling. Chosen over the CTranslate2 stack already present
+  because converting a model for CTranslate2 requires `transformers` **and** `torch`,
+  which are multi-gigabyte and still deferred; GGUF is distributed ready to run. The
+  wheel is prebuilt for cp312/win_amd64, so no C++ toolchain is installed. It is not
+  on PyPI for this platform and comes from the maintainer's own index -- see
+  requirements.txt and ADR-0017. `diskcache` and `jinja2` arrived with it.
 
 Still deferred, and why:
 
 * `openvino*` / `optimum-intel` -- **ruled out on measured evidence**, not deferred by
   default. See the comment inside the set.
 * `torch`, `pyannote.audio`, `speechbrain` -- Phase 5 diarization.
-* `llama-cpp-python`, `transformers`, `sentence-transformers` -- Phase 8 MoM.
+* `transformers`, `sentence-transformers` -- still deferred. Minutes generation runs
+  GGUF through llama.cpp and needs neither, and either one would pull `torch` in.
 * `soundfile`, `librosa`, `soxr`, `pyaudio`, `webrtcvad`, `silero-vad` -- never
   needed: `av` covers decode/resample and the VAD asset is bundled.
 """

@@ -439,6 +439,171 @@ class ProvidersConfig(BaseModel):
             raise ValueError(str(exc)) from None
 
 
+class MomDocumentConfig(BaseModel):
+    """What the exported document looks like: letterhead, numbering, signatures.
+
+    Presentation only. Nothing here changes what is extracted, what is verified or what
+    is stored -- a letterhead cannot make an unverified point look checked, and the draft
+    banner and the verification marks are not switchable from configuration. They are the
+    part of the document that protects the reader, so they are not a preference.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    organisation: str = Field(default="", max_length=120)
+    """Name on the letterhead. Empty means no letterhead is drawn at all."""
+
+    organisation_subtitle: str = Field(default="", max_length=200)
+    """Second line: unit, address, or whatever the office puts under its name."""
+
+    logo_filename: str = Field(default="", max_length=120)
+    """A **bare filename** inside ``<data_root>/branding``. PNG or JPEG.
+
+    Resolved through :meth:`mom_igd.paths.RuntimePaths.branding_asset`, which rejects
+    anything with a path separator: a configured string is still outside input, and
+    without that check the letterhead would be a file-read primitive.
+
+    Missing or unreadable is **not an error** -- the letterhead falls back to text. An
+    export must not fail because somebody moved a logo.
+    """
+
+    document_number_format: str = Field(default="NOT/{year}/{month}/{seq:03d}", max_length=120)
+    """Template for the minute's reference number, filled once and then immutable.
+
+    Placeholders: ``{year}``, ``{month}``, ``{day}``, ``{seq}``. The sequence restarts
+    each month and counts minutes, not meetings. Assigned when a minute first becomes a
+    draft and inherited by every later revision of the same transcript, so re-running
+    does not renumber a document somebody has already filed.
+    """
+
+    place: str = Field(default="", max_length=60)
+    """City written above the signatures, as Indonesian documents conventionally do:
+    "Jakarta, 10 Agustus 2026". The date comes from the meeting, not from the clock.
+    Empty leaves the line out entirely."""
+
+    show_signature_block: bool = True
+
+    signature_roles: tuple[str, ...] = Field(default=("Notulis", "Pemimpin Rapat", "Mengetahui"))
+    """Columns in the signature block. Left blank for a human to sign by hand.
+
+    The application signs nothing and approves nothing: approval is Phase 9 and has its
+    own audit requirements. An empty column is a place for a person to take
+    responsibility, which is exactly what this stage cannot do for them.
+    """
+
+    footer_note: str = Field(default="", max_length=200)
+    """Extra line in the page footer, e.g. a confidentiality marking."""
+
+    @field_validator("logo_filename")
+    @classmethod
+    def _bare_filename(cls, value: str) -> str:
+        text = value.strip()
+        if text and ("/" in text or "\\" in text or ".." in text or ":" in text):
+            raise ValueError(
+                f"logo_filename must be a bare filename inside the branding directory, "
+                f"got {value!r}. A path here would let configuration read any file the "
+                "application can reach."
+            )
+        return text
+
+    @field_validator("signature_roles")
+    @classmethod
+    def _sane_role_count(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        roles = tuple(role.strip() for role in value if role.strip())
+        if len(roles) > 4:
+            raise ValueError(
+                f"signature_roles has {len(roles)} entries; at most 4 fit across a page "
+                "without the columns becoming unusable."
+            )
+        return roles
+
+    @field_validator("document_number_format")
+    @classmethod
+    def _format_is_renderable(cls, value: str) -> str:
+        try:
+            value.format(year=2026, month="08", day="10", seq=1)
+        except (IndexError, KeyError, ValueError) as exc:
+            raise ValueError(
+                f"document_number_format {value!r} is not a usable template ({exc}). "
+                "Allowed placeholders: {year}, {month}, {day}, {seq}."
+            ) from None
+        return value
+
+
+class MomConfig(BaseModel):
+    """Minutes generation: the local language model's thread count, window and budget.
+
+    Measured on the target device, like ``[asr]``, and machine-specific in the same way.
+    A 4B Q4_K_M model on this i7-1260P loads in 2.3 s and generates at roughly six tokens
+    a second under a grammar; both figures move with the CPU, so re-measure rather than
+    reason about core counts.
+
+    No key here selects a model. The model comes from the installed registry, which only
+    holds artefacts that passed a load-and-decode probe (ADR-0015), and there is no
+    setting that can make a run download one or fall back to another.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    enabled: bool = True
+    """Whether the minutes stage may run at all. Off leaves transcription untouched."""
+
+    language: str = "id"
+
+    context_tokens: int = Field(default=8192, ge=6144, le=32768)
+    """The window the model is given, and the setting with the largest effect on
+    how long a run takes.
+
+    A window is this minus a fixed 3448-token reserve, so lowering it attacks the
+    remainder rather than the total. Projected for a 90-minute meeting: 8192 gives 9
+    windows and about 18 minutes, 6144 gives 17 windows and 32 minutes, and 4096 gives
+    **81 windows and over two hours**. KV cache is 1152, 864 and 576 MiB respectively.
+
+    The floor is 6144 for that reason: a value that silently makes the application eight
+    times slower is a trap, not a tuning knob."""
+
+    batch_tokens: int = Field(default=256, ge=32, le=2048)
+    """Prompt-evaluation batch. **512 costs 563 MiB of compute buffer and 256
+    costs 281 MiB for no measurable throughput difference** (7.11 against 7.18 tokens a
+    second over the same prompt), so the smaller one is the default."""
+
+    threads: int = Field(default=12, ge=1, le=256)
+    """Twelve is the measured optimum for the ASR models on this machine's cores, and
+    llama.cpp is bound the same way."""
+
+    overlap_ms: int = Field(default=15_000, ge=0, le=120_000)
+    """How much of each window the next one repeats, so a decision stated across a cut is
+    seen by both sides. The duplicates are merged; the omission could not be recovered."""
+
+    include_unverified_in_exports: bool = True
+    """Whether an exported document carries items whose quote could not be located.
+    Default true, and deliberately: hiding them by default would make a document look
+    cleaner than the evidence behind it. Either way the count is printed in the document.
+    """
+
+    default_export_formats: tuple[str, ...] = ("docx",)
+    """What ``mom generate`` writes without being asked. Word, because that is what the
+    document will be edited and circulated in."""
+
+    worker_timeout_seconds: float = Field(default=2 * 60 * 60, gt=0.0)
+    """Wall-clock ceiling for one batch of prompts. Two hours is generous against a
+    measured ten to fifteen minutes for a ninety-minute meeting."""
+
+    document: MomDocumentConfig = Field(default_factory=MomDocumentConfig)
+
+    @field_validator("default_export_formats")
+    @classmethod
+    def _known_formats(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        allowed = ("docx", "markdown", "html", "txt")
+        unknown = [entry for entry in value if entry not in allowed]
+        if unknown:
+            raise ValueError(
+                f"default_export_formats contains {unknown}, which this build cannot "
+                f"write. Allowed: {list(allowed)}."
+            )
+        return value
+
+
 # ---------------------------------------------------------------------------
 # Root configuration
 # ---------------------------------------------------------------------------
@@ -467,6 +632,7 @@ class AppConfig(BaseModel):
     audio: AudioConfig = Field(default_factory=AudioConfig)
     participants: ParticipantsConfig = Field(default_factory=ParticipantsConfig)
     asr: AsrConfig = Field(default_factory=AsrConfig)
+    mom: MomConfig = Field(default_factory=MomConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
 
     # -- validators ---------------------------------------------------------

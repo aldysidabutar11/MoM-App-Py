@@ -104,9 +104,21 @@ def _segment(conn: sqlite3.Connection, transcript_id: int, **overrides: object) 
 # ===========================================================================
 
 
-def test_the_head_version_is_five(conn: sqlite3.Connection) -> None:
-    row = conn.execute("SELECT MAX(version) AS v FROM schema_migrations").fetchone()
-    assert int(row["v"]) == SCHEMA_VERSION_HEAD == 5
+def test_the_asr_migration_is_applied_and_the_database_matches_the_declared_head(
+    conn: sqlite3.Connection,
+) -> None:
+    """Two facts, neither of them a literal version number.
+
+    This asserted `== 5` when Phase 4 shipped, which made it fail the moment a later
+    migration was added legitimately -- the number was a snapshot, not the requirement.
+    What matters is that migration 0005 is applied and that the database agrees with
+    `SCHEMA_VERSION_HEAD`; a real disagreement between the two still fails.
+    """
+    applied = {
+        int(row[0]) for row in conn.execute("SELECT version FROM schema_migrations")
+    }
+    assert 5 in applied, "the Phase 4 ASR migration is not applied"
+    assert max(applied) == SCHEMA_VERSION_HEAD
 
 
 def test_the_new_tables_exist(conn: sqlite3.Connection) -> None:
@@ -147,8 +159,12 @@ def test_the_asr_migration_is_the_fifth_and_the_earlier_four_are_intact(
     from mom_igd.db.migrator import discover_migrations, verify_applied_checksums
 
     discovered = discover_migrations()
-    assert [migration.version for migration in discovered] == [1, 2, 3, 4, 5]
-    assert discovered[-1].name == "offline_asr"
+    # Contiguous from 1, with 5 present. Not a fixed list: a later migration is a
+    # legitimate addition, and an edit to an earlier one is what this guards.
+    versions = [migration.version for migration in discovered]
+    assert versions == list(range(1, len(versions) + 1))
+    assert 5 in versions
+    assert discovered[4].name == "offline_asr"
     verify_applied_checksums(conn)
 
 

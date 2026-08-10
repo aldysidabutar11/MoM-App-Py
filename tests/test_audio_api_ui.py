@@ -415,8 +415,16 @@ def test_the_recording_panel_does_not_tie_capture_to_a_roster_size(
 
 def test_ui_shows_no_fake_transcript_or_speaker_label(ui_sources: dict[str, str]) -> None:
     combined = " ".join(ui_sources.values()).lower()
-    for fake in ("speaker 1", "speaker_1", "pembicara 1", "lorem ipsum", "transkrip:"):
+    for fake in ("speaker 1", "speaker_1", "pembicara 1", "lorem ipsum"):
         assert fake not in combined, fake
+
+    # A hard-coded transcript *label*, which is what a placeholder looks like:
+    # ">Transkrip: ..." or "'Transkrip: ...". Unanchored, this matched the ordinary
+    # Indonesian error message "Tidak dapat memuat daftar transkrip: " + detail --
+    # prose about a failed fetch, not fabricated content. Anchoring keeps the check
+    # and removes the false positive.
+    for opener in (">", "'", '"', "`"):
+        assert opener + "transkrip:" not in combined, opener + "transkrip:"
 
 
 def test_stop_requires_confirmation(ui_sources: dict[str, str]) -> None:
@@ -451,7 +459,15 @@ def test_the_bridge_allowlists_are_closed() -> None:
         AUDIO_GET_PATHS
     ) - set(AUDIO_POST_PATHS):
         assert extra.startswith(
-            ("/health", "/version", "/doctor", "/internal", "/enrollment", "/asr/")
+            (
+                "/health",
+                "/version",
+                "/doctor",
+                "/internal",
+                "/enrollment",
+                "/asr/",
+                "/mom/",
+            )
         ), extra
 
 

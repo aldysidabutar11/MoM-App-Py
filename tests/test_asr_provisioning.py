@@ -82,7 +82,7 @@ def test_the_catalogue_is_a_closed_set_of_reviewed_models() -> None:
     If an arbitrary repo id were accepted, an unreviewed or gated artefact could be
     introduced by a command-line argument and would then be loaded with full trust.
     """
-    assert set(MODEL_CATALOGUE) == {"asr-pass1", "asr-pass2"}
+    assert set(MODEL_CATALOGUE) == {"asr-pass1", "asr-pass2", "mom-llm"}
     for spec in MODEL_CATALOGUE.values():
         assert spec.license_name, spec.key
         assert spec.repo_id.count("/") == 1, spec.repo_id
@@ -90,7 +90,14 @@ def test_the_catalogue_is_a_closed_set_of_reviewed_models() -> None:
             "the target device has no usable GPU path; see ADR-0014"
         )
         assert spec.expected_files, spec.key
-        assert "model.bin" in spec.expected_files, spec.key
+        # The weights file, named exactly. An unpinned list would accept whatever the
+        # repository happens to hold. CTranslate2 ships `model.bin`; a GGUF is one file
+        # whose name carries its quantisation, so the check is per engine rather than a
+        # single filename that only one of them uses.
+        if spec.kind == "llm":
+            assert any(f.endswith(".gguf") for f in spec.expected_files), spec.key
+        else:
+            assert "model.bin" in spec.expected_files, spec.key
 
 
 @pytest.mark.parametrize("bad", ["", "asr", "whisper", "Systran/faster-whisper-small", "../x"])
@@ -101,7 +108,7 @@ def test_an_unknown_catalogue_key_is_refused(bad: str) -> None:
 
 def test_both_roles_are_declared_exactly_once() -> None:
     roles = [spec.role for spec in MODEL_CATALOGUE.values()]
-    assert sorted(roles) == ["pass1", "pass2"]
+    assert sorted(roles) == ["mom", "pass1", "pass2"]
 
 
 def test_the_vad_model_is_not_in_the_catalogue_because_it_ships_in_the_wheel() -> None:

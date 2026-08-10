@@ -21,9 +21,18 @@ reports `phase: 3`, deliberately: advancing `CURRENT_PHASE` changes what `doctor
 transcript exists on this machine. Raising it would assert a validated capability that has
 not been validated. Do not raise it without an accuracy measurement.
 
+**Minutes generation and export are also implemented** (`mom_igd/mom/`, migration 0006),
+because the team cannot use the product without them: a transcript is not a minute. This
+crosses the roadmap's phase boundaries deliberately — MoM was Phase 8 and export Phase 10 —
+and the crossing is recorded in `docs/architecture.md` rather than pretended away. Nothing
+of Phase 5 (diarization), Phase 6 (voice ID), Phase 7 (reconciliation) or Phase 9 (the
+human review workflow) is implemented, and a minute stays a **draft** because approval
+belongs to Phase 9.
+
 See `docs/architecture.md` for the full roadmap, `docs/phase-2-audio-capture.md` for the
 capture engine, `docs/phase-3-participants-enrollment.md` for enrollment,
-`docs/phase-4-offline-asr.md` for transcription, and `README.md` for what exists.
+`docs/phase-4-offline-asr.md` for transcription, `docs/minutes-generation.md` for minutes
+and export, and `README.md` for what exists.
 
 ## Non-negotiable constraints
 
@@ -67,6 +76,13 @@ capture engine, `docs/phase-3-participants-enrollment.md` for enrollment,
 ## Scope discipline
 
 The single most important rule: **do not implement a future phase.**
+
+The minutes stage is the one deliberate exception, taken on the operator's explicit
+instruction because the product is unusable without it. It does **not** license taking the
+next one: diarization, voice identification, speaker labelling, reconciliation and the
+human approval workflow are all still out of scope, and the minutes code is written so that
+none of them can be half-added — there is no `speaker` column, no foreign key from an item
+to a participant, and no `APPROVED` status to write.
 
 Phase 4 must not contain diarization, voice identification, speaker labelling, LLM
 calls, MoM generation, exporters, action tracking, transcript search, encryption of
@@ -199,9 +215,14 @@ quietly widening scope.
   30 s, so one decode per region measured **RTF 2.8** where batching measured **0.31**.
   Never revert to per-region decoding, and never concatenate non-adjacent speech --
   that would corrupt every timestamp (ADR-0016 §3).
-* **The audio is decoded once per call and sliced.** Passing a path per region makes
-  faster-whisper re-read the whole file every time: O(regions x duration). It does not
-  show up on a short test.
+* **The working copy is read once per *provider*, not once per call, and sliced.** This
+  was wrong twice. Passing a path per region makes faster-whisper re-read the whole file
+  every time; reading it once per `transcribe` call is no better, because the pipeline
+  calls `transcribe` once per 30-second window -- 144 of them on a 90-minute meeting, at
+  7.6 s each, which is **18 minutes of waste against a 13-minute decode**. Both are
+  O(windows x duration) and neither shows up on a short test, which produces one window.
+  The cache is keyed on the file's size and mtime as well as its path: a stale audio cache
+  would transcribe a different meeting and look entirely plausible.
 * **`validate_transcription` rebuilds every segment, so a new field must be listed
   there.** `region_index` was added and silently dropped, which made every region look
   empty and spent the whole pass-2 budget on the wrong places.
@@ -236,6 +257,65 @@ quietly widening scope.
   `scripts\phase4_acceptance_preflight.ps1` refuses the production root before it runs
   anything, and 65 static tests assert it holds no destructive command. Do not migrate the
   production root until the operator has returned a manual acceptance result.
+
+### Minutes invariants (`mom_igd/mom/`)
+
+* **The model proposes; a non-LLM verifier decides.** `verify.py` imports no model and
+  never may. Asking a language model whether a language model's output is faithful
+  produces a confident yes at a rate that tracks fluency, not truth.
+* **An invented owner is the worst thing this system can emit.** Worse than a missing item,
+  which whoever was in the room will notice. An owner survives only if a distinctive part
+  of the name was actually *spoken* — honorifics stripped, because "Pak" grounds nothing.
+  Ungrounded, it is removed and the removal is recorded and counted.
+* **The roster is never in the prompt.** It is consulted only *after* grounding succeeded,
+  and only to correct the spelling of a name the meeting already said. It can never
+  introduce one. A test asserts both directions.
+* **No speaker, still.** No column, no foreign key from `minute_items` to `participants`,
+  and no `APPROVED` status. Phases 5, 6 and 9 own those.
+* **An unverified item is kept, shown and marked.** Deleting it hides what the model
+  produced; keeping it unmarked presents a guess as a record.
+* **A decision the meeting later reversed is flagged and kept out of the summary.** Two
+  contradictory decisions listed unmarked is worse than either one missing. The link is a
+  reversal word plus a *back-reference* -- measured, because the reversal shares almost no
+  vocabulary with what it cancels.
+* **A due date needs every word that names it**, not one. "hari Kam4" passed on the
+  strength of "hari" before that rule existed.
+* **The summary is written from verified items, never from the transcript.** That is what
+  stops an unchecked claim reaching the part of the document a reader trusts most. Every
+  digit-string in it must exist in a source item, or it is flagged.
+* **Structure comes from the GBNF grammar, not from asking.** There is no repair step,
+  because a repair step is where an invented field gets in. **`LlamaGrammar.from_string`
+  does not parse anything** — use `LocalLlm.validate_grammar`. **GBNF ends a rule at the
+  newline**: one rule per line, always.
+* **Verification runs in the parent, never in the worker.** The worker takes prompts and
+  returns text. That is what makes the whole pipeline testable with a fake runner, and it
+  is why a truncated window, a hallucinated quote and an invented owner all have tests.
+* **Coverage is measured in segment time, not window spans.** The first version reported
+  68 % on a complete run. A warning that fires when nothing is wrong teaches the operator
+  to ignore warnings.
+* **Peak worker memory is ~5.1 GB and the 2.5 GB budget cannot be met** — the weights plus
+  llama.cpp's non-optional `CPU_REPACK` copy are 4.0 GB before any context. Do not claim
+  otherwise; ADR-0018 §4 has the breakdown and the three env vars that do *not* disable
+  repack.
+* **One document model, four renderers.** The draft banner, the verification mark and the
+  coverage line are built once, so no format can quietly lose them. DOCX output must stay
+  byte-deterministic, or the recorded SHA-256 stops identifying the file.
+* **A letterhead never displaces what protects the reader.** The draft banner sits
+  immediately below it and is not configurable, because an official-looking heading is
+  exactly what makes a reader assume a person wrote the document.
+* **The signature block prints no name.** It is blank columns for a human to sign, and it
+  says in the document that the application approved nothing. Approval is Phase 9.
+* **A filing reference is assigned once and inherited by later revisions.** Never
+  recomputed at render time: the copy in somebody's inbox has to keep resolving.
+* **Branding is read in exactly one place** (`resolve_branding`), and every failure there
+  is non-fatal. A renderer receives bytes and never touches the filesystem. A missing
+  logo must not fail an export -- note that `extra={"filename": ...}` in a log call
+  raises `KeyError`, which once made all of those "non-fatal" paths fatal.
+* **Nothing under `mom_igd/mom/` may import `mom_igd.enrollment`**, and nothing under
+  `mom_igd/audio/` may import `mom_igd.mom`.
+* **Generation is refused while a capture is live; a capture is never refused because a
+  minute is running.** The live-state list is imported from `asr/service.py`, not restated
+  — a second copy drifted immediately.
 
 ## Doctor classification contract
 
@@ -302,9 +382,17 @@ Exit codes: `0` no FAIL · `1` any FAIL · `2` `--strict` with a WARN.
 .\.venv\Scripts\python.exe -m mom_igd asr verify            # re-hash every model byte
 .\.venv\Scripts\python.exe -m mom_igd asr smoke             # real model, no network
 .\.venv\Scripts\python.exe -m mom_igd asr transcribe UUID   # the whole pipeline
+.\.venv\Scripts\python.exe -m mom_igd mom status           # what can be minuted, and why not
+.\.venv\Scripts\python.exe -m mom_igd mom generate UUID    # transcript -> draft minute
+.\.venv\Scripts\python.exe -m mom_igd mom show UUID        # read it back, loads no model
+.\.venv\Scripts\python.exe -m mom_igd mom export UUID --format docx
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\python.exe -m pytest --cov=mom_igd --cov-report=term-missing
 ```
+
+`asr provision mom-llm` fetches the 2.33 GB minutes model. It is **not on PyPI for this
+platform**, so `llama-cpp-python` is installed from the maintainer's CPU wheel index — see
+`requirements.txt` and ADR-0017. Never the `cuXXX` variants: there is no CUDA here.
 
 The Phase 4 **acceptance data root** is `D:\MoM-IGD-Models-Phase4`, passed with
 `--data-dir`. It holds the models and the acceptance database, and it is **not** the

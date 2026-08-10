@@ -187,6 +187,13 @@ def create_app(
 
     app.include_router(asr_router)
 
+    # Minutes. Same discipline once more: importing this must not pull in llama.cpp, and
+    # routing it must not either. The 2.3 GB of weights load inside a spawned worker, and
+    # only when a run actually starts.
+    from mom_igd.api.mom_routes import mom_router
+
+    app.include_router(mom_router)
+
     @app.get("/", include_in_schema=False)
     def _root() -> RedirectResponse:
         return RedirectResponse(url="/ui/")

@@ -2669,3 +2669,691 @@
   renderPass2(null);
   updateButtons();
 })();
+
+/* ==========================================================================
+   Minutes panel.
+
+   Generation runs behind one POST that takes ten to twenty minutes, so this polls
+   `/mom/status` for liveness rather than holding a request open -- exactly as the
+   recording and transcription panels do. Every call goes through the pywebview
+   bridge, so the session token never enters JavaScript and the page can only reach
+   the anchored paths on the shell's allowlist.
+
+   Nothing here can cause a model download. `/mom/status` reports readiness and the
+   Buat notulen button stays disabled until the server says the transcript is
+   eligible. Provisioning remains a deliberate command-line action.
+
+   Eligibility is decided by the server, never here: `/mom/transcripts` returns
+   `eligible` and `reason` per row, so the button's enabled state and the explanation
+   beside it cannot disagree.
+
+   Two things this panel must always show, because they are the difference between a
+   minute a reader can trust and one they cannot: the draft warning, and the
+   verification state of every point. Neither is behind a toggle.
+   ========================================================================== */
+(function () {
+  'use strict';
+
+  var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  var POLL_MS = 2000;
+  var ELAPSED_MS = 1000;
+
+  var KIND_LABELS = {
+    DECISION: 'Keputusan',
+    ACTION: 'Tindak Lanjut',
+    DISCUSSION: 'Pembahasan',
+    ISSUE: 'Isu / Pertanyaan Terbuka'
+  };
+  var KIND_ORDER = ['DECISION', 'ACTION', 'DISCUSSION', 'ISSUE'];
+  var VERIFICATION_LABELS = {
+    VERIFIED: 'terverifikasi',
+    REBOUND: 'kutipan ditemukan di segmen lain',
+    UNVERIFIED: 'BELUM TERVERIFIKASI'
+  };
+  /* Stored codes are stable identifiers; the operator reads sentences. Anything not
+     listed here is a diagnostic that belongs in the database, not on screen. */
+  var NOTE_LABELS = {
+    OWNER_NOT_IN_TRANSCRIPT: 'nama PIC yang diusulkan model tidak terdengar di rekaman, jadi dihapus',
+    OWNER_NOT_A_NAME: 'PIC yang diusulkan model bukan nama orang, jadi dihapus',
+    DUE_NOT_IN_TRANSCRIPT: 'tenggat yang diusulkan model tidak terdengar di rekaman, jadi dihapus',
+    QUOTE_NEAR_MATCH: 'kutipan tidak persis sama dengan transkrip',
+    QUOTE_NOT_FOUND: 'kutipan tidak ditemukan di transkrip',
+    CITATION_OUT_OF_RANGE: 'model merujuk segmen di luar bagian yang dibacanya'
+  };
+
+  var el = {
+    panel: document.getElementById('mom-panel'),
+    open: document.getElementById('open-mom-btn'),
+    modelKv: document.getElementById('mom-model-kv'),
+    modelMissing: document.getElementById('mom-model-missing'),
+    select: document.getElementById('mom-transcript-select'),
+    refresh: document.getElementById('mom-refresh-btn'),
+    selectedKv: document.getElementById('mom-selected-kv'),
+    ineligible: document.getElementById('mom-ineligible'),
+    emptyHint: document.getElementById('mom-empty-hint'),
+    format: document.getElementById('mom-format-select'),
+    hideUnverified: document.getElementById('mom-hide-unverified'),
+    run: document.getElementById('mom-run-btn'),
+    cancel: document.getElementById('mom-cancel-btn'),
+    load: document.getElementById('mom-load-btn'),
+    error: document.getElementById('mom-error'),
+    pill: document.getElementById('mom-pill'),
+    elapsed: document.getElementById('mom-elapsed'),
+    costKv: document.getElementById('mom-cost-kv'),
+    stages: document.getElementById('mom-stage-list'),
+    warnings: document.getElementById('mom-warning-list'),
+    minuteKv: document.getElementById('mom-minute-kv'),
+    minuteNote: document.getElementById('mom-minute-note'),
+    exportRow: document.getElementById('mom-export-row'),
+    exportBtn: document.getElementById('mom-export-btn'),
+    exportNote: document.getElementById('mom-export-note'),
+    summary: document.getElementById('mom-summary-list'),
+    summaryBox: document.getElementById('mom-summary-box'),
+    stats: document.getElementById('mom-stats'),
+    statsWrap: document.getElementById('mom-stats-wrap'),
+    progress: document.getElementById('mom-progress'),
+    sections: document.getElementById('mom-sections'),
+    minuteEmpty: document.getElementById('mom-minute-empty')
+  };
+
+  if (!el.panel) return;
+
+  var busy = false;
+  var running = false;
+  var pollTimer = null;
+  var elapsedTimer = null;
+  var startedAt = 0;
+  var modelReady = false;
+  var transcripts = [];
+  var loadedMinute = null;
+
+  function bridge() {
+    return window.pywebview && window.pywebview.api ? window.pywebview.api : null;
+  }
+
+  async function get(path, query) {
+    var api = bridge();
+    if (!api) return { ok: false, status: 0, error: 'bridge-unavailable' };
+    return api.api_get(path, query || null);
+  }
+
+  async function post(path, payload) {
+    var api = bridge();
+    if (!api) return { ok: false, status: 0, error: 'bridge-unavailable' };
+    return api.api_post(path, payload || null);
+  }
+
+  function show(node, visible) {
+    if (node) node.hidden = !visible;
+  }
+
+  function setKv(node, pairs) {
+    node.textContent = '';
+    pairs.forEach(function (pair) {
+      var dt = document.createElement('dt');
+      dt.textContent = pair[0];
+      var dd = document.createElement('dd');
+      dd.textContent = pair[1];
+      node.appendChild(dt);
+      node.appendChild(dd);
+    });
+  }
+
+  function stamp(ms) {
+    if (ms === null || ms === undefined) return '--:--:--';
+    var total = Math.max(0, Math.floor(ms / 1000));
+    var h = String(Math.floor(total / 3600)).padStart(2, '0');
+    var m = String(Math.floor((total % 3600) / 60)).padStart(2, '0');
+    var s = String(total % 60).padStart(2, '0');
+    return h + ':' + m + ':' + s;
+  }
+
+  function minutes(ms) {
+    return Math.round((ms || 0) / 60000) + ' menit';
+  }
+
+  function fail(message) {
+    el.error.textContent = message || '';
+    show(el.error, Boolean(message));
+  }
+
+  function detailOf(response) {
+    if (!response) return 'tidak ada jawaban dari server.';
+    var body = response.body;
+    if (body && typeof body === 'object' && body.detail) {
+      return typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail);
+    }
+    return response.error || ('HTTP ' + response.status);
+  }
+
+  function selected() {
+    var uuid = el.select.value;
+    if (!UUID_RE.test(uuid)) return null;
+    for (var i = 0; i < transcripts.length; i += 1) {
+      if (transcripts[i].recording_uuid === uuid) return transcripts[i];
+    }
+    return null;
+  }
+
+  function updateButtons() {
+    var row = selected();
+    el.run.disabled = busy || running || !modelReady || !row || !row.eligible;
+    el.cancel.disabled = !running;
+    el.load.disabled = busy || !row || !row.minute_id;
+    el.exportBtn.disabled = busy || running || !loadedMinute;
+  }
+
+  /* ------------------------------------------------------------------ model */
+
+  async function loadModel() {
+    var response = await get('/mom/status');
+    if (!response.ok) {
+      setKv(el.modelKv, [['Status', detailOf(response)]]);
+      modelReady = false;
+      show(el.modelMissing, true);
+      updateButtons();
+      return;
+    }
+    var status = response.body || {};
+    modelReady = Boolean(status.model_ready);
+    setKv(el.modelKv, [
+      ['Model', status.model_name || 'belum tersedia'],
+      ['Siap dipakai', modelReady ? 'ya' : 'tidak'],
+      ['Fitur notulen', status.enabled ? 'aktif' : 'dimatikan di konfigurasi'],
+      ['Perekaman berjalan', status.active_capture || 'tidak']
+    ]);
+    show(el.modelMissing, !modelReady);
+    running = Boolean(status.running);
+    updateButtons();
+  }
+
+  /* ------------------------------------------------------------ transcripts */
+
+  async function loadTranscripts() {
+    var response = await get('/mom/transcripts', { limit: 50 });
+    if (!response.ok) {
+      fail('Tidak dapat memuat daftar transkrip: ' + detailOf(response));
+      return;
+    }
+    transcripts = (response.body && response.body.transcripts) || [];
+    var previous = el.select.value;
+    el.select.textContent = '';
+    if (!transcripts.length) {
+      var none = document.createElement('option');
+      none.value = '';
+      none.textContent = '— belum ada transkrip selesai —';
+      el.select.appendChild(none);
+    } else {
+      transcripts.forEach(function (row) {
+        var option = document.createElement('option');
+        option.value = row.recording_uuid;
+        option.textContent =
+          (row.meeting_title || '(tanpa judul)') +
+          ' — ' + (row.started_at || '').slice(0, 16) +
+          ' — ' + row.segment_count + ' segmen' +
+          (row.minute_id ? ' — notulen rev ' + row.minute_revision : '');
+        el.select.appendChild(option);
+      });
+      if (previous) el.select.value = previous;
+      if (!el.select.value) el.select.selectedIndex = 0;
+    }
+    show(el.emptyHint, transcripts.length === 0);
+    renderSelected();
+  }
+
+  function renderSelected() {
+    var row = selected();
+    if (!row) {
+      setKv(el.selectedKv, [['Status', 'belum ada transkrip dipilih']]);
+      show(el.ineligible, false);
+      updateButtons();
+      return;
+    }
+    setKv(el.selectedKv, [
+      ['Rapat', row.meeting_title || '(tanpa judul)'],
+      ['Transkrip', 'revisi ' + row.revision + ', ' + row.segment_count + ' segmen, ' +
+        row.word_count + ' kata'],
+      ['Durasi rekaman', minutes(row.duration_ms)],
+      ['Notulen', row.minute_id
+        ? 'revisi ' + row.minute_revision + ' (' + row.item_count + ' poin, ' +
+          row.unverified_count + ' belum terverifikasi)'
+        : 'belum ada']
+    ]);
+    if (row.eligible) {
+      show(el.ineligible, false);
+    } else {
+      el.ineligible.textContent = 'Belum bisa dibuat: ' + (row.reason || 'alasan tidak diketahui');
+      show(el.ineligible, true);
+    }
+    updateButtons();
+  }
+
+  /* --------------------------------------------------------------- progress */
+
+  function renderStages(stages) {
+    el.stages.textContent = '';
+    (stages || []).forEach(function (stage) {
+      var li = document.createElement('li');
+      li.className = stage.ok ? 'stage-ok' : 'stage-fail';
+      li.textContent = (stage.ok ? 'ok  ' : 'GAGAL ') + stage.name + ': ' + stage.detail;
+      el.stages.appendChild(li);
+    });
+  }
+
+  function renderWarnings(list) {
+    el.warnings.textContent = '';
+    (list || []).forEach(function (warning) {
+      var li = document.createElement('li');
+      li.className = 'stage-fail';
+      li.textContent = warning;
+      el.warnings.appendChild(li);
+    });
+  }
+
+  function renderCost(result) {
+    if (!result) {
+      setKv(el.costKv, [['Status', 'belum ada proses']]);
+      return;
+    }
+    var coverage = result.coverage_ratio === null || result.coverage_ratio === undefined
+      ? 'tidak diketahui'
+      : Math.round(result.coverage_ratio * 100) + '% dari isi transkrip';
+    setKv(el.costKv, [
+      ['Cakupan', coverage],
+      ['Waktu', Math.round(result.total_seconds) + ' detik'],
+      ['Memori puncak', result.peak_rss_mib + ' MiB'],
+      ['Poin', result.item_count + ' (' + result.verified_count + ' terverifikasi, ' +
+        result.unverified_count + ' belum)']
+    ]);
+  }
+
+  function tickElapsed() {
+    el.elapsed.textContent = stamp(Date.now() - startedAt);
+    elapsedTimer = window.setTimeout(function () {
+      elapsedTimer = null;
+      if (running) tickElapsed();
+    }, ELAPSED_MS);
+  }
+
+  function startElapsed() {
+    if (elapsedTimer !== null) return;
+    startedAt = Date.now();
+    tickElapsed();
+  }
+
+  function stopElapsed() {
+    if (elapsedTimer !== null) {
+      window.clearTimeout(elapsedTimer);
+      elapsedTimer = null;
+    }
+  }
+
+  /* Re-armed only after the previous poll has resolved. A repeating timer would keep
+     firing while a bridge call was still outstanding and queue them behind each other. */
+  function schedulePoll() {
+    if (pollTimer !== null) return;
+    pollTimer = window.setTimeout(function () {
+      pollTimer = null;
+      loadModel().then(function () {
+        if (running) schedulePoll();
+      });
+    }, POLL_MS);
+  }
+
+  function stopPoll() {
+    if (pollTimer !== null) {
+      window.clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  function startTimers() {
+    el.pill.textContent = 'Membuat notulen';
+    el.pill.className = 'pill pill-live';
+    show(el.progress, true);
+    startElapsed();
+    schedulePoll();
+  }
+
+  function stopTimers(label) {
+    stopElapsed();
+    stopPoll();
+    show(el.progress, false);
+    el.pill.textContent = label;
+    el.pill.className = 'pill';
+  }
+
+  /* ----------------------------------------------------------- the minute */
+
+  function noteText(code) {
+    var known = NOTE_LABELS[code];
+    if (known) return known;
+    var reversed = /^POSSIBLY_SUPERSEDED:(.*)$/.exec(code);
+    if (reversed) {
+      return 'PERHATIAN: keputusan ini tampaknya dibatalkan atau diubah pada ' +
+        reversed[1] + ' — periksa keputusan yang berlaku';
+    }
+    var conflict = /^(OWNER|DUE)_CONFLICT:(.*)\|(.*)$/.exec(code);
+    if (conflict) {
+      var field = conflict[1] === 'OWNER' ? 'PIC' : 'tenggat';
+      return 'dua bagian rekaman menyebut ' + field + ' berbeda: “' +
+        conflict[2] + '” dan “' + conflict[3] + '”';
+    }
+    return null;
+  }
+
+  function statTile(value, label, tone) {
+    var tile = document.createElement('div');
+    tile.className = 'mom-stat' + (tone ? ' mom-stat-' + tone : '');
+    var number = document.createElement('div');
+    number.className = 'mom-stat-value';
+    number.textContent = String(value);
+    var caption = document.createElement('div');
+    caption.className = 'mom-stat-label';
+    caption.textContent = label;
+    tile.appendChild(number);
+    tile.appendChild(caption);
+    return tile;
+  }
+
+  function renderStats(minute) {
+    el.stats.textContent = '';
+    var coverage = minute.transcript_ms
+      ? Math.round(100 * minute.covered_ms / minute.transcript_ms)
+      : null;
+    el.stats.appendChild(statTile(minute.item_count, 'poin dicatat', null));
+    el.stats.appendChild(
+      statTile(minute.verified_count, 'cocok dengan rekaman', 'ok')
+    );
+    el.stats.appendChild(
+      statTile(minute.unverified_count, 'belum terverifikasi',
+        minute.unverified_count ? 'fail' : null)
+    );
+    el.stats.appendChild(
+      statTile(coverage === null ? '—' : coverage + '%', 'transkrip terproses',
+        coverage !== null && coverage < 100 ? 'warn' : null)
+    );
+    show(el.statsWrap, true);
+  }
+
+  function badge(text, tone) {
+    var span = document.createElement('span');
+    span.className = 'mom-badge mom-badge-' + tone;
+    span.textContent = text;
+    return span;
+  }
+
+  function renderItem(item) {
+    var li = document.createElement('li');
+    li.className = 'mom-item mom-item-' + item.kind.toLowerCase() +
+      (item.verification === 'UNVERIFIED' ? ' mom-item-unverified' : '');
+
+    var text = document.createElement('div');
+    text.className = 'mom-item-text';
+    var time = document.createElement('span');
+    time.className = 'mom-item-time';
+    time.textContent = stamp(item.start_ms);
+    text.appendChild(time);
+    text.appendChild(document.createTextNode(item.text));
+    li.appendChild(text);
+
+    var badges = document.createElement('div');
+    badges.className = 'mom-badges';
+    if (item.verification === 'VERIFIED') {
+      badges.appendChild(badge('cocok dengan rekaman', 'ok'));
+    } else if (item.verification === 'REBOUND') {
+      badges.appendChild(badge('kutipan di segmen lain', 'warn'));
+    } else {
+      badges.appendChild(badge('BELUM TERVERIFIKASI', 'fail'));
+    }
+    if (item.owner) badges.appendChild(badge('PIC: ' + item.owner, 'info'));
+    if (item.due_text) badges.appendChild(badge('tenggat: ' + item.due_text, 'info'));
+    if (item.merged_count > 1) {
+      badges.appendChild(badge('disebut ' + item.merged_count + 'x', 'plain'));
+    }
+    li.appendChild(badges);
+
+    var quote = document.createElement('div');
+    quote.className = 'mom-quote';
+    quote.textContent = '“' + item.quote + '”';
+    li.appendChild(quote);
+
+    (item.verification_notes || []).forEach(function (code) {
+      var readable = noteText(code);
+      if (!readable) return;
+      var note = document.createElement('div');
+      note.className = 'mom-note' +
+        (code.indexOf('POSSIBLY_SUPERSEDED') === 0 || code.indexOf('QUOTE_NOT_FOUND') === 0
+          ? ' mom-note-fail' : '');
+      note.textContent = readable;
+      li.appendChild(note);
+    });
+    return li;
+  }
+
+  /* Actions also get a table. It is the part somebody has to act on, and a table
+     is the shape that survives being pasted into an email. */
+  function renderActionTable(items) {
+    var table = document.createElement('table');
+    table.className = 'mom-action-table';
+    var head = document.createElement('tr');
+    ['No', 'Tindak lanjut', 'PIC', 'Tenggat', 'Waktu'].forEach(function (label) {
+      var th = document.createElement('th');
+      th.textContent = label;
+      head.appendChild(th);
+    });
+    var thead = document.createElement('thead');
+    thead.appendChild(head);
+    table.appendChild(thead);
+
+    var body = document.createElement('tbody');
+    items.forEach(function (item, index) {
+      var row = document.createElement('tr');
+      [String(index + 1), item.text, item.owner, item.due_text, stamp(item.start_ms)]
+        .forEach(function (value, column) {
+          var td = document.createElement('td');
+          if ((column === 2 || column === 3) && !value) {
+            td.className = 'mom-unstated';
+            td.textContent = 'tidak disebutkan';
+          } else {
+            td.textContent = value;
+          }
+          row.appendChild(td);
+        });
+      body.appendChild(row);
+    });
+    table.appendChild(body);
+    return table;
+  }
+
+  function renderMinute(minute) {
+    loadedMinute = minute;
+    el.summary.textContent = '';
+    el.sections.textContent = '';
+    el.stats.textContent = '';
+    if (!minute) {
+      setKv(el.minuteKv, [['Status', 'belum ada notulen dimuat']]);
+      show(el.minuteEmpty, true);
+      show(el.minuteNote, false);
+      show(el.exportRow, false);
+      show(el.statsWrap, false);
+      show(el.summaryBox, false);
+      updateButtons();
+      return;
+    }
+    show(el.minuteEmpty, false);
+    show(el.minuteNote, true);
+    show(el.exportRow, true);
+    renderStats(minute);
+
+    setKv(el.minuteKv, [
+      ['Judul', minute.title || '(tanpa judul)'],
+      ['Nomor', minute.document_number || 'tidak dinomori'],
+      ['Revisi', String(minute.revision) + ' (' + minute.status + ')'],
+      ['Model', (minute.model_name || 'tidak tercatat') +
+        (minute.quantisation ? ' (' + minute.quantisation + ')' : '')],
+      ['PIC dihapus', String(minute.owners_dropped || 0) + ' (nama tidak terdengar di rekaman)']
+    ]);
+
+    (minute.summary || []).forEach(function (line) {
+      var li = document.createElement('li');
+      li.textContent = line;
+      el.summary.appendChild(li);
+    });
+    if ((minute.summary_unsupported_numbers || []).length) {
+      var alarm = document.createElement('li');
+      alarm.className = 'mom-note-fail';
+      alarm.textContent = 'Ringkasan memuat angka yang tidak ada di poin manapun: ' +
+        minute.summary_unsupported_numbers.join(', ') + '. Periksa terhadap rekaman.';
+      el.summary.appendChild(alarm);
+    }
+    show(el.summaryBox, (minute.summary || []).length > 0);
+
+    KIND_ORDER.forEach(function (kind) {
+      var items = (minute.items || []).filter(function (item) { return item.kind === kind; });
+      if (!items.length) return;
+
+      var head = document.createElement('div');
+      head.className = 'mom-section-head';
+      var heading = document.createElement('h4');
+      heading.textContent = KIND_LABELS[kind];
+      var count = document.createElement('span');
+      count.className = 'mom-section-count';
+      count.textContent = items.length + ' poin';
+      head.appendChild(heading);
+      head.appendChild(count);
+      el.sections.appendChild(head);
+
+      if (kind === 'ACTION') el.sections.appendChild(renderActionTable(items));
+
+      var list = document.createElement('ul');
+      list.className = 'mom-items';
+      items.forEach(function (item) { list.appendChild(renderItem(item)); });
+      el.sections.appendChild(list);
+    });
+
+    var exported = (minute.exports || [])[0];
+    el.exportNote.textContent = exported
+      ? 'Terakhir ditulis: ' + exported.format + ' — ' + exported.relative_path
+      : 'Belum ada dokumen yang ditulis dari revisi ini.';
+    updateButtons();
+  }
+
+  /* ------------------------------------------------------------------ acts */
+
+  async function run() {
+    var row = selected();
+    if (!row) return;
+    fail('');
+    renderStages([]);
+    renderWarnings([]);
+    renderCost(null);
+    running = true;
+    startTimers();
+    updateButtons();
+
+
+    var response = await post('/mom/generate', {
+      recording_uuid: row.recording_uuid,
+      export_formats: [el.format.value],
+      include_unverified: !el.hideUnverified.checked
+    });
+
+    running = false;
+    stopTimers(response.ok ? 'Selesai' : 'Gagal');
+    if (!response.ok) {
+      fail('Pembuatan notulen gagal: ' + detailOf(response));
+      updateButtons();
+      await loadModel();
+      return;
+    }
+    var result = response.body || {};
+    renderStages(result.stages);
+    renderWarnings(result.warnings);
+    renderCost(result);
+    await loadTranscripts();
+    await loadMinute();
+  }
+
+  async function cancel() {
+    var response = await post('/mom/cancel', {});
+    if (!response.ok) fail('Tidak dapat membatalkan: ' + detailOf(response));
+  }
+
+  async function loadMinute() {
+    var row = selected();
+    if (!row) return;
+    var response = await get('/mom/minute/' + row.recording_uuid);
+    if (!response.ok) {
+      fail('Tidak dapat memuat notulen: ' + detailOf(response));
+      renderMinute(null);
+      return;
+    }
+    renderMinute(response.body || null);
+  }
+
+  async function exportAgain() {
+    var row = selected();
+    if (!row) return;
+    fail('');
+    var response = await post('/mom/export', {
+      recording_uuid: row.recording_uuid,
+      export_format: el.format.value,
+      include_unverified: !el.hideUnverified.checked
+    });
+    if (!response.ok) {
+      fail('Ekspor gagal: ' + detailOf(response));
+      return;
+    }
+    var record = response.body || {};
+    el.exportNote.textContent = 'Ditulis: ' + record.format + ' — ' + record.relative_path +
+      (record.included_unverified ? ' (memuat poin belum terverifikasi)' : '');
+    await loadMinute();
+  }
+
+  function once(action) {
+    if (busy) return;
+    busy = true;
+    updateButtons();
+    Promise.resolve()
+      .then(action)
+      .catch(function (error) { fail(String(error)); })
+      .then(function () {
+        busy = false;
+        updateButtons();
+      });
+  }
+
+  if (el.open) {
+    el.open.addEventListener('click', function () {
+      show(el.panel, true);
+      el.panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      once(async function () {
+        await loadModel();
+        await loadTranscripts();
+      });
+    });
+  }
+
+  el.select.addEventListener('change', function () {
+    fail('');
+    renderMinute(null);
+    renderSelected();
+  });
+  el.refresh.addEventListener('click', function () {
+    once(async function () {
+      await loadModel();
+      await loadTranscripts();
+    });
+  });
+  el.run.addEventListener('click', function () { once(run); });
+  el.cancel.addEventListener('click', function () { once(cancel); });
+  el.load.addEventListener('click', function () { once(loadMinute); });
+  el.exportBtn.addEventListener('click', function () { once(exportAgain); });
+
+  setKv(el.modelKv, [['Status', 'belum dimuat']]);
+  setKv(el.selectedKv, [['Status', 'belum ada transkrip dipilih']]);
+  renderCost(null);
+  renderMinute(null);
+  updateButtons();
+})();

@@ -58,6 +58,10 @@ ALLOWED_PROXY_PATHS: Final[frozenset[str]] = frozenset(
         "/asr/models",
         "/asr/recordings",
         "/asr/preflight",
+        # Minutes, read-only. Neither loads a model: both read the readiness
+        # index, and neither can cause a download.
+        "/mom/status",
+        "/mom/transcripts",
     }
 )
 """Explicit GET allowlist. The page cannot ask the proxy to call an arbitrary path."""
@@ -85,6 +89,14 @@ ALLOWED_POST_PATHS: Final[frozenset[str]] = frozenset(
         # never downloads a model -- a missing one is MODEL_UNAVAILABLE.
         "/asr/transcribe",
         "/asr/cancel",
+        # Minutes. `generate` is the heavy one -- it runs the language model in
+        # worker processes and takes minutes -- so it is reachable only from a
+        # button press. `export` writes into the exports directory and loads no
+        # model; the directory is not nameable from the request and the format
+        # comes from a closed set.
+        "/mom/generate",
+        "/mom/cancel",
+        "/mom/export",
     }
 )
 """Explicit POST allowlist. ``calibrate``, ``open-test``, ``recordings/start`` and
@@ -114,6 +126,8 @@ ALLOWED_GET_PATTERNS: Final[tuple[re.Pattern[str], ...]] = _templated(
     rf"/asr/transcript/{_UUID}",
     rf"/asr/revisions/{_UUID}",
     rf"/asr/flagged/{_UUID}",
+    rf"/mom/minute/{_UUID}",
+    rf"/mom/revisions/{_UUID}",
 )
 """Templated GET paths the page may call."""
 

@@ -720,6 +720,15 @@ def test_the_task_registry_offers_no_fake_task() -> None:
     """The worker dispatches by name from a closed set; none of them is a stand-in."""
     from mom_igd.asr.tasks import TASK_REGISTRY
 
-    assert set(TASK_REGISTRY) == {"transcribe", "vad", "probe_model", "probe_directory"}
+    assert set(TASK_REGISTRY) == {
+        "transcribe",
+        "vad",
+        "probe_model",
+        "probe_directory",
+        # The worker is shared: the minutes stage runs its language model through the
+        # same spawn-load-answer-exit machinery rather than growing a second one.
+        "probe_llm",
+        "mom_generate",
+    }
     for name in TASK_REGISTRY:
         assert "fake" not in name.lower()

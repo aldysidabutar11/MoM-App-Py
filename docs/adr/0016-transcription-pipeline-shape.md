@@ -83,14 +83,26 @@ The batch, not the region, is now the cancellation boundary. That is the trade: 
 seconds of work is discarded on a cancel, in exchange for up to a fifteenfold reduction in
 decode cost.
 
-A related fix came out of the same measurement. The provider called
+**Reading the audio was wrong twice, in the same way.** The first version called
 `model.transcribe(path, clip_timestamps=…)` once per region, and faster-whisper decodes the
-**entire file** on every call — cost O(regions × duration). On a three-hour meeting with
-several hundred regions that is hundreds of full-file decodes, and it does not show up on a
-24-second test at all. The audio is now decoded once into an array and sliced; reading the
-working copy directly with `wave` plus NumPy is byte-identical to `decode_audio` and about
-20× faster, because the working copy's format is fixed by stage 1 and there is nothing to
-negotiate.
+**entire file** on every call. The fix — read it once into an array and slice — was applied
+inside `transcribe`, which looked complete and was not: the pipeline calls `transcribe`
+*once per window*, so a 90-minute meeting still read the file 144 times. Measured: 7.6 s per
+read, **18.2 minutes of waste against a pass-1 decode of about 13 minutes.** The overhead
+was larger than the work.
+
+Both versions are O(windows × duration), and neither is visible on the 24-second end-to-end
+test, which produces exactly one window. The working copy is now held on the provider for as
+long as it is needed, keyed on the file's path, size and modification time — a stale audio
+cache would transcribe a different meeting and produce a transcript that looks entirely
+plausible.
+
+It is held as **int16** and converted to the float32 the engine wants one window at a time.
+A three-hour working copy is 172 MB as int16 against 345 MB as float32, and the pass-2 model
+already occupies 1.9 GB of the 2.5 GB budget; the per-window conversion touches about 2 MB
+and costs nothing measurable. Reading the WAV directly with `wave` plus NumPy is
+byte-identical to `decode_audio` — asserted by a test, not assumed — and about 20× faster,
+because the working copy's format is fixed by stage 1 and there is nothing to negotiate.
 
 ### 4. Pass 2 supersedes, and its selection is explained by reason codes
 

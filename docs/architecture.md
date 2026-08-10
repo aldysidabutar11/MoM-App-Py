@@ -456,6 +456,28 @@ capture engine imports nothing from a future phase, and a test asserts it.
 
 ---
 
+## 3.3 Minutes and export — implemented ahead of the roadmap
+
+The roadmap below places MoM generation at Phase 8 and exporters at Phase 10. Both were
+implemented early, on the operator's explicit instruction, for a reason worth stating
+plainly: the phases were ordered to build capability safely, and the operator's team needs
+a document out of a meeting. A transcript is not a minute. Everything the ordering was
+protecting is still protected — the model is provisioned by the same hash-and-probe path,
+runs in the same one-at-a-time worker, and cannot reach a network — but the sequence is
+broken, and pretending otherwise would make this document a worse guide than the code.
+
+What is **not** brought forward, and is structurally prevented from creeping in:
+
+* **Phase 5 diarization / Phase 6 voice identification.** No `speaker` column anywhere, and
+  `minute_items` has no foreign key to `participants`. A PIC is text the meeting said out
+  loud. Tests assert both.
+* **Phase 7 reconciliation.** Minutes are read-only; there is no editing surface.
+* **Phase 9 review and approval.** `minutes.status` has no `APPROVED` value, so nothing can
+  write one.
+
+The design is in ADR-0017 (engine and model) and ADR-0018 (pipeline, verifier, memory,
+export); the operator-facing guide is `docs/minutes-generation.md`.
+
 ## 4. Planned design for later phases
 
 Recorded here so the foundation is built to fit, and so nothing is scaffolded

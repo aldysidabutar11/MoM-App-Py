@@ -395,6 +395,102 @@ def build_parser() -> argparse.ArgumentParser:
     asr_revisions.add_argument("recording_uuid")
     asr_revisions.add_argument("--json", action="store_true")
 
+    # -- mom ---------------------------------------------------------------
+    mom = sub.add_parser(
+        "mom",
+        parents=[common],
+        help="Minutes of meeting: generate from a transcript, read, export.",
+        description=(
+            "Turns a completed transcript into a structured minute using the local "
+            "language model, then writes it to a document. Every point carries the "
+            "quotation and timestamp it came from, and a non-model verifier checks each "
+            "quotation against the transcript before it is stored. A missing model is "
+            "MODEL_UNAVAILABLE -- nothing is downloaded, ever."
+        ),
+    )
+    mom_sub = mom.add_subparsers(dest="mom_command", metavar="SUBCOMMAND")
+
+    mom_status = mom_sub.add_parser(
+        "status",
+        parents=[common],
+        help="What can be minuted right now, and why not. Loads no model.",
+    )
+    mom_status.add_argument("--json", action="store_true")
+
+    mom_generate = mom_sub.add_parser(
+        "generate",
+        parents=[common],
+        help="Generate the minute for one recording's active transcript.",
+        description=(
+            "Splits the transcript into overlapping windows, extracts grounded points "
+            "from each in a short-lived worker process, verifies every quotation "
+            "against the transcript without using a model, merges duplicates, and "
+            "writes a new minute revision. Refused while a recording is live; a "
+            "recording is never refused because this is running."
+        ),
+    )
+    mom_generate.add_argument("recording_uuid", help="Recording UUID to minute.")
+    mom_generate.add_argument("--json", action="store_true")
+    mom_generate.add_argument(
+        "--export",
+        action="append",
+        choices=["docx", "markdown", "html", "txt", "none"],
+        default=None,
+        help=(
+            "Format to write, repeatable. Defaults to [mom].default_export_formats. "
+            "`none` generates the minute without writing a file."
+        ),
+    )
+    mom_generate.add_argument(
+        "--hide-unverified",
+        action="store_true",
+        help=(
+            "Leave points whose quotation could not be located out of the exported "
+            "document. They stay in the database, and the document still reports how "
+            "many were left out."
+        ),
+    )
+
+    mom_show = mom_sub.add_parser(
+        "show",
+        parents=[common],
+        help="Show a stored minute. Loads no model and generates nothing.",
+    )
+    mom_show.add_argument("recording_uuid")
+    mom_show.add_argument("--json", action="store_true")
+    mom_show.add_argument(
+        "--revision", type=int, default=None, help="Defaults to the active revision."
+    )
+    mom_show.add_argument(
+        "--unverified",
+        action="store_true",
+        help="Show only the points whose quotation could not be located.",
+    )
+
+    mom_export = mom_sub.add_parser(
+        "export",
+        parents=[common],
+        help="Write an existing minute to a document. Loads no model.",
+    )
+    mom_export.add_argument("recording_uuid")
+    mom_export.add_argument(
+        "--format",
+        choices=["docx", "markdown", "html", "txt"],
+        default="docx",
+        help="Default docx, which is what the document will be edited in.",
+    )
+    mom_export.add_argument("--revision", type=int, default=None)
+    mom_export.add_argument("--hide-unverified", action="store_true")
+    mom_export.add_argument("--json", action="store_true")
+
+    mom_revisions = mom_sub.add_parser(
+        "revisions",
+        parents=[common],
+        help="List every minute revision for a recording, newest first.",
+    )
+    mom_revisions.add_argument("recording_uuid")
+    mom_revisions.add_argument("--json", action="store_true")
+
     # -- participant -------------------------------------------------------
     participant = sub.add_parser(
         "participant",
@@ -1180,6 +1276,274 @@ def _voiceprint_store(config, paths):
         )
 
     return VoiceprintStore(paths.voiceprints_dir, _connect)
+
+
+# ---------------------------------------------------------------------------
+# mom
+# ---------------------------------------------------------------------------
+
+
+def _mom_service(args: argparse.Namespace):
+    from mom_igd.db.connection import connect
+    from mom_igd.mom.service import MinutesService
+
+    config, paths = _asr_paths(args)
+
+    def _connect():
+        return connect(
+            paths.database_path(config.database.filename),
+            busy_timeout_ms=config.database.busy_timeout_ms,
+        )
+
+    return MinutesService(_connect, config=config, paths=paths), config, paths
+
+
+#: What the operator reads instead of the stored code.
+_VERIFICATION_LABEL = {
+    "VERIFIED": "terverifikasi",
+    "REBOUND": "dicari ulang",
+    "UNVERIFIED": "BELUM TERVERIFIKASI",
+}
+
+
+def _cmd_mom_status(args: argparse.Namespace) -> int:
+    service, _config, paths = _mom_service(args)
+    status = service.status()
+    rows = service.list_minuteable(limit=20)
+    if getattr(args, "json", False):
+        print(json.dumps({"status": status, "transcripts": rows}, indent=2, default=str))
+        return EXIT_OK
+
+    ready = (
+        f"{status['model_name']} (ready)" if status["model_ready"] else "NOT PROVISIONED"
+    )
+    print(f"Model store        : {paths.models_dir}")
+    print(f"Minutes model      : {ready}")
+    if not status["model_ready"]:
+        print("                     Provision once, with network access:")
+        print("                       python -m mom_igd asr provision mom-llm")
+    print(f"Minutes enabled    : {status['enabled']}")
+    print(f"Running now        : {status['current_recording'] or 'no'}")
+    print(f"Capture in progress: {status['active_capture'] or 'no'}")
+    print()
+    if not rows:
+        print("No completed transcript yet. Record a meeting, then `asr transcribe` it.")
+        return EXIT_OK
+    print("Transcripts that could be minuted (newest first):")
+    for row in rows:
+        mark = "  " if row["eligible"] else "x "
+        minute = (
+            f"minute rev {row['minute_revision']} ({row['item_count']} item(s), "
+            f"{row['unverified_count']} unverified)"
+            if row["minute_id"]
+            else "no minute yet"
+        )
+        print(f"{mark}{row['recording_uuid']}  {row['meeting_title'] or '(untitled)'}")
+        print(
+            f"    transcript rev {row['revision']}, {row['segment_count']} segment(s)"
+            f" -- {minute}"
+        )
+        if row["reason"]:
+            print(f"    not eligible: {row['reason']}")
+    return EXIT_OK
+
+
+def _cmd_mom_generate(args: argparse.Namespace) -> int:
+    from mom_igd.mom.service import MinutesServiceError
+
+    service, config, _paths = _mom_service(args)
+    status = service.status()
+    if not status["model_ready"]:
+        print(
+            "MODEL_UNAVAILABLE: no minutes model is provisioned and probe-passed.\n"
+            "  Provision one with: python -m mom_igd asr provision mom-llm\n"
+            "  Minutes generation never downloads a model by itself, and never falls\n"
+            "  back to a different one.",
+            file=sys.stderr,
+        )
+        return EXIT_FAILURE
+
+    chosen = args.export
+    if chosen is None:
+        formats = tuple(config.mom.default_export_formats)
+    elif "none" in chosen:
+        formats = ()
+    else:
+        formats = tuple(dict.fromkeys(chosen))
+
+    try:
+        result = service.generate(
+            args.recording_uuid,
+            progress=lambda message: print(f"  {message}", flush=True),
+            export_formats=formats,
+            include_unverified=not bool(args.hide_unverified),
+        )
+    except MinutesServiceError as exc:
+        print(f"Refused: {exc}", file=sys.stderr)
+        return EXIT_FAILURE
+    except Exception as exc:  # noqa: BLE001 - pipeline errors carry their own reason code
+        print(f"Minutes FAILED: {exc}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    payload = result.to_dict()
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2))
+        return EXIT_OK
+
+    print()
+    for stage in result.stages:
+        print(f"[{'ok  ' if stage['ok'] else 'FAIL'}] {stage['name']}: {stage['detail']}")
+    print()
+    print(f"Minute revision {result.revision}: {result.title!r}")
+    print(
+        f"  {result.item_count} point(s): {result.verified_count} verified against the "
+        f"recording, {result.unverified_count} could not be verified"
+    )
+    if result.transcript_ms:
+        percent = 100.0 * result.covered_ms / result.transcript_ms
+        print(
+            f"  coverage: {percent:.0f}% of the transcript "
+            f"({result.covered_ms / 60000:.0f} of "
+            f"{result.transcript_ms / 60000:.0f} minutes)"
+        )
+    print(
+        f"  cost: {result.total_seconds:.0f}s wall, peak worker "
+        f"{payload['peak_rss_mib']} MiB"
+    )
+    for record in result.exports:
+        print(f"  wrote {record['format']}: {record['path']}")
+    for warning in result.warnings:
+        print(f"  WARNING {warning}")
+    if any(not stage["ok"] for stage in result.stages):
+        print(
+            "\n  The minute is saved. Only the document could not be written -- fix the "
+            "cause\n  and run `mom export`; there is no need to generate it again."
+        )
+    print()
+    print(
+        "This minute is a DRAFT. It was written by a language model and reviewed by "
+        "nobody."
+    )
+    print(
+        "Every point carries the quotation and timestamp it came from -- check the ones "
+        "marked unverified before the document is used or circulated."
+    )
+    return EXIT_OK
+
+
+def _cmd_mom_show(args: argparse.Namespace) -> int:
+    from mom_igd.mom.schema import kind_label
+    from mom_igd.mom.service import MinutesServiceError
+
+    service, _config, _paths = _mom_service(args)
+    try:
+        minute = service.get_minute(args.recording_uuid, revision=args.revision)
+    except MinutesServiceError as exc:
+        print(f"{exc}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    items = minute["items"]
+    if getattr(args, "unverified", False):
+        items = [item for item in items if item["verification"] == "UNVERIFIED"]
+
+    if getattr(args, "json", False):
+        print(json.dumps({**minute, "items": items}, indent=2, default=str))
+        return EXIT_OK
+
+    print(minute["title"])
+    print(
+        f"revisi {minute['revision']}  status {minute['status']}  "
+        f"{minute['item_count']} poin  "
+        f"{minute['unverified_count']} belum terverifikasi"
+    )
+    print()
+    if minute["summary"]:
+        print("Ringkasan:")
+        for line in minute["summary"]:
+            print(f"  - {line}")
+        print()
+    current = None
+    for item in items:
+        if item["kind"] != current:
+            current = item["kind"]
+            print(f"{kind_label(current)}:")
+        stamp = (
+            _format_stamp(item["start_ms"])
+            if item["start_ms"] is not None
+            else "--:--:--"
+        )
+        detail = []
+        if item["owner"]:
+            detail.append(f"PIC {item['owner']}")
+        if item["due_text"]:
+            detail.append(f"tenggat {item['due_text']}")
+        detail.append(_VERIFICATION_LABEL.get(item["verification"], item["verification"]))
+        print(f"  [{stamp}] {item['text']}")
+        print(f"      ({'; '.join(detail)})")
+        print(f"      kutipan: “{item['quote']}”")
+    if not items:
+        print("(tidak ada poin yang cocok)")
+    print()
+    for warning in minute["warnings"]:
+        print(f"WARNING {warning}")
+    for record in minute["exports"]:
+        print(f"diekspor: {record['format']} -> {record['relative_path']}")
+    return EXIT_OK
+
+
+def _cmd_mom_export(args: argparse.Namespace) -> int:
+    from mom_igd.mom.service import MinutesServiceError
+
+    service, _config, _paths = _mom_service(args)
+    try:
+        record = service.export(
+            args.recording_uuid,
+            export_format=args.format,
+            revision=args.revision,
+            include_unverified=not bool(args.hide_unverified),
+        )
+    except MinutesServiceError as exc:
+        print(f"{exc}", file=sys.stderr)
+        return EXIT_FAILURE
+    except Exception as exc:  # noqa: BLE001 - the message already names its own reason
+        print(f"{exc}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    if getattr(args, "json", False):
+        print(json.dumps(record, indent=2))
+        return EXIT_OK
+    print(f"Wrote {record['format']}: {record['path']}")
+    print(f"  {record['size_bytes']} bytes, sha256 {record['sha256'][:16]}...")
+    if record["included_unverified"]:
+        print(
+            "  This document contains point(s) whose quotation could not be located in "
+            "the recording."
+        )
+        print("  They are marked in the document.")
+    return EXIT_OK
+
+
+def _cmd_mom_revisions(args: argparse.Namespace) -> int:
+    service, _config, _paths = _mom_service(args)
+    rows = service.list_revisions(args.recording_uuid)
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2, default=str))
+        return EXIT_OK
+    if not rows:
+        print(f"No minute has been generated for {args.recording_uuid}.")
+        return EXIT_OK
+    for row in rows:
+        mark = "*" if row["is_active"] else " "
+        print(
+            f"{mark} rev {row['revision']:<3} {row['status']:<10} "
+            f"{row['item_count']:>3} poin  "
+            f"{row['unverified_count']:>3} belum terverifikasi  {row['created_at']}"
+        )
+        if row["last_error"]:
+            print(f"      error: {row['last_error']}")
+    print()
+    print("* = revisi aktif")
+    return EXIT_OK
 
 
 def _cmd_participant_list(args: argparse.Namespace) -> int:
@@ -2139,6 +2503,11 @@ _DISPATCH: dict[tuple[str, str | None], Any] = {
     ("asr", "transcribe"): _cmd_asr_transcribe,
     ("asr", "transcript"): _cmd_asr_transcript,
     ("asr", "revisions"): _cmd_asr_revisions,
+    ("mom", "status"): _cmd_mom_status,
+    ("mom", "generate"): _cmd_mom_generate,
+    ("mom", "show"): _cmd_mom_show,
+    ("mom", "export"): _cmd_mom_export,
+    ("mom", "revisions"): _cmd_mom_revisions,
     ("participant", "list"): _cmd_participant_list,
     ("participant", "create"): _cmd_participant_create,
     ("participant", "update"): _cmd_participant_update,
@@ -2175,9 +2544,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         sub_name = getattr(args, "participant_command", None)
     elif args.command == "asr":
         sub_name = getattr(args, "asr_command", None)
+    elif args.command == "mom":
+        sub_name = getattr(args, "mom_command", None)
 
     if (
-        args.command in {"db", "config", "registry", "audio", "participant", "asr"}
+        args.command in {"db", "config", "registry", "audio", "participant", "asr", "mom"}
         and not sub_name
     ):
         print(f"`{_PROG} {args.command}` requires a subcommand.", file=sys.stderr)

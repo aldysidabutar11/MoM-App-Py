@@ -300,6 +300,10 @@ class FasterWhisperProvider:
         self._model: Any = None
         self._info: AsrModelInfo | None = None
         self._load_seconds: float = 0.0
+        # One working copy, held across calls. The pipeline calls `transcribe` once per
+        # 30-second window, and re-reading the file each time cost 18 minutes of pure
+        # waste on a 90-minute meeting -- more than the decode itself. See `_audio_for`.
+        self._audio: _LoadedAudio | None = None
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -376,14 +380,44 @@ class FasterWhisperProvider:
         return self._info
 
     def close(self) -> None:
-        """Release the engine. Idempotent, and never raises.
+        """Release the engine and the audio. Idempotent, and never raises.
 
         Dropping the reference is what returns the memory; the worker process exits
         immediately afterwards, which is the actual guarantee that the operating
         system reclaims it.
         """
         self._model = None
+        self._audio = None
         self._load_seconds = 0.0
+
+    def _audio_for(self, path: Path) -> _LoadedAudio:
+        """The working copy, read from disk at most once per provider.
+
+        **Why this cache exists.** `transcribe` is called once per 30-second window, and
+        it used to read and convert the whole file on every call. Measured on a working
+        copy of a 90-minute meeting: 144 windows x 7.6 s = **18 minutes of pure waste**,
+        against a pass-1 decode of about 13 minutes -- the overhead was larger than the
+        work. It did not show up on the 24-second end-to-end test, which produces exactly
+        one window.
+
+        Keyed on the file's identity rather than only its path, so a cache can never
+        serve the wrong audio: that would produce a transcript which looks entirely
+        plausible and belongs to a different meeting.
+        """
+        fingerprint = _audio_fingerprint(path)
+        cached = self._audio
+        if cached is not None and cached.fingerprint == fingerprint:
+            return cached
+        # Release the previous array before allocating the next one. On a 2.5 GB budget
+        # holding two working copies at once is the difference between fitting and not.
+        self._audio = None
+        loaded = _load_working_copy(path, fingerprint=fingerprint)
+        self._audio = loaded
+        _LOG.info(
+            "asr.audio.loaded",
+            extra={"seconds": round(loaded.seconds, 1), "resident_mib": round(loaded.nbytes / (1 << 20), 1)},
+        )
+        return loaded
 
     def health(self) -> dict[str, Any]:
         """Readiness detail. No paths, no transcript, no key material."""
@@ -401,12 +435,13 @@ class FasterWhisperProvider:
     def transcribe(self, request: TranscriptionRequest) -> TranscriptionResult:
         """Transcribe the requested speech regions of a working copy.
 
-        **The audio is decoded once and then sliced.** An earlier version passed the file
-        path plus ``clip_timestamps`` once per region, which reads and converts the
-        *entire file* on every call: cost O(regions x duration). On a three-hour meeting
-        with several hundred regions that is hundreds of full-file decodes, and it does
-        not show up on a 24-second test. Decoding once into an array and slicing makes
-        the per-region cost proportional to the region.
+        **The audio is read once per provider and then sliced.** Two versions of this
+        were wrong. The first passed the file path plus ``clip_timestamps`` once per
+        region, so the library re-read the whole file every time. The second read it once
+        per ``transcribe`` call -- which the pipeline makes once per 30-second window, so
+        a 90-minute meeting still read the file 144 times. Both are O(windows x duration)
+        and neither shows up on a 24-second test, which produces one window. The working
+        copy is now held on the provider (:meth:`_audio_for`) for as long as it is needed.
 
         Regions are still decoded one at a time, which is deliberate -- it bounds peak
         memory inside the engine and gives cancellation a boundary to land on.
@@ -434,8 +469,8 @@ class FasterWhisperProvider:
         audio_seconds = 0.0
         next_index = 0
 
-        samples = _load_working_copy(audio_path)
-        total_seconds = len(samples) / WORKING_SAMPLE_RATE
+        audio = self._audio_for(audio_path)
+        total_seconds = audio.seconds
         windows: list[tuple[float, float, tuple[SpeechRegion, ...]]]
         if request.regions:
             windows = group_regions_into_windows(request.regions)
@@ -447,11 +482,10 @@ class FasterWhisperProvider:
         for start_raw, end_raw, covered in windows:
             start = max(0.0, min(start_raw, total_seconds))
             end = max(start, min(end_raw, total_seconds))
-            clip = samples[
-                int(round(start * WORKING_SAMPLE_RATE)) : int(
-                    round(end * WORKING_SAMPLE_RATE)
-                )
-            ]
+            clip = audio.window(
+                int(round(start * WORKING_SAMPLE_RATE)),
+                int(round(end * WORKING_SAMPLE_RATE)),
+            )
             if len(clip) == 0:
                 continue
             kwargs: dict[str, Any] = {
@@ -618,8 +652,60 @@ def _shift(value: Any, start: float, end: float) -> float:
     return max(start, min(moved, end))
 
 
-def _load_working_copy(path: Path):
-    """Read a 16 kHz mono PCM16 WAV into a float32 array, once per transcribe call.
+def _audio_fingerprint(path: Path) -> tuple[str, int, int]:
+    """Identity of the bytes on disk, so a cached array can never go stale.
+
+    Path alone would be enough given that a provider handles one file for its lifetime,
+    but a stale audio cache is the worst kind of bug available here -- it would transcribe
+    the wrong audio and produce a transcript that looks entirely plausible. Size and
+    modification time make that impossible for the cost of one ``stat``.
+    """
+    stat = path.stat()
+    return (str(path), stat.st_size, stat.st_mtime_ns)
+
+
+class _LoadedAudio:
+    """A working copy held in memory, sliced per window.
+
+    **Kept as int16 where the source allows it.** A three-hour working copy is 172 MB as
+    int16 and 345 MB as float32, and the pass-2 model already occupies 1.9 GB of the
+    2.5 GB budget -- so the smaller representation is what keeps a long meeting inside it.
+    The conversion the engine actually wants happens per window, on roughly 2 MB at a time,
+    which costs nothing measurable.
+    """
+
+    __slots__ = ("_samples", "_needs_scaling", "fingerprint")
+
+    def __init__(
+        self, samples: Any, *, needs_scaling: bool, fingerprint: tuple[str, int, int]
+    ) -> None:
+        self._samples = samples
+        self._needs_scaling = needs_scaling
+        self.fingerprint = fingerprint
+
+    def __len__(self) -> int:
+        return int(len(self._samples))
+
+    @property
+    def seconds(self) -> float:
+        return len(self._samples) / WORKING_SAMPLE_RATE
+
+    @property
+    def nbytes(self) -> int:
+        return int(getattr(self._samples, "nbytes", 0))
+
+    def window(self, start_frame: int, end_frame: int) -> Any:
+        """The float32 samples for one window. A view where possible, a copy where not."""
+        clip = self._samples[start_frame:end_frame]
+        if not self._needs_scaling:
+            return clip
+        import numpy as np
+
+        return clip.astype(np.float32) / 32768.0
+
+
+def _load_working_copy(path: Path, *, fingerprint: tuple[str, int, int]) -> _LoadedAudio:
+    """Read a 16 kHz mono PCM16 WAV into memory.
 
     Read directly rather than through ``faster_whisper.decode_audio``: the working copy's
     format is fixed by the normalisation stage and enforced by a database CHECK, so there
@@ -628,7 +714,8 @@ def _load_working_copy(path: Path):
     the working copy, and about 20x faster.
 
     Anything that is *not* a working copy falls back to the library, so the benchmark can
-    still be pointed at a corpus file in another format.
+    still be pointed at a corpus file in another format. That path already yields float32
+    and is left alone.
     """
     import wave
 
@@ -642,13 +729,21 @@ def _load_working_copy(path: Path):
                 and handle.getframerate() == WORKING_SAMPLE_RATE
             ):
                 raw = handle.readframes(handle.getnframes())
-                return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+                return _LoadedAudio(
+                    np.frombuffer(raw, dtype="<i2"),
+                    needs_scaling=True,
+                    fingerprint=fingerprint,
+                )
     except (wave.Error, EOFError, OSError):
         pass
 
     from faster_whisper import decode_audio
 
-    return decode_audio(str(path), sampling_rate=WORKING_SAMPLE_RATE)
+    return _LoadedAudio(
+        decode_audio(str(path), sampling_rate=WORKING_SAMPLE_RATE),
+        needs_scaling=False,
+        fingerprint=fingerprint,
+    )
 
 
 def _optional_float(value: Any) -> float | None:

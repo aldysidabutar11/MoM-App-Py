@@ -1435,8 +1435,12 @@ def test_the_phase_5_and_later_stacks_are_still_absent() -> None:
     """Named explicitly, so graduating one by accident is visible."""
     import importlib.util
 
+    # `llama_cpp` left this list when minutes generation landed: it is a declared, pinned
+    # runtime dependency now, exactly as `faster_whisper` was in Phase 4.
+    # `transformers` and `sentence_transformers` stay, because either would drag `torch`
+    # in behind it.
     for name in ("torch", "torchaudio", "pyannote", "speechbrain", "transformers",
-                 "sentence_transformers", "llama_cpp", "openvino"):
+                 "sentence_transformers", "openvino"):
         assert importlib.util.find_spec(name) is None, (
             f"{name} belongs to a later phase and must not be installed yet"
         )

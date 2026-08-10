@@ -18,9 +18,9 @@
 #
 # Hash-pinned offline wheelhouse creation is deferred to Phase 11.
 # ---------------------------------------------------------------------------
-# DIRECT (8): fastapi, uvicorn, psutil, pywebview, sounddevice, cryptography,
-#            faster-whisper, av
-# Everything else below is a transitive dependency of those eight.
+# DIRECT (9): fastapi, uvicorn, psutil, pywebview, sounddevice, cryptography,
+#            faster-whisper, av, llama-cpp-python
+# Everything else below is a transitive dependency of those nine.
 #
 # `sounddevice` arrived with Phase 2 (offline audio capture). It is the only
 # audio dependency: it wraps PortAudio/WASAPI for input, and `RawInputStream`
@@ -58,14 +58,38 @@
 #     ONLY by the explicit `asr provision` command. A test asserts no runtime code
 #     path imports it, and no model is ever fetched implicitly.
 #
+# `llama-cpp-python` arrived with minutes generation. Notes:
+#   - it is NOT on PyPI for win_amd64. `pip install llama-cpp-python` reports
+#     "from versions: none" and, with a source fallback, would demand MSVC. The line
+#     below therefore pins the maintainer's own release wheel by **direct URL and
+#     SHA-256**, so `pip install -r requirements.txt` works unchanged on a fresh clone.
+#
+#     A direct URL rather than `--extra-index-url`: an extra index applies to EVERY
+#     package in the file, so a name-squatted build on that index could shadow a PyPI
+#     package. Pinning one URL scopes the exposure to one artefact, and the hash means
+#     even that artefact cannot change under us.
+#
+#     The hash was verified against the wheel actually tested on this machine. It is a
+#     CPU-only build; never substitute a cuXXX variant, because the target GPU is an
+#     Intel Iris Xe and there is no CUDA on the production device;
+#   - it is chosen over the CTranslate2 stack already present because converting a
+#     model for CTranslate2 needs `transformers` AND `torch`, both multi-gigabyte and
+#     both still deferred. GGUF is distributed ready to run;
+#   - it makes no network call. `assert_llm_offline_environment()` sets the offline
+#     flags by assignment and deletes any inherited Hugging Face token;
+#   - `diskcache` and `jinja2` are its declared dependencies. `jinja2` renders the
+#     chat template that is embedded in the GGUF itself -- a local string, never a
+#     fetched template.
+#
 # MODEL BINARIES ARE NOT DEPENDENCIES. They live under <data_root>/models,
 # are provisioned by an explicit command, are hash-verified before promotion, and
 # are never committed. A missing model fails closed as MODEL_UNAVAILABLE.
 #
 # Deliberately ABSENT and forbidden:
 #   - any cloud SDK (google-genai, openai, anthropic, boto3, azure-*, ...)
-#   - torch, pyannote.audio, speechbrain (Phase 5); llama-cpp-python,
-#     transformers, sentence-transformers (Phase 8)
+#   - torch, pyannote.audio, speechbrain (Phase 5); transformers,
+#     sentence-transformers (never needed: GGUF runs through llama.cpp, and either
+#     one would pull torch in)
 #   - openvino, optimum-intel, onnxruntime-openvino/-gpu/-directml: RULED OUT on
 #     measured evidence, not merely deferred (ADR-0014)
 #   - soundfile, librosa, pyaudio, soxr, webrtcvad, silero-vad
@@ -77,6 +101,16 @@ av==15.1.0
 cryptography==49.0.0
 fastapi==0.140.7
 faster-whisper==1.2.1
+# Not on PyPI for this platform. Pinned by direct URL -- see the note above.
+#
+# Expected SHA-256 of that wheel, verified against the build actually tested here:
+#   6526fff614e5ef7e439e6369e076a78073e45e1d791dbe1d5e5d42661f46ca1a
+#
+# Recorded as a comment rather than a `--hash=` because pip switches on
+# --require-hashes for EVERY requirement as soon as one carries a hash, and hash
+# pinning the whole closure is Phase 11's offline-wheelhouse work. Verify by hand:
+#   (Get-FileHash <wheel> -Algorithm SHA256).Hash
+llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34/llama_cpp_python-0.3.34-py3-none-win_amd64.whl
 psutil==7.2.2
 pywebview==5.4
 sounddevice==0.5.5
@@ -109,6 +143,13 @@ clr-loader==0.3.1
 proxy-tools==0.1.0
 pycparser==3.0
 pythonnet==3.1.0
+
+# --- transitive: llama-cpp-python -----------------------------------------
+# `jinja2` renders the chat template embedded in the GGUF file itself. It is a
+# local string; nothing here loads a template over a network.
+diskcache==5.6.3
+jinja2==3.1.6
+markupsafe==3.0.3
 
 # --- transitive: faster-whisper -> ctranslate2 / tokenizers / onnxruntime ---
 # ctranslate2 bundles the CPU kernels (oneDNN/oneMKL) inside its wheel, so there

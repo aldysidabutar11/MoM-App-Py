@@ -79,6 +79,33 @@ command rather than offering a download button.
 
 ---
 
+## 2b. How long a real meeting takes
+
+A **projection from measured components**, not one measured end-to-end run — the longest
+real recording put through this pipeline so far is 24 seconds. Assumes 80 % speech, which
+is high for a meeting.
+
+| Stage | Rate | 60 min | 90 min |
+|---|---|--:|--:|
+| Normalise to the working copy | 0.022 × realtime, measured | 1.3 min | 2.0 min |
+| Voice activity detection | 0.003 × realtime, measured | 0.2 min | 0.3 min |
+| Read the working copy (once per pass) | 7.6 s per read, measured | 0.2 min | 0.3 min |
+| Pass 1 | RTF 0.142, measured | 8.5 min | 12.8 min |
+| Pass 2 (25 % budget) | RTF 0.284, measured | 3.4 min | 5.1 min |
+| **Total** | | **~14 min** | **~20 min** |
+
+So a 90-minute meeting is a coffee break, not an overnight job — the roadmap's original
+"record today, review tomorrow" expectation is more pessimistic than the measurements.
+
+Two caveats. Every rate above was measured on **synthetic** audio; real speech has a
+different segment density and may fall back differently, so treat these as the right order
+of magnitude rather than a promise. And before the audio-read fix the same 90-minute meeting
+would have spent an **extra 18 minutes** re-reading its own working copy 144 times — the
+kind of cost that only appears at length, which is why the numbers above are worth
+re-measuring against the first real long recording.
+
+---
+
 ## 3. Configuration
 
 `[asr]` in `config/default.toml`. Every default was **measured** on the target device

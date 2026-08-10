@@ -57,9 +57,32 @@ reading it.**
 | A covered region called empty | With batched windows one long segment spans several regions; the others had nothing *attributed* though there was text over them. 9 of 10 flagged falsely | reading the stored reason codes |
 | One over-budget region blocked the pass | A 6.0 s region against a 5.3 s budget meant **nothing at all** was re-transcribed, with 9 smaller flagged regions waiting behind it | `PASS2_NOTHING_FLAGGED` appearing when 10 regions were flagged |
 | Full-file decode per region | `model.transcribe(path, clip_timestamps=…)` re-reads and re-converts the whole file every call: O(regions × duration). Invisible on a 24 s test, catastrophic on 3 hours | reading the library's behaviour after the RTF measurement |
+| **The same defect, one level up** | The fix above was applied *inside* `transcribe` — and the pipeline calls `transcribe` once per 30-second window. A 90-minute meeting still read the file **144 times**: 7.6 s each, **18.2 minutes of waste against a 13-minute decode.** The overhead was larger than the work | an audit measurement, after the phase was already "complete" |
 
 After the fixes: **RTF 3.02 → 0.31**, peak worker **1 577 → 592 MiB**, and the flagged list
 went from 10 false entries to 1 true one.
+
+**The 144-reads defect is worth dwelling on.** It is the third version of the same mistake,
+it was introduced *by the fix for the second*, and it survived a full phase gate — 2 263
+tests, a real-model end-to-end run and an operator handoff — because every one of those
+exercises a recording short enough to produce a single window. The property that catches it
+is "how many times was the file read", and no test asserted that until now. There is now a
+test file for exactly this (`test_asr_audio_windowing.py`, 26 tests), and it also covers
+`group_regions_into_windows` and `attribute_to_region`, which carried the RTF 2.8 → 0.31 fix
+and had **no tests at all**.
+
+Measured after the fix, on a working copy the size of a 90-minute meeting:
+
+| | Before | After |
+|---|--:|--:|
+| Reads of the working copy | 144 | **1** |
+| Time spent reading | 18.2 min | **0.1 min** |
+| Resident audio | 345 MB float32 | **165 MB int16** |
+
+The audio is now held on the provider and converted to float32 one window at a time. The
+int16 storage matters on the budget: the pass-2 model peaks at 1 910 MiB, so 165 MB brings a
+90-minute meeting to about 2.03 GiB against the 2.5 GB limit, where float32 would have made
+it 2.20 GiB.
 
 ### Found by writing a test that could fail
 
@@ -166,7 +189,7 @@ re-deriving either.
 
 ## 4. Test suite
 
-**2 263 passed, 0 failed.** Coverage **84 %** (coverage.py headline; 86.6 % of statements executed). See the reconciliation below.
+**2 289 passed, 0 failed.** Coverage **84 %** (coverage.py headline; 86.6 % of statements executed). See the reconciliation below.
 
 New Phase 4 test files: `test_asr_provisioning.py` (39) · `test_asr_provider.py` (49) ·
 `test_asr_offline.py` (22) · `test_asr_vad.py` (27) · `test_asr_worker.py` (30) ·

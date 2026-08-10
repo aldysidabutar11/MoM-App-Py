@@ -68,7 +68,16 @@ def _tone_wav(path: Path, seconds: float = 1.0, rate: int = 16_000) -> Path:
 
 def test_the_task_registry_is_closed_and_named() -> None:
     """The parent sends a task *name*. Arbitrary code is not runnable in a worker."""
-    assert set(TASK_REGISTRY) == {"transcribe", "vad", "probe_model", "probe_directory"}
+    assert set(TASK_REGISTRY) == {
+        "transcribe",
+        "vad",
+        "probe_model",
+        "probe_directory",
+        # The worker is shared: the minutes stage runs its language model through the
+        # same spawn-load-answer-exit machinery rather than growing a second one.
+        "probe_llm",
+        "mom_generate",
+    }
     for name, handler in TASK_REGISTRY.items():
         assert callable(handler), name
 

@@ -20,7 +20,7 @@
 # A `local.toml` that omits this key, or omits [participants] entirely, keeps
 # working: every key in that section has a default, so the bump resets nothing an
 # operator has already configured.
-config_schema_version = 4
+config_schema_version = 6
 
 # Runtime mode. Only "offline" is supported: there is no cloud or hybrid mode
 # and no cloud fallback (ADR-0002).
@@ -256,6 +256,79 @@ glossary_enabled = true
 glossary_filename = "glossary.id-en.toml"
 
 worker_timeout_seconds = 10800.0
+
+# ---------------------------------------------------------------------------
+# [mom] -- minutes generation
+#
+# Measured on the target device, and machine-specific in the same way as [asr].
+# Nothing here selects or locates a model: the model is resolved from the installed
+# registry, which only holds artefacts that passed a load-and-decode probe.
+# ---------------------------------------------------------------------------
+[mom]
+enabled = true
+language = "id"
+
+# The window handed to the model, and the setting with the largest effect on run
+# time. A window is this minus a fixed 3448-token reserve, so lowering it attacks the
+# remainder. For a 90-minute meeting: 8192 -> 9 windows, ~18 min; 6144 -> 17 windows,
+# ~32 min; 4096 -> 81 windows, over 2 hours. KV cache is 1152 / 864 / 576 MiB.
+# The configured minimum is 6144.
+context_tokens = 8192
+threads = 12
+
+# Prompt-evaluation batch. 512 costs 563 MiB of compute buffer and 256 costs 281 MiB,
+# for no measurable difference in throughput.
+batch_tokens = 256
+
+# How much of each window the next one repeats, so a decision stated across a cut is
+# seen by both sides. Duplicates are merged afterwards; an omission could not be.
+overlap_ms = 15000
+
+# Whether an exported document carries items whose quote could not be located in the
+# recording. True by default: hiding them would make the document look cleaner than
+# the evidence behind it. The count is printed either way.
+include_unverified_in_exports = true
+
+# What `mom generate` writes without being asked.
+default_export_formats = ["docx"]
+
+worker_timeout_seconds = 7200.0
+
+# ---------------------------------------------------------------------------
+# [mom.document] -- how the exported document looks.
+#
+# Presentation only. Nothing here changes what is extracted, what is verified or
+# what is stored. The draft banner and the per-item verification marks are NOT
+# configurable: they are the part of the document that protects the reader.
+# ---------------------------------------------------------------------------
+[mom.document]
+# Letterhead. Leave `organisation` empty for no letterhead at all.
+organisation = ""
+organisation_subtitle = ""
+
+# A bare filename inside <data_root>/branding -- PNG or JPEG. A path is refused;
+# a configured string is still input from outside the code. Missing or unreadable
+# is not an error: the letterhead falls back to text, because an export must not
+# fail over a moved logo.
+logo_filename = ""
+
+# The filing reference, assigned once when a minute first becomes a draft and
+# inherited by every later revision of the same transcript. Placeholders:
+# {year} {month} {day} {seq}. The sequence restarts each month.
+# Set to "" to switch filing references off.
+document_number_format = "NOT/{year}/{month}/{seq:03d}"
+
+# City above the signatures: "Jakarta, 10 Agustus 2026". The date comes from the
+# meeting's own schedule, never from the clock. Empty leaves the line out.
+place = ""
+
+# Signature columns, left blank for a human to sign by hand. The application
+# signs nothing and approves nothing -- approval is Phase 9.
+show_signature_block = true
+signature_roles = ["Notulis", "Pemimpin Rapat", "Mengetahui"]
+
+# Extra line in the page footer, e.g. a confidentiality marking.
+footer_note = ""
 
 [providers]
 

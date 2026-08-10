@@ -190,6 +190,11 @@ def test_the_shell_proxy_allowlist_is_closed() -> None:
             "/asr/models",
             "/asr/recordings",
             "/asr/preflight",
+            # Minutes, read-only. Both read the readiness index; neither can
+            # cause a download, and `/mom/transcripts` is what the operator
+            # picks from instead of typing a UUID.
+            "/mom/status",
+            "/mom/transcripts",
         }
     )
     assert "/openapi.json" not in ALLOWED_PROXY_PATHS
@@ -296,9 +301,16 @@ def test_future_features_are_shown_as_not_implemented(sources: dict[str, str]) -
     )
     enabled = html.count("feature-card-enabled")
     assert enabled == html.count("phase-tag-live") == html.count("Tersedia")
-    for panel in ('id="card-recording"', 'id="card-participants"', 'id="card-transcription"'):
+    for panel in (
+        'id="card-recording"',
+        'id="card-participants"',
+        'id="card-transcription"',
+        'id="card-mom"',
+    ):
         assert panel in html, f"{panel} is implemented and must be enabled"
-    assert enabled == 3, "Recording, Participants and Transcription are live"
+    assert enabled == 4, (
+        "Recording, Participants, Transcription and Minutes are live"
+    )
 
 
 def test_offline_mode_is_displayed(sources: dict[str, str]) -> None:

@@ -56,7 +56,16 @@ PHASE_4_TABLES = {
     "transcript_words",
 }
 
-HEAD_TABLES = PHASE_1_AND_2_TABLES | PHASE_3_TABLES | PHASE_4_TABLES
+# Minutes: the last link of the evidence chain (migration 0006). Still no speaker column
+# -- an owner here is a name the transcript said out loud, never an inference about who
+# was talking. Diarization is Phase 5 and voice identification is Phase 6.
+MINUTES_TABLES = {
+    "minutes",
+    "minute_items",
+    "minute_exports",
+}
+
+HEAD_TABLES = PHASE_1_AND_2_TABLES | PHASE_3_TABLES | PHASE_4_TABLES | MINUTES_TABLES
 
 MIGRATION_0001_SHA256 = "f1426fa94b8ae90e4c0b646c0f132ac4a483525165675c947649cad124e89796"
 MIGRATION_0002_SHA256 = "8d42086530a4560d28ca5cfd2707b5402c1b2872fea02a49ce3768106f570ded"

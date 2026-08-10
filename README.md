@@ -10,6 +10,13 @@ cloud API, no CUDA, no Docker in production.
 > normalisation, and transcript revisions with word timings — all on this machine, with
 > no network access and no model download outside one deliberate `asr provision` command.
 >
+> **Minutes generation and export are implemented too.** A completed transcript becomes a
+> structured draft minute — decisions, action items, discussion points, open issues —
+> each carrying the timestamp and the verbatim quotation it came from, checked against
+> the transcript by a verifier that **uses no model**. Exported to Word, HTML, Markdown or
+> plain text. A person's name appears as a PIC only if the recording actually says it,
+> and no point is attributed to a speaker, because this build does not identify voices.
+>
 > The build still reports `phase: 3` on purpose. Advancing it changes what `doctor` calls
 > a FAIL, and **transcription accuracy has not been measured**: no reference transcript
 > exists on this machine, and accuracy is never derived from the model's own output.
@@ -35,6 +42,50 @@ cloud API, no CUDA, no Docker in production.
 Heavy AI processing happens *after* the meeting, one model at a time, in a
 short-lived worker process. During a meeting the device only does lightweight
 work. See [`docs/architecture.md`](docs/architecture.md).
+
+---
+
+## Quick start (fresh clone)
+
+Five steps. Everything after step 3 is offline; step 3 and step 4 are the only ones that
+use the network, and step 4 is the only thing in the entire application that downloads a
+model.
+
+```powershell
+# 1. clone
+git clone https://github.com/aldysidabutar11/MoM-App-Py.git
+cd MoM-App-Py
+
+# 2. virtual environment (official Python 3.12 -- see below if you do not have it)
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe --version          # expect Python 3.12.x
+
+# 3. dependencies (needs internet, once)
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+
+# 4. choose a data root, create the database, fetch the models (~4.3 GiB, once)
+$env:MOM_IGD_DATA_DIR = "D:\MoM-IGD-Data"
+.\.venv\Scripts\python.exe -m mom_igd db init
+.\.venv\Scripts\python.exe -m mom_igd asr provision all       # transcription models
+.\.venv\Scripts\python.exe -m mom_igd asr provision mom-llm   # minutes model
+
+# 5. check, then open the app
+.\.venv\Scripts\python.exe -m mom_igd doctor                  # must report 0 FAIL
+.\.venv\Scripts\python.exe -m mom_igd shell
+```
+
+Then: record → transcribe → minute → open the `.docx`. The operator guide is
+[`docs/minutes-generation.md`](docs/minutes-generation.md).
+
+**The runtime data root lives outside the repository.** `MOM_IGD_DATA_DIR` (or
+`--data-dir` on any command) decides where recordings, models, the database and exported
+documents go. Nothing of that is ever committed.
+
+Before running the suite, note that it refuses to touch `D:\MoM-IGD-Data`: a session
+fixture fails the run if the real data root is written to, so tests use temporary
+directories only.
 
 ---
 
@@ -80,13 +131,22 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 ```
 
-Both lock files pin exact versions. `requirements.txt` is the runtime closure with eight
+Both lock files pin exact versions. `requirements.txt` is the runtime closure with nine
 direct dependencies: `fastapi`, `uvicorn`, `psutil`, `pywebview`, `sounddevice`,
-`cryptography` (Phase 3) and `faster-whisper` + `av` (Phase 4). `requirements-dev.txt`
-adds `pytest`, `pytest-cov`, `pytest-timeout`, `httpx` and `huggingface-hub` — the last of
-those is used **only** by `asr provision` and by nothing on a runtime path. Instructions
-for refreshing them are in the header of each file. A hash-pinned offline wheelhouse is
-deferred to Phase 11.
+`cryptography` (Phase 3), `faster-whisper` + `av` (Phase 4) and `llama-cpp-python`
+(minutes). `requirements-dev.txt` adds `pytest`, `pytest-cov`, `pytest-timeout`, `httpx`
+and `huggingface-hub` — the last of those is used **only** by `asr provision` and by
+nothing on a runtime path. Instructions for refreshing them are in the header of each
+file. A hash-pinned offline wheelhouse is deferred to Phase 11.
+
+**`llama-cpp-python` is pinned by direct URL, not by `==`.** There is no PyPI wheel for
+`win_amd64`, so `pip install llama-cpp-python` answers *"from versions: none"* and a source
+build would demand MSVC. The requirement therefore names the maintainer's own GitHub
+release wheel, which is a *tighter* pin than a version: it identifies one artefact rather
+than a version an index resolves. The expected SHA-256 sits in a comment beside it, with
+the command to check it — pip cannot enforce a single hash without switching the whole
+file into `--require-hashes` mode, and that is Phase 11's work. Never substitute a `cuXXX`
+build: the target GPU is an Intel Iris Xe and there is no CUDA on the production device.
 
 `sounddevice` arrived with Phase 2 and bundles PortAudio V19.7 — a self-contained
 DLL in the wheel, no system-wide install, no driver, no service. It is imported
@@ -107,6 +167,23 @@ that nothing under `mom_igd/audio/` imports it.
 **Nothing else may be installed.** No cloud SDK, no `torch`, no `onnxruntime-gpu`, no
 hosted-inference client. `tests/test_offline_policy.py` fails the build if one appears, and
 `mom_igd/offline_policy.py` holds the denylist.
+
+### 4. Models (one download, ~4.3 GiB)
+
+Model weights are **not** dependencies and are never committed. They are fetched by the one
+command in this application permitted to use the network, hash-verified against a manifest,
+promoted atomically, and then **load-probed** — a file that hashes correctly but cannot
+actually decode is not recorded as ready.
+
+```powershell
+.\.venv\Scripts\python.exe -m mom_igd asr provision all       # 464 MiB + 1547 MiB
+.\.venv\Scripts\python.exe -m mom_igd asr provision mom-llm   # 2382 MiB
+.\.venv\Scripts\python.exe -m mom_igd asr models              # what is ready
+.\.venv\Scripts\python.exe -m mom_igd asr verify              # re-hash every byte
+```
+
+Nothing else downloads, ever. A missing model is `MODEL_UNAVAILABLE` — never a silent
+fetch, and never a fall back to whichever other model happens to be present.
 
 ---
 
@@ -158,6 +235,15 @@ even when every future-phase dependency is missing.
 .\.venv\Scripts\python.exe -m mom_igd asr transcript UUID --flagged   # why pass 2 ran
 .\.venv\Scripts\python.exe -m mom_igd asr revisions UUID
 .\.venv\Scripts\python.exe -m mom_igd asr bench --manifest FILE.json --validate-only
+
+# minutes of meeting
+.\.venv\Scripts\python.exe -m mom_igd asr provision mom-llm  # DOWNLOADS 2.33 GiB; run once
+.\.venv\Scripts\python.exe -m mom_igd mom status             # what can be minuted, and why not
+.\.venv\Scripts\python.exe -m mom_igd mom generate UUID --export docx
+.\.venv\Scripts\python.exe -m mom_igd mom show UUID          # read it back; loads no model
+.\.venv\Scripts\python.exe -m mom_igd mom show UUID --unverified   # only the doubtful points
+.\.venv\Scripts\python.exe -m mom_igd mom export UUID --format html
+.\.venv\Scripts\python.exe -m mom_igd mom revisions UUID
 
 # one-command readiness check before a manual acceptance test (read-only)
 powershell -ExecutionPolicy Bypass -File .\scripts\phase4_acceptance_preflight.ps1
@@ -276,7 +362,7 @@ D:\MoM-IGD-Data\            <- default; override with MOM_IGD_DATA_DIR
 │                 manifest.jsonl        append-only, one line per chunk
 │                 manifest.json         summary + hash chain
 │                 quarantine\           evidence, never deleted
-├─ exports\     generated MoM documents            (Phase 10)
+├─ exports\     generated MoM documents (.docx/.html/.md/.txt), named by meeting UUID
 ├─ logs\
 ├─ models\      model binaries + installed.json (readiness registry)
 │                 <model>\model.manifest.json  every file, size and SHA-256
@@ -482,6 +568,30 @@ Phase 4 **produces text**. It does not say who spoke — every segment reports
 `UNASSIGNED` — and its **accuracy has not been measured**: no reference transcript exists
 on this machine, and accuracy is never derived from the model's own output. See
 [docs/phase-4-offline-asr.md](docs/phase-4-offline-asr.md).
+
+**Minutes and export — implemented, out of roadmap order.** The roadmap put MoM at Phase 8
+and export at Phase 10. Both were brought forward on the operator's explicit instruction,
+because a transcript is not a minute and the team cannot use the product without one. The
+crossing is recorded rather than pretended away.
+
+What that added: a 4B GGUF language model run through llama.cpp on CPU, provisioned by the
+same hash-and-probe machinery as the ASR models · **GBNF grammar-constrained decoding**, so
+malformed output is unreachable rather than merely unlikely and there is no repair step ·
+overlapping windowed extraction with per-line citation markers · a **non-LLM verifier** that
+locates every quotation in the transcript, strips any owner or deadline the recording never
+stated, and marks what it could not confirm · deduplication across window overlaps that
+records conflicts instead of silently picking one · a summary written from *verified items
+only* · migration 0006 with revisions and at most one active minute per transcript · one
+document model behind four renderers, with a hand-written dependency-free deterministic
+DOCX writer · CLI, API and UI panel. See
+[docs/minutes-generation.md](docs/minutes-generation.md), ADR-0017 and ADR-0018.
+
+Minutes **do not** say who spoke, and there is no approval: diarization is Phase 5, voice
+identification Phase 6, and the human review workflow Phase 9. Every minute is a `DRAFT`,
+every rendering says so on its face, and **the quality of the writing has not been
+measured** — there is no reference minute to measure against. Peak worker memory is about
+**5.1 GB**, which exceeds the 2.5 GB budget the ASR models were measured against and cannot
+be reduced below it; ADR-0018 §4 has the breakdown.
 
 **To test it yourself**, run the read-only preflight and then follow
 [docs/phase-4-manual-acceptance.md](docs/phase-4-manual-acceptance.md):

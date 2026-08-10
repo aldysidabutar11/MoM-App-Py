@@ -588,6 +588,139 @@
       </article>
     </section>
 
+    <!-- ================= MINUTES OF MEETING ================= -->
+    <section aria-labelledby="mom-heading" id="mom-panel" hidden>
+      <div class="section-head">
+        <h2 id="mom-heading">Notulen rapat</h2>
+        <p class="muted">
+          Notulen disusun dari transkrip oleh model bahasa yang berjalan
+          <strong>sepenuhnya di komputer ini</strong>. Transkrip dipotong menjadi
+          beberapa bagian, setiap bagian dibaca terpisah, lalu setiap kutipan
+          dicocokkan kembali ke transkrip oleh pemeriksa yang <strong>bukan
+          model</strong>. Tidak ada unduhan model dan tidak ada koneksi keluar.
+        </p>
+        <p class="warn-line" id="mom-draft-note">
+          Hasilnya adalah <strong>draf</strong>. Belum ada manusia yang memeriksanya.
+          Nama PIC dan tenggat hanya ditulis bila benar-benar disebut di rekaman —
+          sistem ini <strong>tidak mengenali suara siapa pun</strong>, jadi tidak ada
+          poin yang dikaitkan dengan pembicara tertentu.
+        </p>
+      </div>
+
+      <div class="rec-grid">
+        <article class="status-card">
+          <header><h3>Model notulen</h3></header>
+          <dl class="kv" id="mom-model-kv"></dl>
+          <p class="notice" id="mom-model-missing" hidden>
+            Model notulen belum tersedia. Sediakan sekali, dengan akses jaringan:
+            <code>python -m mom_igd asr provision mom-llm</code>. Aplikasi ini tidak
+            pernah mengunduh model sendiri, dan tidak pernah memakai model lain
+            sebagai pengganti.
+          </p>
+        </article>
+
+        <article class="status-card">
+          <header><h3>Pilih transkrip</h3></header>
+          <label class="field">
+            <span>Transkrip selesai</span>
+            <select id="mom-transcript-select">
+              <option value="">— memuat —</option>
+            </select>
+          </label>
+          <div class="btn-row">
+            <button type="button" class="btn" id="mom-refresh-btn">
+              Muat ulang daftar
+            </button>
+          </div>
+          <dl class="kv" id="mom-selected-kv"></dl>
+          <p class="notice" id="mom-ineligible" hidden></p>
+          <p class="muted" id="mom-empty-hint" hidden>
+            Belum ada transkrip yang selesai. Rekam rapat, lalu jalankan transkripsi
+            di panel Transkripsi offline.
+          </p>
+        </article>
+
+        <article class="status-card">
+          <header><h3>Buat notulen</h3></header>
+          <label class="field">
+            <span>Format dokumen</span>
+            <select id="mom-format-select">
+              <option value="docx">Word (.docx)</option>
+              <option value="html">HTML (.html)</option>
+              <option value="markdown">Markdown (.md)</option>
+              <option value="txt">Teks biasa (.txt)</option>
+            </select>
+          </label>
+          <label class="field field-check">
+            <input type="checkbox" id="mom-hide-unverified">
+            <span>
+              Sembunyikan poin yang belum terverifikasi dari dokumen
+              <small class="muted">
+                Poin tetap tersimpan di basis data, dan jumlahnya tetap dicantumkan
+                di dokumen.
+              </small>
+            </span>
+          </label>
+          <div class="btn-row">
+            <button type="button" class="btn btn-primary" id="mom-run-btn" disabled>
+              Buat notulen
+            </button>
+            <button type="button" class="btn" id="mom-cancel-btn" disabled>
+              Batalkan
+            </button>
+            <button type="button" class="btn" id="mom-load-btn" disabled>
+              Muat notulen tersimpan
+            </button>
+          </div>
+          <p class="muted" id="mom-duration-hint">
+            Rapat 90 menit memakan waktu sekitar 15–20 menit. Perekaman tidak pernah
+            dibatalkan demi notulen; pembuatan notulen yang ditunda oleh perekaman.
+          </p>
+          <p class="warn-line" id="mom-error" hidden></p>
+        </article>
+
+        <article class="status-card">
+          <header><h3>Proses</h3></header>
+          <span class="pill" id="mom-pill">Idle</span>
+          <p class="elapsed" id="mom-elapsed">00:00:00</p>
+          <div class="mom-progress" id="mom-progress" hidden>
+            <div class="mom-progress-bar"></div>
+          </div>
+          <dl class="kv" id="mom-cost-kv"></dl>
+          <ul class="plain" id="mom-stage-list"></ul>
+          <ul class="plain" id="mom-warning-list"></ul>
+        </article>
+      </div>
+
+      <article class="status-card" id="mom-minute-card">
+        <header><h3>Notulen</h3></header>
+        <!-- The wrapper is toggled, not the grid: [hidden] loses to any author
+             `display` rule, and .mom-stats sets one. See the note atop app.css. -->
+        <div id="mom-stats-wrap" hidden>
+          <div class="mom-stats" id="mom-stats"></div>
+        </div>
+        <dl class="kv" id="mom-minute-kv"></dl>
+        <p class="muted" id="mom-minute-note" hidden>
+          Setiap poin di bawah mencantumkan waktu dan kutipan asalnya. Poin bertanda
+          <strong>BELUM TERVERIFIKASI</strong> tidak dapat dicocokkan dengan
+          transkrip — periksa sebelum dipakai.
+        </p>
+        <div id="mom-export-row" hidden>
+          <div class="btn-row">
+            <button type="button" class="btn" id="mom-export-btn">
+              Tulis ulang dokumen
+            </button>
+            <span class="muted" id="mom-export-note"></span>
+          </div>
+        </div>
+        <div class="mom-summary" id="mom-summary-box" hidden>
+          <ul id="mom-summary-list"></ul>
+        </div>
+        <div id="mom-sections"></div>
+        <p class="muted" id="mom-minute-empty">Belum ada notulen yang dimuat.</p>
+      </article>
+    </section>
+
     <!-- ================= FUTURE FEATURES ================= -->
     <section aria-labelledby="features-heading">
       <div class="section-head">
@@ -649,6 +782,23 @@
           <p class="implemented">Tersedia</p>
           <button type="button" class="btn btn-primary" id="open-transcript-btn">
             Buka panel transkripsi
+          </button>
+        </article>
+
+        <article class="feature-card feature-card-enabled" id="card-mom">
+          <div class="feature-head">
+            <h3>Notulen (MoM)</h3>
+            <span class="phase-tag phase-tag-live">aktif</span>
+          </div>
+          <p>
+            Keputusan, tindak lanjut, pembahasan dan isu diambil dari transkrip oleh
+            model bahasa lokal, lalu setiap kutipan dicocokkan kembali ke transkrip
+            oleh pemeriksa yang bukan model. Hasilnya draf Word, HTML, Markdown atau
+            teks. Tidak ada pengenalan suara: PIC hanya ditulis bila namanya disebut.
+          </p>
+          <p class="implemented">Tersedia</p>
+          <button type="button" class="btn btn-primary" id="open-mom-btn">
+            Buka panel notulen
           </button>
         </article>
 

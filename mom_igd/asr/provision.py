@@ -73,7 +73,7 @@ __all__ = [
 _LOG = get_logger("asr.provision")
 
 #: Subdirectory of ``<data_root>/models`` that holds ASR/VAD artefacts.
-_SLOT_DIRS: Final[dict[str, str]] = {"asr": "asr", "vad": "vad"}
+_SLOT_DIRS: Final[dict[str, str]] = {"asr": "asr", "vad": "vad", "llm": "llm"}
 
 _STAGING_DIRNAME: Final[str] = ".staging"
 _SUPERSEDED_SUFFIX: Final[str] = ".superseded"
@@ -103,6 +103,11 @@ class ModelSpec:
     approximate_bytes: int
     role: str
     notes: str
+    #: What kind of model this is, and therefore what "it works" means when the
+    #: readiness probe runs. Byte verification is necessary and not sufficient
+    #: (ADR-0015), and the sufficient test differs: an ASR model has to decode audio,
+    #: a language model has to generate a token. One catalogue, two probes.
+    kind: str = "asr" 
     #: Files fetched and manifested **when the source has them**, and skipped without
     #: complaint when it does not.
     #:
@@ -163,6 +168,27 @@ MODEL_CATALOGUE: Final[dict[str, ModelSpec]] = {
             "Selective second pass over flagged regions only, under a duration "
             "budget. Never runs over a whole meeting: at this size that would blow "
             "the real-time factor."
+        ),
+    ),
+    "mom-llm": ModelSpec(
+        key="mom-llm",
+        provider_slot="llm",
+        model_name="qwen3-4b-instruct",
+        repo_id="Qwen/Qwen3-4B-GGUF",
+        license_name="Apache-2.0",
+        license_url="https://www.apache.org/licenses/LICENSE-2.0",
+        hardware_profile="cpu-q4_k_m",
+        expected_files=("Qwen3-4B-Q4_K_M.gguf",),
+        approximate_bytes=2_500_000_000,
+        role="mom",
+        kind="llm",
+        notes=(
+            "Minutes extraction. Chosen at 4B and Q4_K_M because the measured free "
+            "memory on the target machine is about 5 GB and the one-heavy-worker "
+            "policy means it never shares that with an ASR model. Apache-2.0 and "
+            "first-party: Llama and Gemma licences carry use restrictions this "
+            "deployment cannot accept. It writes no prose of its own into a minute "
+            "without a quote from the transcript behind it."
         ),
     ),
 }
@@ -561,14 +587,63 @@ def provision_model(
     )
 
 
+def _probe_promoted_llm(directory: Path, spec: ModelSpec) -> dict[str, Any]:
+    """Load the GGUF in an isolated worker and generate a few tokens.
+
+    A GGUF that hashes correctly can still be unloadable: a quantisation the installed
+    llama.cpp build does not know, a truncated tensor, an architecture newer than the
+    runtime. The only way to find out is to load it, so provisioning does that here
+    rather than leaving the operator to discover it during a meeting.
+
+    Tiny on purpose -- a handful of tokens with a two-token context is enough to prove
+    the weights load and the sampler runs.
+    """
+    import time
+
+    from mom_igd.asr.worker import WorkerError, run_in_worker
+
+    started = time.perf_counter()
+    try:
+        outcome = run_in_worker(
+            "probe_llm",
+            {"directory": str(directory), "filename": spec.expected_files[0]},
+            timeout_seconds=900,
+        )
+    except WorkerError as exc:
+        return {"ok": False, "detail": str(exc), "seconds": time.perf_counter() - started}
+    if not outcome.ok:
+        return {
+            "ok": False,
+            "detail": outcome.error or "the language model could not be loaded",
+            "seconds": time.perf_counter() - started,
+        }
+    payload = outcome.payload or {}
+    return {
+        "ok": True,
+        "seconds": time.perf_counter() - started,
+        "detail": (
+            f"loaded in {payload.get('load_seconds', 0):.1f}s and generated "
+            f"{payload.get('tokens', 0)} token(s); context {payload.get('n_ctx', 0)}"
+        ),
+        "peak_rss_bytes": outcome.peak_rss_bytes,
+    }
+
+
 def _probe_promoted_model(directory: Path, spec: ModelSpec) -> dict[str, Any]:
-    """Load the promoted model in an isolated worker and decode a short signal.
+    """Load the promoted model in an isolated worker and make it do its actual job.
 
     Runs in a spawned child so a crash inside the native engine cannot take the
     provisioning command down with it, and so the memory is returned when it exits.
-    Deliberately tiny: two seconds of generated audio and a greedy decode. The question
-    is "can this model run at all", not "how well does it run".
+    Deliberately tiny: the question is "can this model run at all", not "how well".
+
+    What counts as running differs by kind, which is the whole reason `ModelSpec.kind`
+    exists. Byte verification is necessary and not sufficient (ADR-0015) -- and the
+    sufficient test for an ASR model is a decode, while for a language model it is
+    generating a token.
     """
+    if spec.kind == "llm":
+        return _probe_promoted_llm(directory, spec)
+
     import tempfile
     import time
 

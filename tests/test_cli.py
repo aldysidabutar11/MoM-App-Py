@@ -6,6 +6,7 @@ Also asserts the repository-hygiene guarantees that belong to Phase 1.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -347,6 +348,19 @@ def test_dependency_lock_files_exist_and_are_pinned() -> None:
         ]
         assert lines, f"{name} declares nothing"
         for line in lines:
+            if "@ https://" in line:
+                # A PEP 508 direct reference to one wheel. Stronger than `==`, not
+                # weaker: it names the exact artefact rather than a version that an
+                # index resolves. Used for `llama-cpp-python`, which has no PyPI wheel
+                # for win_amd64 -- see the note in requirements.txt. Still required to
+                # name a concrete version, so the file remains readable as a lock.
+                assert re.search(r"-\d+\.\d+", line), (
+                    f"{name} direct reference must name a version, found: {line}"
+                )
+                assert line.endswith(".whl"), (
+                    f"{name} direct reference must point at a wheel, found: {line}"
+                )
+                continue
             assert "==" in line, f"{name} must pin exact versions, found: {line}"
 
 
@@ -434,6 +448,7 @@ def test_no_phase_5_or_later_module_was_created() -> None:
         "diagnostics",
         "enrollment",   # Phase 3
         "jobs",
+        "mom",         # minutes generation, export, and the grounding verifier
         "shell",
     }
     forbidden_until_later_phases = {
@@ -441,9 +456,9 @@ def test_no_phase_5_or_later_module_was_created() -> None:
         "diarization",      # Phase 5
         "speaker",          # Phase 6 -- identification, distinct from enrollment
         "reconciliation",   # Phase 7
-        "llm",              # Phase 8
-        "mom",              # Phase 8
-        "exporters",        # Phase 10
+        "llm",              # Phase 8 -- the engine lives in mom_igd/mom/llm.py,
+        #                     a module inside an implemented package, never its own
+        "exporters",        # Phase 10 -- rendering lives in mom_igd/mom/document.py
         "review",           # Phase 9
         "providers",        # Phase 4A onwards
         "encryption",       # Phase 11 -- at-rest encryption for everything else

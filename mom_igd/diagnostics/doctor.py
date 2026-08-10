@@ -783,6 +783,95 @@ def _check_asr_models(config: AppConfig, paths: RuntimePaths) -> CheckResult:
     )
 
 
+def _check_mom_model(config: AppConfig, paths: RuntimePaths) -> CheckResult:
+    """Whether minutes generation can run, answered without loading anything.
+
+    Reads the same installed-model registry as the transcription check, so a GGUF that
+    hashes correctly but failed its load-and-decode probe is not reported as ready
+    (ADR-0015).
+
+    **Always a WARN when absent, never a FAIL.** Provisioning is a deliberate one-off
+    command that needs network access, and a machine that only ever transcribes is a
+    legitimate deployment -- ``[mom].enabled = false`` turns the stage off without
+    affecting anything else.
+
+    The check also reports the **measured** peak worker memory, because 5063 MiB is the
+    single most surprising fact about this stage and an operator sizing a machine should
+    not have to find it in an ADR.
+    """
+    from mom_igd.asr.installed import load_index
+
+    enabled = bool(getattr(getattr(config, "mom", None), "enabled", True))
+    index = load_index(paths.models_dir)
+    ready = [entry for entry in index.ready(paths.models_dir, role="mom")] if index.readable else []
+    data = {
+        "models_dir": str(paths.models_dir),
+        "enabled": enabled,
+        "index_readable": index.readable,
+        "problem": index.problem,
+        "model_ready": bool(ready),
+        "model": (
+            f"{ready[0].model_name}@{ready[0].revision[:12]}" if ready else None
+        ),
+        "measured_peak_worker_mib": 5351,
+        "context_tokens": getattr(getattr(config, "mom", None), "context_tokens", None),
+    }
+    if not enabled:
+        return CheckResult(
+            key="mom_model",
+            title="Minutes model",
+            status=Status.WARN,
+            detail=(
+                "Minutes generation is switched off in configuration "
+                "([mom].enabled = false), so `mom generate` will refuse. Transcription "
+                "is unaffected."
+            ),
+            required_in_phase="8",
+            data=data,
+        )
+    if not index.readable:
+        return CheckResult(
+            key="mom_model",
+            title="Minutes model",
+            status=Status.WARN,
+            detail=(
+                f"The installed-model registry could not be read: {index.problem}. "
+                "Nothing is treated as ready, which is the intended fail-closed "
+                "behaviour. Re-run `asr provision mom-llm` to rebuild it."
+            ),
+            required_in_phase="8",
+            data=data,
+        )
+    if not ready:
+        return CheckResult(
+            key="mom_model",
+            title="Minutes model",
+            status=Status.WARN,
+            detail=(
+                "No minutes model is provisioned, so `mom generate` will answer "
+                "MODEL_UNAVAILABLE. Provision once, with network access: "
+                "`python -m mom_igd asr provision mom-llm` (2.3 GiB). Nothing else in "
+                "this application ever downloads a model, and none is substituted."
+            ),
+            required_in_phase="8",
+            data=data,
+        )
+    return CheckResult(
+        key="mom_model",
+        title="Minutes model",
+        status=Status.PASS,
+        detail=(
+            f"{ready[0].model_name}@{ready[0].revision[:12]} is verified and "
+            "probe-passed. A run peaks at about 5351 MiB in a worker process that "
+            "exits, which exceeds the 2.5 GB heavy-worker budget measured for the ASR "
+            "models -- see ADR-0018. Minutes are drafts: the quality of what it writes "
+            "is not measured by this check and is not claimed anywhere."
+        ),
+        required_in_phase="8",
+        data=data,
+    )
+
+
 def _check_offline_configuration(config: AppConfig) -> CheckResult:
     audit = offline_policy.audit_installed_distributions()
     endpoints = dict(config.providers.endpoints)
@@ -910,6 +999,7 @@ def run_doctor(
         _check_offline_configuration(resolved),
         _check_model_registry(resolved, paths),
         _check_asr_models(resolved, paths),
+        _check_mom_model(resolved, paths),
         _check_optional_dependencies(),
     ]
 
