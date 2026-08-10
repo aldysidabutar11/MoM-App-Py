@@ -349,11 +349,27 @@ def test_the_cli_context_passes_the_configuration_through(
     assert people._config is not None, "the CLI must not fall back silently"
 
 
-def test_the_cli_honours_a_configured_ceiling(tmp_path: Path, data_root: Path) -> None:
-    """End to end through `_participant_services` with a real config file."""
+def test_the_cli_honours_a_configured_ceiling(
+    tmp_path: Path, data_root: Path, monkeypatch
+) -> None:
+    """End to end through `_participant_services` with a real config file.
+
+    `config/local.toml` is pointed somewhere that does not exist for the duration.
+    Not a workaround -- it is the documented layering: local.toml is per-machine
+    override and sits *above* the base file, including one named with `--config`.
+    So this test passed only on a machine with no local.toml, and a developer who
+    wrote one broke it while changing nothing this test is about. The rest of the
+    suite avoids that by loading with `use_local_file=False`; this one goes through
+    the CLI, which reads it by design, so the file is moved instead of the flag.
+    """
     import argparse
 
+    from mom_igd import config as config_module
     from mom_igd.cli import _participant_services
+
+    monkeypatch.setattr(
+        config_module, "local_config_path", lambda: tmp_path / "no-local.toml"
+    )
 
     config_file = tmp_path / "custom.toml"
     config_file.write_text(

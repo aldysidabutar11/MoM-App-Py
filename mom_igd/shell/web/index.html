@@ -37,383 +37,938 @@
     </div>
   </header>
 
-  <main id="main">
-    <!-- ================= STATUS ================= -->
-    <section aria-labelledby="status-heading">
-      <div class="section-head">
-        <h2 id="status-heading">Status sistem</h2>
-        <p class="muted" id="status-updated">Belum diperiksa.</p>
-      </div>
+  <div class="shell">
+    <!--
+      The side rail is the whole redesign. Four numbered steps in the order they are
+      done, and one quiet destination for everything an operator should never need to
+      look at. The old page put "Diarization & voice ID" -- which does not exist -- at
+      the same visual weight as the record button.
+    -->
+    <nav class="sidenav" aria-label="Langkah kerja">
+      <button type="button" class="nav-item" id="nav-beranda" data-view="view-beranda">
+        <span class="nav-num" aria-hidden="true">■</span>
+        <span class="nav-label">Beranda</span>
+      </button>
+      <p class="nav-heading">Urutan kerja</p>
+      <button type="button" class="nav-item" id="nav-rekam" data-view="view-rekam">
+        <span class="nav-num" aria-hidden="true">1</span>
+        <span class="nav-label">Rekam rapat</span>
+      </button>
+      <button type="button" class="nav-item" id="nav-peserta" data-view="view-peserta">
+        <span class="nav-num" aria-hidden="true">2</span>
+        <span class="nav-label">Peserta rapat</span>
+      </button>
+      <button type="button" class="nav-item" id="nav-teks" data-view="view-teks">
+        <span class="nav-num" aria-hidden="true">3</span>
+        <span class="nav-label">Ubah jadi teks</span>
+      </button>
+      <button type="button" class="nav-item" id="nav-notulen" data-view="view-notulen">
+        <span class="nav-num" aria-hidden="true">4</span>
+        <span class="nav-label">Notulen</span>
+      </button>
+      <p class="nav-heading">Lainnya</p>
+      <button type="button" class="nav-item nav-item-quiet" id="nav-sistem" data-view="view-sistem">
+        <span class="nav-num" aria-hidden="true">⚙</span>
+        <span class="nav-label">Sistem &amp; diagnostik</span>
+      </button>
+    </nav>
 
-      <div class="status-grid">
-        <article class="status-card" id="card-backend">
-          <header>
-            <span class="status-pill" data-state="unknown">—</span>
-            <h3>Backend lokal</h3>
-          </header>
-          <p class="status-detail">Memeriksa koneksi ke backend loopback…</p>
-          <dl class="kv"></dl>
-        </article>
-
-        <article class="status-card" id="card-database">
-          <header>
-            <span class="status-pill" data-state="unknown">—</span>
-            <h3>Database</h3>
-          </header>
-          <p class="status-detail">Memeriksa SQLite, WAL, dan versi migrasi…</p>
-          <dl class="kv"></dl>
-        </article>
-
-        <article class="status-card" id="card-datadir">
-          <header>
-            <span class="status-pill" data-state="unknown">—</span>
-            <h3>Direktori data runtime</h3>
-          </header>
-          <p class="status-detail">Memeriksa lokasi dan hak tulis…</p>
-          <dl class="kv"></dl>
-        </article>
-
-        <article class="status-card" id="card-readiness">
-          <header>
-            <span class="status-pill" data-state="unknown">—</span>
-            <h3>Hardware &amp; kesiapan</h3>
-          </header>
-          <p class="status-detail">Menjalankan diagnostik…</p>
-          <dl class="kv"></dl>
-        </article>
-      </div>
-
-      <details class="diag" id="diag-details">
-        <summary>Rincian diagnostik <span class="muted">(hasil <code>doctor</code>)</span></summary>
-        <div class="diag-body">
-          <p class="muted">Belum ada data. Klik “Muat ulang status”.</p>
+    <main id="main">
+      <!-- ================= BERANDA ================= -->
+      <div class="view" id="view-beranda">
+        <div class="view-head">
+          <h2>Selamat datang</h2>
+          <p class="lede">
+            Aplikasi ini mengubah rekaman rapat menjadi notulen tertulis, seluruhnya di
+            komputer ini. Tidak ada suara, teks, atau notulen yang dikirim ke internet.
+          </p>
         </div>
-      </details>
-    </section>
 
-    <!-- ================= RECORDING (Phase 2) ================= -->
-    <section aria-labelledby="recording-heading" id="recording-panel" hidden>
-      <div class="section-head">
-        <h2 id="recording-heading">Perekaman rapat</h2>
-        <p class="muted">
-          Satu microphone menangkap suara campuran <strong>seluruh</strong> suara di
-          ruangan, tanpa memandang berapa orang yang ada di roster rapat. Phase 2
-          <strong>belum</strong> mengetahui siapa yang berbicara, dan belum
-          menghasilkan transkrip atau MoM. Seluruh audio tetap di perangkat ini.
+        <ol class="steps">
+          <li class="step">
+            <span class="step-num" aria-hidden="true">1</span>
+            <div class="step-body">
+              <h3>Rekam rapatnya</h3>
+              <p>
+                Beri judul, tes suara Anda sebentar, lalu tekan Start. Satu microphone
+                menangkap seluruh suara di ruangan. <strong>Menekan Start juga yang
+                membuat rapatnya</strong> — sebelum itu belum ada rapat untuk diisi.
+              </p>
+              <button type="button" class="btn btn-primary" data-goto="nav-rekam">
+                Buka perekaman
+              </button>
+            </div>
+          </li>
+          <li class="step">
+            <span class="step-num" aria-hidden="true">2</span>
+            <div class="step-body">
+              <h3>Pilih siapa yang hadir</h3>
+              <p>
+                Pilih rapat tadi, lalu centang nama-nama yang hadir dari daftar. Ini
+                membantu penulisan nama pada notulen, dan boleh dilewati. Menambah orang
+                baru ke daftar bisa kapan saja, tanpa menunggu rapat.
+              </p>
+              <button type="button" class="btn btn-primary" data-goto="nav-peserta">
+                Buka daftar peserta
+              </button>
+            </div>
+          </li>
+          <li class="step">
+            <span class="step-num" aria-hidden="true">3</span>
+            <div class="step-body">
+              <h3>Ubah rekaman jadi teks</h3>
+              <p>
+                Komputer mendengarkan ulang rekamannya dan menuliskannya. Untuk rapat
+                satu jam, sediakan waktu sekitar 15–25 menit dan biarkan berjalan.
+              </p>
+              <button type="button" class="btn btn-primary" data-goto="nav-teks">
+                Buka pengubahan teks
+              </button>
+            </div>
+          </li>
+          <li class="step">
+            <span class="step-num" aria-hidden="true">4</span>
+            <div class="step-body">
+              <h3>Buat notulennya</h3>
+              <p>
+                Keputusan, tindak lanjut dan pembahasan diambil dari teks tadi, lalu
+                dicocokkan kembali kalimat per kalimat. Hasilnya <strong>draf</strong>
+                Word yang masih harus Anda periksa dan tandatangani.
+              </p>
+              <button type="button" class="btn btn-primary" data-goto="nav-notulen">
+                Buka notulen
+              </button>
+            </div>
+          </li>
+        </ol>
+
+        <p class="notice notice-quiet">
+          Aplikasi ini tidak pernah menyetujui apa pun atas nama Anda. Notulen yang
+          dihasilkan selalu berstatus draf sampai seorang manusia membacanya dan
+          menandatanganinya.
         </p>
       </div>
 
-      <div class="rec-grid">
-        <!-- device selection -->
-        <article class="status-card">
-          <header><h3>Microphone</h3></header>
-          <label class="field">
-            <span>Perangkat input</span>
-            <select id="device-select" aria-label="Pilih microphone"></select>
-          </label>
-          <p class="status-detail" id="device-evidence">Memuat daftar perangkat…</p>
-          <div class="btn-row">
-            <button type="button" class="btn" id="refresh-devices-btn">Refresh</button>
-            <button type="button" class="btn" id="select-device-btn">Gunakan perangkat ini</button>
-            <button type="button" class="btn" id="calibrate-btn">Tes microphone (10–15 s)</button>
-          </div>
-          <p class="hint">
-            Tes microphone membuka mikrofon sebentar. Audio tes tidak disimpan.
-          </p>
-        </article>
-
-        <!-- level meter -->
-        <article class="status-card">
-          <header>
-            <span class="status-pill" id="level-verdict" data-state="unknown">—</span>
-            <h3>Level input</h3>
-          </header>
-          <div class="meter" role="img" aria-label="Level meter input">
-            <div class="meter-fill" id="meter-rms"></div>
-            <div class="meter-peak" id="meter-peak"></div>
-          </div>
-          <dl class="kv" id="level-detail"></dl>
-          <p class="status-detail" id="level-advice">Belum ada pengukuran.</p>
-        </article>
-
-        <!-- preflight -->
-        <article class="status-card">
-          <header>
-            <span class="status-pill" id="preflight-pill" data-state="unknown">—</span>
-            <h3>Preflight</h3>
-          </header>
-          <ul class="checklist" id="preflight-list"></ul>
-          <div class="btn-row">
-            <button type="button" class="btn" id="preflight-btn">Jalankan preflight</button>
-          </div>
-          <p class="status-detail" id="storage-estimate"></p>
-        </article>
-
-        <!-- transport -->
-        <article class="status-card">
-          <header>
-            <span class="status-pill" id="rec-pill" data-state="unknown">IDLE</span>
-            <h3>Kontrol perekaman</h3>
-          </header>
-          <div class="field">
-            <label for="meeting-title">Judul rapat</label>
-            <input
-              type="text"
-              id="meeting-title"
-              maxlength="200"
-              autocomplete="off"
-              placeholder="Kosongkan untuk memakai stempel waktu UTC"
-            />
-            <p class="status-detail">
-              Judul dipakai hanya untuk pencatatan. Nama folder rekaman memakai UUID,
-              bukan judul, sehingga nama peserta tidak pernah masuk ke nama file.
+      <!-- ================= 1 · PESERTA ================= -->
+      <div class="view" id="view-peserta" hidden>
+        <section aria-labelledby="participants-heading" id="participants-panel">
+          <div class="section-head">
+            <h2 id="participants-heading">Langkah 2 &mdash; Peserta rapat</h2>
+            <p class="muted">
+              Catat siapa saja yang hadir. Ini dipakai untuk mengeja nama dengan benar di
+              notulen, dan boleh dilewati &mdash; rapat tetap bisa direkam tanpa daftar ini.
+              Setiap orang disimpan dengan nomor identitas tersendiri, bukan dengan namanya,
+              sehingga dua peserta boleh bernama sama dan nama tidak pernah dipakai sebagai
+              nama berkas.
             </p>
           </div>
-          <div class="btn-row">
-            <button type="button" class="btn btn-primary" id="start-btn" disabled>Start</button>
-            <button type="button" class="btn" id="pause-btn" disabled>Pause</button>
-            <button type="button" class="btn" id="resume-btn" disabled>Resume</button>
-            <button type="button" class="btn btn-danger" id="stop-btn" disabled>Stop</button>
-          </div>
-          <p class="elapsed" id="elapsed">00:00:00</p>
-          <dl class="kv" id="rec-detail"></dl>
-          <p class="warn-line" id="rec-warning" hidden></p>
-        </article>
 
-        <!-- integrity / recovery -->
-        <article class="status-card">
-          <header><h3>Integritas &amp; pemulihan</h3></header>
-          <dl class="kv" id="integrity-detail"></dl>
-          <div class="btn-row">
-            <button type="button" class="btn" id="verify-btn" disabled>Verifikasi manifest</button>
-            <button type="button" class="btn" id="recover-btn">Jalankan pemulihan</button>
+          <!-- Two distinct concepts, kept visually distinct on purpose:
+               the DIRECTORY is every person ever registered and has no size limit;
+               the ROSTER is who is expected in one meeting and has a capacity. -->
+          <div class="status-grid">
+            <!-- meeting roster capacity -->
+            <article class="status-card status-card-wide" id="roster-card">
+              <header>
+                <span class="status-pill" id="roster-count-pill" data-state="unknown">0 / 0</span>
+                <h3>Roster rapat</h3>
+              </header>
+              <div class="field">
+                <label for="roster-meeting-select">Rapat</label>
+                <select id="roster-meeting-select"></select>
+              </div>
+              <p class="muted" id="roster-meeting-label">Belum ada rapat dipilih.</p>
+              <p class="status-detail">
+                Daftar ini berisi rapat yang sudah pernah direkam. Sebuah rapat dibuat saat
+                Anda menekan <strong>Start</strong> di langkah 1, jadi kalau daftarnya masih
+                kosong, rekam dulu.
+              </p>
+              <div class="capacity-row">
+                <div class="field">
+                  <label for="roster-capacity-input">Kapasitas roster rapat ini</label>
+                  <input type="number" id="roster-capacity-input" min="1" step="1"
+                         inputmode="numeric" autocomplete="off" />
+                </div>
+                <button type="button" class="btn" id="roster-capacity-save-btn" disabled>
+                  Simpan kapasitas
+                </button>
+              </div>
+              <p class="hint" id="roster-capacity-range"></p>
+              <p class="warn-line" id="roster-capacity-warning" hidden></p>
+              <p class="warn-line" id="roster-capacity-error" hidden></p>
+              <p class="status-detail" id="roster-capacity-result"></p>
+
+              <!-- Roster membership. The roster is a subset of the directory; adding
+                   somebody here never copies them, and removing them never deletes
+                   them from the directory. -->
+              <h4 class="subhead">Anggota roster aktif</h4>
+              <p class="status-detail" id="roster-slots"></p>
+              <table class="participant-table" id="roster-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Nama</th>
+                    <th scope="col">Peran</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Consent</th>
+                    <th scope="col">Voiceprint</th>
+                    <th scope="col">Tindakan</th>
+                  </tr>
+                </thead>
+                <tbody id="roster-rows"></tbody>
+              </table>
+              <p class="status-detail" id="roster-empty">Belum ada anggota pada roster ini.</p>
+
+              <h4 class="subhead">Tambahkan dari direktori peserta</h4>
+              <div class="capacity-row">
+                <div class="field">
+                  <label for="roster-add-search">Cari nama atau peran</label>
+                  <input type="text" id="roster-add-search" maxlength="120"
+                         autocomplete="off" placeholder="mis. Budi" />
+                </div>
+                <button type="button" class="btn" id="roster-add-search-btn">Cari</button>
+              </div>
+              <ul class="checklist" id="roster-candidates"></ul>
+              <p class="status-detail" id="roster-candidates-note"></p>
+              <p class="warn-line" id="roster-member-error" hidden></p>
+              <p class="status-detail" id="roster-member-result"></p>
+
+              <p class="hint">
+                Roster menentukan siapa saja <em>kandidat pembicara yang dikenal</em>, bukan
+                suara mana yang direkam. Rekaman selalu menangkap seluruh suara yang
+                terdengar mikrofon; suara di luar roster atau tanpa voiceprint kelak
+                ditandai <strong>UNKNOWN</strong>, tidak dibuang.
+              </p>
+              <p class="hint">
+                Mengeluarkan peserta dari roster <strong>tidak</strong> menghapusnya dari
+                direktori, dan tidak menghapus rapat, rekaman, atau notulen lama.
+              </p>
+            </article>
+
+            <!-- participant registry -->
+            <article class="status-card status-card-wide">
+              <header>
+                <span class="status-pill" id="participant-count-pill" data-state="unknown">0</span>
+                <h3>Direktori peserta</h3>
+              </header>
+              <p class="muted">
+                Seluruh peserta yang pernah didaftarkan. Direktori ini tidak dibatasi
+                jumlah tertentu, dan mengeluarkan seseorang dari roster tidak
+                menghapusnya dari sini.
+              </p>
+              <div class="field">
+                <label for="participant-search">Cari nama atau peran</label>
+                <input type="text" id="participant-search" maxlength="120" autocomplete="off"
+                       placeholder="mis. Budi" />
+              </div>
+              <div class="btn-row">
+                <button type="button" class="btn" id="refresh-participants-btn">Muat ulang</button>
+                <button type="button" class="btn btn-primary" id="new-participant-btn">
+                  Tambah peserta
+                </button>
+              </div>
+              <table class="participant-table" id="participant-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Nama</th>
+                    <th scope="col">Peran</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Consent</th>
+                    <th scope="col">Voiceprint</th>
+                    <th scope="col">Tindakan</th>
+                  </tr>
+                </thead>
+                <tbody id="participant-rows"></tbody>
+              </table>
+              <p class="status-detail" id="participant-empty">Belum ada peserta terdaftar.</p>
+            </article>
+
+            <!-- add / edit -->
+            <article class="status-card" id="participant-form-card" hidden>
+              <header><h3 id="participant-form-title">Tambah peserta</h3></header>
+              <div class="field">
+                <label for="participant-name">Nama tampilan <span aria-hidden="true">*</span></label>
+                <input type="text" id="participant-name" maxlength="120" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label for="participant-role">Peran</label>
+                <input type="text" id="participant-role" maxlength="80" autocomplete="off" />
+              </div>
+              <div class="btn-row">
+                <button type="button" class="btn btn-primary" id="save-participant-btn">Simpan</button>
+                <button type="button" class="btn" id="cancel-participant-btn">Batal</button>
+              </div>
+              <p class="warn-line" id="participant-form-error" hidden></p>
+              <p class="hint">
+                Nama duplikat diperbolehkan. Aplikasi tidak meminta data pribadi lain
+                karena identifikasi pembicara tidak memerlukannya.
+              </p>
+            </article>
+
+            <!-- enrollment readiness / wizard -->
+            <article class="status-card status-card-wide" id="enrollment-card" hidden>
+              <header>
+                <span class="status-pill" id="enrollment-pill" data-state="unknown">IDLE</span>
+                <h3>Enrollment suara — <span id="enrollment-who"></span></h3>
+              </header>
+
+              <dl class="kv" id="readiness-detail"></dl>
+
+              <p class="notice" id="model-unavailable-notice" hidden>
+                <strong>MODEL_UNAVAILABLE.</strong>
+                <span id="model-unavailable-detail"></span>
+              </p>
+
+              <div class="btn-row">
+                <button type="button" class="btn" id="refresh-readiness-btn">Periksa kesiapan</button>
+                <button type="button" class="btn btn-primary" id="start-enrollment-btn" disabled>
+                  Mulai enrollment
+                </button>
+                <button type="button" class="btn" id="capture-sample-btn" disabled>
+                  Rekam sample
+                </button>
+                <button type="button" class="btn btn-primary" id="finalize-enrollment-btn" disabled>
+                  Selesaikan
+                </button>
+                <button type="button" class="btn btn-danger" id="cancel-enrollment-btn" disabled>
+                  Batalkan
+                </button>
+              </div>
+
+              <p class="status-detail" id="enrollment-progress">Belum ada sesi.</p>
+
+              <div class="meter" id="enrollment-meter" hidden>
+                <div class="meter-bar" id="enrollment-rms"></div>
+                <div class="meter-peak" id="enrollment-peak"></div>
+              </div>
+              <p class="status-detail" id="enrollment-levels"></p>
+
+              <ul class="checklist" id="sample-list"></ul>
+              <p class="warn-line" id="enrollment-warning" hidden></p>
+            </article>
+
+            <!-- voiceprint / cleanup -->
+            <article class="status-card" id="voiceprint-card" hidden>
+              <header><h3>Voiceprint</h3></header>
+              <dl class="kv" id="voiceprint-detail"></dl>
+              <div class="btn-row">
+                <button type="button" class="btn" id="verify-voiceprint-btn" disabled>
+                  Verifikasi integritas
+                </button>
+                <button type="button" class="btn btn-danger" id="revoke-consent-btn" disabled>
+                  Cabut persetujuan
+                </button>
+              </div>
+              <p class="status-detail" id="voiceprint-result"></p>
+            </article>
           </div>
-          <p class="status-detail" id="recovery-detail">Belum diperiksa.</p>
-        </article>
+
+          <p class="notice">
+            Voiceprint disimpan <strong>terenkripsi</strong> (AES-256-GCM, kunci dilindungi
+            Windows DPAPI). Audio enrollment <strong>tidak pernah ditulis ke disk</strong> dan
+            tidak pernah melewati halaman ini.
+          </p>
+        </section>
       </div>
 
-      <p class="notice">
-        Audio disimpan <strong>tanpa enkripsi</strong> sampai phase keamanan dikerjakan.
-        Jangan memakai rekaman rapat sensitif sebagai data uji.
-      </p>
-    </section>
+      <!-- ================= 2 · REKAM ================= -->
+      <div class="view" id="view-rekam" hidden>
+        <section aria-labelledby="recording-heading" id="recording-panel">
+          <div class="section-head">
+            <h2 id="recording-heading">Langkah 1 &mdash; Rekam rapat</h2>
+            <p class="muted">
+              Pilih microphone, tes suara Anda sebentar, lalu tekan rekam. Satu microphone
+              menangkap <strong>seluruh</strong> suara di ruangan, berapa pun orang yang
+              hadir dan terdaftar atau tidak. Pada tahap ini aplikasi
+              <strong>belum</strong> mengetahui siapa yang berbicara dan belum membuat
+              tulisan apa pun &mdash; itu langkah berikutnya. Semua audio tetap di komputer
+              ini.
+            </p>
+          </div>
 
-    <!-- ================= PHASE 3: PARTICIPANTS, CONSENT, ENROLLMENT =========
-         No audio is ever handled here. The browser has no microphone access at
-         all: capture runs inside the Python process and this page only sends
-         commands and renders levels, duration and quality verdicts (ADR-0012).
-    ==================================================================== -->
-    <section aria-labelledby="participants-heading" id="participants-panel" hidden>
-      <div class="section-head">
-        <h2 id="participants-heading">Peserta &amp; enrollment suara</h2>
-        <p class="muted">
-          Identitas peserta memakai UUID, bukan nama, sehingga dua orang boleh
-          memiliki nama yang sama. Nama tidak pernah dipakai sebagai nama berkas.
-        </p>
+          <div class="rec-grid">
+            <!-- device selection -->
+            <article class="status-card">
+              <header><h3>Microphone</h3></header>
+              <label class="field">
+                <span>Perangkat input</span>
+                <select id="device-select" aria-label="Pilih microphone"></select>
+              </label>
+              <p class="status-detail" id="device-evidence">Memuat daftar perangkat…</p>
+              <div class="btn-row">
+                <button type="button" class="btn" id="refresh-devices-btn">Refresh</button>
+                <button type="button" class="btn" id="select-device-btn">Gunakan perangkat ini</button>
+                <button type="button" class="btn" id="calibrate-btn">Tes microphone (10–15 s)</button>
+              </div>
+              <p class="hint">
+                Tes microphone membuka mikrofon sebentar. Audio tes tidak disimpan.
+              </p>
+            </article>
+
+            <!-- level meter -->
+            <article class="status-card">
+              <header>
+                <span class="status-pill" id="level-verdict" data-state="unknown">—</span>
+                <h3>Level input</h3>
+              </header>
+              <div class="meter" role="img" aria-label="Level meter input">
+                <div class="meter-fill" id="meter-rms"></div>
+                <div class="meter-peak" id="meter-peak"></div>
+              </div>
+              <dl class="kv" id="level-detail"></dl>
+              <p class="status-detail" id="level-advice">Belum ada pengukuran.</p>
+            </article>
+
+            <!-- voice to text check -->
+            <article class="status-card status-card-wide" id="voice-card">
+              <header>
+                <span class="status-pill" id="voice-pill" data-state="unknown">SIAP</span>
+                <h3>Suara ke teks</h3>
+              </header>
+              <p class="status-detail">
+                Bicaralah beberapa kalimat, lalu baca hasilnya di bawah. Ini cara memastikan
+                suara Anda benar-benar menjadi tulisan yang <strong>artinya tepat</strong> —
+                sebelum rapat sungguhan dimulai. Tidak ada yang disimpan.
+              </p>
+              <div class="btn-row">
+                <button type="button" class="btn btn-primary" id="voice-start">
+                  Mulai tes suara (30 detik)
+                </button>
+                <span class="status-detail" id="voice-hint">Microphone hanya dibuka saat tombol ditekan.</span>
+              </div>
+
+              <div class="meter" role="img" aria-label="Level suara saat tes">
+                <div class="meter-fill" id="voice-rms"></div>
+                <div class="meter-peak" id="voice-peak"></div>
+              </div>
+
+              <div class="voice-output" id="voice-output" aria-live="polite">
+                <p class="voice-placeholder" id="voice-placeholder">
+                  Teks kasar akan muncul di sini sekitar 6 detik setelah Anda mulai bicara. Hasil
+                  yang akurat muncul di blok bawah setelah tes selesai.
+                </p>
+              </div>
+
+              <div class="voice-final" id="voice-final" hidden>
+                <h4>Hasil akhir <small>— dibaca ulang seluruhnya oleh model paling akurat</small></h4>
+                <p id="voice-final-text"></p>
+                <p class="status-detail">
+                  Baris bertimestamp di atas muncul cepat selama Anda bicara, memakai model
+                  kecil. Blok ini dibuat setelah Anda selesai, dengan model besar membaca
+                  seluruh rekaman sekaligus — <strong>inilah yang sebaiknya Anda bandingkan</strong>
+                  dengan kalimat yang Anda ucapkan.
+                </p>
+              </div>
+
+              <dl class="kv" id="voice-stats"></dl>
+              <p class="status-detail" id="voice-verdict"></p>
+              <p class="notice" id="voice-note" hidden></p>
+            </article>
+
+            <!-- preflight -->
+            <article class="status-card">
+              <header>
+                <span class="status-pill" id="preflight-pill" data-state="unknown">—</span>
+                <h3>Preflight</h3>
+              </header>
+              <ul class="checklist" id="preflight-list"></ul>
+              <div class="btn-row">
+                <button type="button" class="btn" id="preflight-btn">Jalankan preflight</button>
+              </div>
+              <p class="status-detail" id="storage-estimate"></p>
+            </article>
+
+            <!-- transport -->
+            <article class="status-card">
+              <header>
+                <span class="status-pill" id="rec-pill" data-state="unknown">IDLE</span>
+                <h3>Kontrol perekaman</h3>
+              </header>
+              <div class="field">
+                <label for="meeting-title">Judul rapat</label>
+                <input
+                  type="text"
+                  id="meeting-title"
+                  maxlength="200"
+                  autocomplete="off"
+                  placeholder="Kosongkan untuk memakai stempel waktu UTC"
+                />
+                <p class="status-detail">
+                  Judul dipakai hanya untuk pencatatan. Nama folder rekaman memakai UUID,
+                  bukan judul, sehingga nama peserta tidak pernah masuk ke nama file.
+                </p>
+              </div>
+              <div class="btn-row">
+                <button type="button" class="btn btn-primary" id="start-btn" disabled>Start</button>
+                <button type="button" class="btn" id="pause-btn" disabled>Pause</button>
+                <button type="button" class="btn" id="resume-btn" disabled>Resume</button>
+                <button type="button" class="btn btn-danger" id="stop-btn" disabled>Stop</button>
+              </div>
+              <p class="elapsed" id="elapsed">00:00:00</p>
+              <dl class="kv" id="rec-detail"></dl>
+              <p class="warn-line" id="rec-warning" hidden></p>
+            </article>
+
+            <!-- integrity / recovery -->
+            <article class="status-card">
+              <header><h3>Integritas &amp; pemulihan</h3></header>
+              <dl class="kv" id="integrity-detail"></dl>
+              <div class="btn-row">
+                <button type="button" class="btn" id="verify-btn" disabled>Verifikasi manifest</button>
+                <button type="button" class="btn" id="recover-btn">Jalankan pemulihan</button>
+              </div>
+              <p class="status-detail" id="recovery-detail">Belum diperiksa.</p>
+            </article>
+          </div>
+
+          <p class="notice">
+            Audio disimpan <strong>tanpa enkripsi</strong> sampai phase keamanan dikerjakan.
+            Jangan memakai rekaman rapat sensitif sebagai data uji.
+          </p>
+        </section>
       </div>
 
-      <!-- Two distinct concepts, kept visually distinct on purpose:
-           the DIRECTORY is every person ever registered and has no size limit;
-           the ROSTER is who is expected in one meeting and has a capacity. -->
-      <div class="status-grid">
-        <!-- meeting roster capacity -->
-        <article class="status-card status-card-wide" id="roster-card">
-          <header>
-            <span class="status-pill" id="roster-count-pill" data-state="unknown">0 / 0</span>
-            <h3>Roster rapat</h3>
-          </header>
-          <div class="field">
-            <label for="roster-meeting-select">Rapat</label>
-            <select id="roster-meeting-select"></select>
+      <!-- ================= 3 · TEKS ================= -->
+      <div class="view" id="view-teks" hidden>
+        <section aria-labelledby="transcript-heading" id="transcript-panel">
+          <div class="section-head">
+            <h2 id="transcript-heading">Langkah 3 &mdash; Ubah rekaman jadi teks</h2>
+            <p class="muted">
+              Komputer mendengarkan ulang rekaman tadi dan menuliskannya. Untuk rapat satu
+              jam, sediakan waktu sekitar 15&ndash;25 menit dan biarkan berjalan; bagian yang
+              paling tidak yakin dibaca ulang sekali lagi. Seluruhnya berjalan di komputer
+              ini, dan rekaman aslinya <strong>tidak pernah diubah</strong> &mdash; yang
+              dibaca adalah salinan kerja. Siapa yang berbicara masih ditandai
+              <code>UNASSIGNED</code>, karena pengenalan suara belum ada. Ketepatan tulisan
+              <strong>belum diukur</strong> pada mesin ini: mengukurnya menuntut transkrip
+              pembanding yang ditulis manusia.
+            </p>
+            <p class="warn-line" id="transcript-accuracy-note">
+              Phase 4 <strong>belum</strong> menetapkan siapa yang berbicara — setiap
+              segmen bertanda <code>UNASSIGNED</code>. Akurasi juga
+              <strong>belum diukur</strong>: belum ada transkrip pembanding, dan akurasi
+              tidak pernah dihitung dari keluaran model itu sendiri.
+            </p>
           </div>
-          <p class="muted" id="roster-meeting-label">Belum ada rapat dipilih.</p>
-          <div class="capacity-row">
-            <div class="field">
-              <label for="roster-capacity-input">Kapasitas roster rapat ini</label>
-              <input type="number" id="roster-capacity-input" min="1" step="1"
-                     inputmode="numeric" autocomplete="off" />
+
+          <div class="rec-grid">
+            <article class="status-card">
+              <header><h3>Model</h3></header>
+              <dl class="kv" id="asr-model-kv"></dl>
+              <p class="notice" id="asr-model-missing" hidden>
+                Model belum tersedia. Provisioning dilakukan sekali dari terminal:
+                <code>python -m mom_igd asr provision all</code>. Aplikasi ini tidak
+                mengunduh model sendiri.
+              </p>
+            </article>
+
+            <article class="status-card">
+              <header><h3>Pilih rekaman</h3></header>
+              <label class="field">
+                <span>Rekaman selesai</span>
+                <select id="asr-recording-select">
+                  <option value="">Memuat…</option>
+                </select>
+              </label>
+              <div class="btn-row">
+                <button type="button" class="btn" id="asr-refresh-btn">
+                  Muat ulang daftar
+                </button>
+                <button type="button" class="btn" id="asr-preflight-btn">
+                  Jalankan preflight
+                </button>
+              </div>
+              <dl class="kv" id="asr-selected-kv"></dl>
+              <p class="notice" id="asr-ineligible" hidden></p>
+              <p class="muted" id="asr-empty-hint" hidden>
+                Belum ada rekaman berstatus <code>RECORDED</code>. Rekam rapat terlebih
+                dahulu di panel perekaman, lalu tekan <em>Muat ulang daftar</em>.
+              </p>
+            </article>
+
+            <article class="status-card">
+              <header><h3>Jalankan transkripsi</h3></header>
+              <ul class="plain" id="asr-preflight-list"></ul>
+              <div class="btn-row">
+                <button type="button" class="btn btn-primary" id="asr-run-btn" disabled>
+                  Proses transkripsi
+                </button>
+                <button type="button" class="btn" id="asr-cancel-btn" disabled>
+                  Batalkan
+                </button>
+                <button type="button" class="btn" id="asr-load-btn" disabled>
+                  Muat transkrip tersimpan
+                </button>
+              </div>
+              <p class="muted" id="asr-retry-hint" hidden></p>
+              <p class="warn-line" id="asr-error" hidden></p>
+            </article>
+
+            <article class="status-card">
+              <header><h3>Progres &amp; biaya</h3></header>
+              <span class="pill" id="asr-pill">Idle</span>
+              <p class="elapsed" id="asr-elapsed">00:00:00</p>
+              <dl class="kv" id="asr-cost-kv"></dl>
+              <ul class="plain" id="asr-stage-list"></ul>
+            </article>
+
+            <article class="status-card">
+              <header><h3>Pass 2 — transkripsi ulang selektif</h3></header>
+              <dl class="kv" id="asr-pass2-kv"></dl>
+              <table class="participant-table" id="asr-flagged-table">
+                <caption class="muted">
+                  Alasan setiap bagian dipilih untuk pass 2. Bagian yang tidak terpilih
+                  tetap memakai hasil pass 1.
+                </caption>
+                <thead>
+                  <tr><th>Region</th><th>Mulai</th><th>Pass</th><th>Terpilih</th><th>Alasan</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </article>
+          </div>
+
+          <article class="status-card" id="asr-transcript-card">
+            <header><h3>Transkrip</h3></header>
+            <dl class="kv" id="asr-transcript-kv"></dl>
+            <p class="muted">
+              Transkrip di bawah bersifat <strong>read-only</strong> pada Phase 4. Penyuntingan
+              oleh reviewer adalah Phase 7. Segmen bertanda
+              <span class="segment-lowconf">rendah</span> memiliki keyakinan rendah dan
+              sebaiknya diperiksa terhadap audio.
+            </p>
+            <ul class="plain" id="asr-segment-list"></ul>
+            <p class="muted" id="asr-transcript-empty">Belum ada transkrip yang dimuat.</p>
+          </article>
+        </section>
+      </div>
+
+      <!-- ================= 4 · NOTULEN ================= -->
+      <div class="view" id="view-notulen" hidden>
+        <section aria-labelledby="mom-heading" id="mom-panel">
+          <div class="section-head">
+            <h2 id="mom-heading">Langkah 4 &mdash; Notulen</h2>
+            <p class="muted">
+              Keputusan, tindak lanjut, pembahasan dan isu diambil dari teks tadi oleh model
+              bahasa yang berjalan <strong>sepenuhnya di komputer ini</strong>. Setiap butir
+              lalu dicocokkan kembali ke teks rapat oleh pemeriksa yang <em>bukan</em> model
+              bahasa &mdash; butir yang tidak terbukti tetap ditampilkan, tetapi ditandai.
+              Nama penanggung jawab hanya ditulis bila namanya memang disebut dalam rapat.
+              Hasilnya <strong>draf</strong>: aplikasi ini tidak menyetujui apa pun, dan
+              seorang manusia masih harus membacanya dan menandatanganinya.
+            </p>
+            <p class="warn-line" id="mom-draft-note">
+              Hasilnya adalah <strong>draf</strong>. Belum ada manusia yang memeriksanya.
+              Nama PIC dan tenggat hanya ditulis bila benar-benar disebut di rekaman —
+              sistem ini <strong>tidak mengenali suara siapa pun</strong>, jadi tidak ada
+              poin yang dikaitkan dengan pembicara tertentu.
+            </p>
+          </div>
+
+          <div class="rec-grid">
+            <article class="status-card">
+              <header><h3>Model notulen</h3></header>
+              <dl class="kv" id="mom-model-kv"></dl>
+              <p class="notice" id="mom-model-missing" hidden>
+                Model notulen belum tersedia. Sediakan sekali, dengan akses jaringan:
+                <code>python -m mom_igd asr provision mom-llm</code>. Aplikasi ini tidak
+                pernah mengunduh model sendiri, dan tidak pernah memakai model lain
+                sebagai pengganti.
+              </p>
+            </article>
+
+            <article class="status-card">
+              <header><h3>Pilih transkrip</h3></header>
+              <label class="field">
+                <span>Transkrip selesai</span>
+                <select id="mom-transcript-select">
+                  <option value="">— memuat —</option>
+                </select>
+              </label>
+              <div class="btn-row">
+                <button type="button" class="btn" id="mom-refresh-btn">
+                  Muat ulang daftar
+                </button>
+              </div>
+              <dl class="kv" id="mom-selected-kv"></dl>
+              <p class="notice" id="mom-ineligible" hidden></p>
+              <p class="muted" id="mom-empty-hint" hidden>
+                Belum ada transkrip yang selesai. Rekam rapat, lalu jalankan transkripsi
+                di panel Transkripsi offline.
+              </p>
+            </article>
+
+            <article class="status-card">
+              <header><h3>Buat notulen</h3></header>
+              <label class="field">
+                <span>Format dokumen</span>
+                <select id="mom-format-select">
+                  <option value="docx">Word (.docx)</option>
+                  <option value="html">HTML (.html)</option>
+                  <option value="markdown">Markdown (.md)</option>
+                  <option value="txt">Teks biasa (.txt)</option>
+                </select>
+              </label>
+              <label class="field field-check">
+                <input type="checkbox" id="mom-hide-unverified">
+                <span>
+                  Sembunyikan poin yang belum terverifikasi dari dokumen
+                  <small class="muted">
+                    Poin tetap tersimpan di basis data, dan jumlahnya tetap dicantumkan
+                    di dokumen.
+                  </small>
+                </span>
+              </label>
+              <div class="btn-row">
+                <button type="button" class="btn btn-primary" id="mom-run-btn" disabled>
+                  Buat notulen
+                </button>
+                <button type="button" class="btn" id="mom-cancel-btn" disabled>
+                  Batalkan
+                </button>
+                <button type="button" class="btn" id="mom-load-btn" disabled>
+                  Muat notulen tersimpan
+                </button>
+              </div>
+              <p class="muted" id="mom-duration-hint">
+                Rapat 90 menit memakan waktu sekitar 15–20 menit. Perekaman tidak pernah
+                dibatalkan demi notulen; pembuatan notulen yang ditunda oleh perekaman.
+              </p>
+              <p class="warn-line" id="mom-error" hidden></p>
+            </article>
+
+            <article class="status-card">
+              <header><h3>Proses</h3></header>
+              <span class="pill" id="mom-pill">Idle</span>
+              <p class="elapsed" id="mom-elapsed">00:00:00</p>
+              <div class="mom-progress" id="mom-progress" hidden>
+                <div class="mom-progress-bar"></div>
+              </div>
+              <dl class="kv" id="mom-cost-kv"></dl>
+              <ul class="plain" id="mom-stage-list"></ul>
+              <ul class="plain" id="mom-warning-list"></ul>
+            </article>
+          </div>
+
+          <article class="status-card" id="mom-minute-card">
+            <header><h3>Notulen</h3></header>
+            <!-- The wrapper is toggled, not the grid: [hidden] loses to any author
+                 `display` rule, and .mom-stats sets one. See the note atop app.css. -->
+            <div id="mom-stats-wrap" hidden>
+              <div class="mom-stats" id="mom-stats"></div>
             </div>
-            <button type="button" class="btn" id="roster-capacity-save-btn" disabled>
-              Simpan kapasitas
-            </button>
-          </div>
-          <p class="hint" id="roster-capacity-range"></p>
-          <p class="warn-line" id="roster-capacity-warning" hidden></p>
-          <p class="warn-line" id="roster-capacity-error" hidden></p>
-          <p class="status-detail" id="roster-capacity-result"></p>
-
-          <!-- Roster membership. The roster is a subset of the directory; adding
-               somebody here never copies them, and removing them never deletes
-               them from the directory. -->
-          <h4 class="subhead">Anggota roster aktif</h4>
-          <p class="status-detail" id="roster-slots"></p>
-          <table class="participant-table" id="roster-table">
-            <thead>
-              <tr>
-                <th scope="col">Nama</th>
-                <th scope="col">Peran</th>
-                <th scope="col">Status</th>
-                <th scope="col">Consent</th>
-                <th scope="col">Voiceprint</th>
-                <th scope="col">Tindakan</th>
-              </tr>
-            </thead>
-            <tbody id="roster-rows"></tbody>
-          </table>
-          <p class="status-detail" id="roster-empty">Belum ada anggota pada roster ini.</p>
-
-          <h4 class="subhead">Tambahkan dari direktori peserta</h4>
-          <div class="capacity-row">
-            <div class="field">
-              <label for="roster-add-search">Cari nama atau peran</label>
-              <input type="text" id="roster-add-search" maxlength="120"
-                     autocomplete="off" placeholder="mis. Budi" />
+            <dl class="kv" id="mom-minute-kv"></dl>
+            <p class="muted" id="mom-minute-note" hidden>
+              Setiap poin di bawah mencantumkan waktu dan kutipan asalnya. Poin bertanda
+              <strong>BELUM TERVERIFIKASI</strong> tidak dapat dicocokkan dengan
+              transkrip — periksa sebelum dipakai.
+            </p>
+            <div id="mom-export-row" hidden>
+              <div class="btn-row">
+                <button type="button" class="btn" id="mom-export-btn">
+                  Tulis ulang dokumen
+                </button>
+                <span class="muted" id="mom-export-note"></span>
+              </div>
             </div>
-            <button type="button" class="btn" id="roster-add-search-btn">Cari</button>
-          </div>
-          <ul class="checklist" id="roster-candidates"></ul>
-          <p class="status-detail" id="roster-candidates-note"></p>
-          <p class="warn-line" id="roster-member-error" hidden></p>
-          <p class="status-detail" id="roster-member-result"></p>
-
-          <p class="hint">
-            Roster menentukan siapa saja <em>kandidat pembicara yang dikenal</em>, bukan
-            suara mana yang direkam. Rekaman selalu menangkap seluruh suara yang
-            terdengar mikrofon; suara di luar roster atau tanpa voiceprint kelak
-            ditandai <strong>UNKNOWN</strong>, tidak dibuang.
-          </p>
-          <p class="hint">
-            Mengeluarkan peserta dari roster <strong>tidak</strong> menghapusnya dari
-            direktori, dan tidak menghapus rapat, rekaman, atau notulen lama.
-          </p>
-        </article>
-
-        <!-- participant registry -->
-        <article class="status-card status-card-wide">
-          <header>
-            <span class="status-pill" id="participant-count-pill" data-state="unknown">0</span>
-            <h3>Direktori peserta</h3>
-          </header>
-          <p class="muted">
-            Seluruh peserta yang pernah didaftarkan. Direktori ini tidak dibatasi
-            jumlah tertentu, dan mengeluarkan seseorang dari roster tidak
-            menghapusnya dari sini.
-          </p>
-          <div class="field">
-            <label for="participant-search">Cari nama atau peran</label>
-            <input type="text" id="participant-search" maxlength="120" autocomplete="off"
-                   placeholder="mis. Budi" />
-          </div>
-          <div class="btn-row">
-            <button type="button" class="btn" id="refresh-participants-btn">Muat ulang</button>
-            <button type="button" class="btn btn-primary" id="new-participant-btn">
-              Tambah peserta
-            </button>
-          </div>
-          <table class="participant-table" id="participant-table">
-            <thead>
-              <tr>
-                <th scope="col">Nama</th>
-                <th scope="col">Peran</th>
-                <th scope="col">Status</th>
-                <th scope="col">Consent</th>
-                <th scope="col">Voiceprint</th>
-                <th scope="col">Tindakan</th>
-              </tr>
-            </thead>
-            <tbody id="participant-rows"></tbody>
-          </table>
-          <p class="status-detail" id="participant-empty">Belum ada peserta terdaftar.</p>
-        </article>
-
-        <!-- add / edit -->
-        <article class="status-card" id="participant-form-card" hidden>
-          <header><h3 id="participant-form-title">Tambah peserta</h3></header>
-          <div class="field">
-            <label for="participant-name">Nama tampilan <span aria-hidden="true">*</span></label>
-            <input type="text" id="participant-name" maxlength="120" autocomplete="off" />
-          </div>
-          <div class="field">
-            <label for="participant-role">Peran</label>
-            <input type="text" id="participant-role" maxlength="80" autocomplete="off" />
-          </div>
-          <div class="btn-row">
-            <button type="button" class="btn btn-primary" id="save-participant-btn">Simpan</button>
-            <button type="button" class="btn" id="cancel-participant-btn">Batal</button>
-          </div>
-          <p class="warn-line" id="participant-form-error" hidden></p>
-          <p class="hint">
-            Nama duplikat diperbolehkan. Aplikasi tidak meminta data pribadi lain
-            karena identifikasi pembicara tidak memerlukannya.
-          </p>
-        </article>
-
-        <!-- enrollment readiness / wizard -->
-        <article class="status-card status-card-wide" id="enrollment-card" hidden>
-          <header>
-            <span class="status-pill" id="enrollment-pill" data-state="unknown">IDLE</span>
-            <h3>Enrollment suara — <span id="enrollment-who"></span></h3>
-          </header>
-
-          <dl class="kv" id="readiness-detail"></dl>
-
-          <p class="notice" id="model-unavailable-notice" hidden>
-            <strong>MODEL_UNAVAILABLE.</strong>
-            <span id="model-unavailable-detail"></span>
-          </p>
-
-          <div class="btn-row">
-            <button type="button" class="btn" id="refresh-readiness-btn">Periksa kesiapan</button>
-            <button type="button" class="btn btn-primary" id="start-enrollment-btn" disabled>
-              Mulai enrollment
-            </button>
-            <button type="button" class="btn" id="capture-sample-btn" disabled>
-              Rekam sample
-            </button>
-            <button type="button" class="btn btn-primary" id="finalize-enrollment-btn" disabled>
-              Selesaikan
-            </button>
-            <button type="button" class="btn btn-danger" id="cancel-enrollment-btn" disabled>
-              Batalkan
-            </button>
-          </div>
-
-          <p class="status-detail" id="enrollment-progress">Belum ada sesi.</p>
-
-          <div class="meter" id="enrollment-meter" hidden>
-            <div class="meter-bar" id="enrollment-rms"></div>
-            <div class="meter-peak" id="enrollment-peak"></div>
-          </div>
-          <p class="status-detail" id="enrollment-levels"></p>
-
-          <ul class="checklist" id="sample-list"></ul>
-          <p class="warn-line" id="enrollment-warning" hidden></p>
-        </article>
-
-        <!-- voiceprint / cleanup -->
-        <article class="status-card" id="voiceprint-card" hidden>
-          <header><h3>Voiceprint</h3></header>
-          <dl class="kv" id="voiceprint-detail"></dl>
-          <div class="btn-row">
-            <button type="button" class="btn" id="verify-voiceprint-btn" disabled>
-              Verifikasi integritas
-            </button>
-            <button type="button" class="btn btn-danger" id="revoke-consent-btn" disabled>
-              Cabut persetujuan
-            </button>
-          </div>
-          <p class="status-detail" id="voiceprint-result"></p>
-        </article>
+            <div class="mom-summary" id="mom-summary-box" hidden>
+              <ul id="mom-summary-list"></ul>
+            </div>
+            <div id="mom-sections"></div>
+            <p class="muted" id="mom-minute-empty">Belum ada notulen yang dimuat.</p>
+          </article>
+        </section>
       </div>
 
-      <p class="notice">
-        Voiceprint disimpan <strong>terenkripsi</strong> (AES-256-GCM, kunci dilindungi
-        Windows DPAPI). Audio enrollment <strong>tidak pernah ditulis ke disk</strong> dan
-        tidak pernah melewati halaman ini.
-      </p>
-    </section>
+      <!-- ================= SISTEM ================= -->
+      <div class="view" id="view-sistem" hidden>
+        <section aria-labelledby="status-heading">
+          <div class="section-head">
+            <h2 id="status-heading">Status sistem</h2>
+            <p class="muted" id="status-updated">Belum diperiksa.</p>
+          </div>
 
-    <!-- ================= CONSENT DIALOG ================= -->
+          <div class="status-grid">
+            <article class="status-card" id="card-backend">
+              <header>
+                <span class="status-pill" data-state="unknown">—</span>
+                <h3>Backend lokal</h3>
+              </header>
+              <p class="status-detail">Memeriksa koneksi ke backend loopback…</p>
+              <dl class="kv"></dl>
+            </article>
+
+            <article class="status-card" id="card-database">
+              <header>
+                <span class="status-pill" data-state="unknown">—</span>
+                <h3>Database</h3>
+              </header>
+              <p class="status-detail">Memeriksa SQLite, WAL, dan versi migrasi…</p>
+              <dl class="kv"></dl>
+            </article>
+
+            <article class="status-card" id="card-datadir">
+              <header>
+                <span class="status-pill" data-state="unknown">—</span>
+                <h3>Direktori data runtime</h3>
+              </header>
+              <p class="status-detail">Memeriksa lokasi dan hak tulis…</p>
+              <dl class="kv"></dl>
+            </article>
+
+            <article class="status-card" id="card-readiness">
+              <header>
+                <span class="status-pill" data-state="unknown">—</span>
+                <h3>Hardware &amp; kesiapan</h3>
+              </header>
+              <p class="status-detail">Menjalankan diagnostik…</p>
+              <dl class="kv"></dl>
+            </article>
+          </div>
+
+          <details class="diag" id="diag-details">
+            <summary>Rincian diagnostik <span class="muted">(hasil <code>doctor</code>)</span></summary>
+            <div class="diag-body">
+              <p class="muted">Belum ada data. Klik “Muat ulang status”.</p>
+            </div>
+          </details>
+        </section>
+
+        <section aria-labelledby="features-heading">
+          <div class="section-head">
+            <h2 id="features-heading">Fitur aplikasi</h2>
+            <p class="muted">
+              Daftar kemampuan produk ini, apa adanya. Kartu yang bertanda
+              <strong>Tersedia</strong> sudah bisa dipakai sekarang; sisanya belum ada
+              kodenya sama sekali &mdash; bukan ada tetapi dimatikan. Beberapa kartu yang
+              belum tersedia menyebutkan bagian yang <em>sudah</em> jalan, karena sebuah
+              tahap roadmap tidak selalu selesai atau kosong seluruhnya.
+            </p>
+          </div>
+
+          <div class="feature-grid">
+            <article class="feature-card" aria-disabled="true">
+              <div class="feature-head">
+                <h3>Meeting setup</h3>
+                <span class="phase-tag">Phase 1–2</span>
+              </div>
+              <p>
+                Merencanakan rapat di muka: agenda, jadwal, dan undangan peserta sebelum
+                harinya. <strong>Rapat itu sendiri sudah bisa dibuat</strong> &mdash; ia
+                terbentuk otomatis saat Anda menekan Start di langkah 1, dan preflight
+                perangkat sudah berjalan di sana.
+              </p>
+              <p class="not-implemented">
+                Belum diimplementasikan: agenda, jadwal, dan perencanaan rapat di muka.
+              </p>
+            </article>
+
+            <article class="feature-card feature-card-enabled" id="card-recording">
+              <div class="feature-head">
+                <h3>Recording</h3>
+                <span class="phase-tag phase-tag-live">Phase 2 · aktif</span>
+              </div>
+              <p>Perekaman WASAPI, chunk PCM16, manifest + checksum, dan pemulihan crash.</p>
+              <p class="implemented">Tersedia</p>
+              <button type="button" class="btn btn-primary" id="open-recording-btn">
+                Buka panel perekaman
+              </button>
+            </article>
+
+            <article class="feature-card feature-card-enabled" id="card-participants">
+              <div class="feature-head">
+                <h3>Participants</h3>
+                <span class="phase-tag phase-tag-live">Phase 3 · aktif</span>
+              </div>
+              <p>
+                Direktori peserta, roster per rapat dengan kapasitas yang dapat diatur,
+                persetujuan biometrik, dan voiceprint terenkripsi.
+              </p>
+              <p class="implemented">Tersedia</p>
+              <button type="button" class="btn btn-primary" id="open-participants-btn">
+                Buka panel peserta
+              </button>
+            </article>
+
+            <article class="feature-card feature-card-enabled" id="card-transcription">
+              <div class="feature-head">
+                <h3>Transcription</h3>
+                <span class="phase-tag phase-tag-live">Phase 4 · aktif</span>
+              </div>
+              <p>
+                Normalisasi audio, VAD, transkripsi dua tahap dengan anggaran waktu, dan
+                normalisasi istilah teknis. Satu model berat pada satu waktu, di proses
+                terpisah. Diarization, voice ID, dan MoM menyusul di Phase 5–8.
+              </p>
+              <p class="implemented">Tersedia</p>
+              <button type="button" class="btn btn-primary" id="open-transcript-btn">
+                Buka panel transkripsi
+              </button>
+            </article>
+
+            <article class="feature-card feature-card-enabled" id="card-mom">
+              <div class="feature-head">
+                <h3>Notulen (MoM)</h3>
+                <span class="phase-tag phase-tag-live">aktif</span>
+              </div>
+              <p>
+                Keputusan, tindak lanjut, pembahasan dan isu diambil dari transkrip oleh
+                model bahasa lokal, lalu setiap kutipan dicocokkan kembali ke transkrip
+                oleh pemeriksa yang bukan model. Hasilnya draf Word, HTML, Markdown atau
+                teks. Tidak ada pengenalan suara: PIC hanya ditulis bila namanya disebut.
+              </p>
+              <p class="implemented">Tersedia</p>
+              <button type="button" class="btn btn-primary" id="open-mom-btn">
+                Buka panel notulen
+              </button>
+            </article>
+
+            <article class="feature-card" aria-disabled="true">
+              <div class="feature-head">
+                <h3>Diarization &amp; voice ID</h3>
+                <span class="phase-tag">Phase 5–6</span>
+              </div>
+              <p>Memisahkan pembicara dan mencocokkannya dengan voiceprint peserta; suara di luar roster menjadi <code>UNKNOWN</code>, tidak pernah dibuang.</p>
+              <p class="not-implemented">Belum diimplementasikan</p>
+            </article>
+
+            <article class="feature-card" aria-disabled="true">
+              <div class="feature-head">
+                <h3>Review</h3>
+                <span class="phase-tag">Phase 9</span>
+              </div>
+              <p>Peninjauan manusia dengan pemutaran audio, koreksi pembicara, dan gate persetujuan.</p>
+              <p class="not-implemented">Belum diimplementasikan</p>
+            </article>
+
+            <article class="feature-card" aria-disabled="true">
+              <div class="feature-head">
+                <h3>Export</h3>
+                <span class="phase-tag">Phase 10</span>
+              </div>
+              <p>
+                Ekspor dari notulen yang <strong>sudah disetujui</strong> seorang manusia,
+                beserta JSON arsipnya. Bagian &ldquo;sudah disetujui&rdquo; itulah yang
+                belum ada, karena persetujuan adalah Phase 9.
+                <strong>Ekspor draf sudah tersedia</strong> di langkah 4: Word, HTML,
+                Markdown, dan teks biasa. Untuk PDF, buka berkas Word-nya lalu
+                <em>Save as PDF</em>.
+              </p>
+              <p class="not-implemented">
+                Belum diimplementasikan: ekspor dari notulen yang sudah disetujui, dan
+                ekspor JSON.
+              </p>
+            </article>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <!--
+    The dialogs live outside the views on purpose: a modal that sits inside a hidden
+    view cannot open, and one that sits inside a *visible* view inherits its stacking
+    context. Read the note at the top of app.css before touching either of them.
+  -->
     <div class="modal-backdrop" id="consent-backdrop" hidden>
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="consent-title">
         <header>
@@ -437,7 +992,6 @@
       </div>
     </div>
 
-    <!-- ================= REVOKE CONFIRMATION ================= -->
     <div class="modal-backdrop" id="revoke-backdrop" hidden>
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="revoke-title">
         <header><h3 id="revoke-title">Cabut persetujuan?</h3></header>
@@ -477,360 +1031,6 @@
         <p class="warn-line" id="revoke-error" hidden></p>
       </div>
     </div>
-
-    <!-- ================= TRANSCRIPTION (Phase 4) ================= -->
-    <section aria-labelledby="transcript-heading" id="transcript-panel" hidden>
-      <div class="section-head">
-        <h2 id="transcript-heading">Transkripsi offline</h2>
-        <p class="muted">
-          Seluruh proses berjalan di perangkat ini: normalisasi audio ke salinan kerja
-          16 kHz mono, deteksi wicara, transkripsi, lalu transkripsi ulang selektif
-          pada bagian yang paling tidak yakin dalam batas anggaran waktu. Audio master
-          <strong>tidak pernah diubah</strong>. Tidak ada unduhan model dan tidak ada
-          koneksi keluar.
-        </p>
-        <p class="warn-line" id="transcript-accuracy-note">
-          Phase 4 <strong>belum</strong> menetapkan siapa yang berbicara — setiap
-          segmen bertanda <code>UNASSIGNED</code>. Akurasi juga
-          <strong>belum diukur</strong>: belum ada transkrip pembanding, dan akurasi
-          tidak pernah dihitung dari keluaran model itu sendiri.
-        </p>
-      </div>
-
-      <div class="rec-grid">
-        <article class="status-card">
-          <header><h3>Model</h3></header>
-          <dl class="kv" id="asr-model-kv"></dl>
-          <p class="notice" id="asr-model-missing" hidden>
-            Model belum tersedia. Provisioning dilakukan sekali dari terminal:
-            <code>python -m mom_igd asr provision all</code>. Aplikasi ini tidak
-            mengunduh model sendiri.
-          </p>
-        </article>
-
-        <article class="status-card">
-          <header><h3>Pilih rekaman</h3></header>
-          <label class="field">
-            <span>Rekaman selesai</span>
-            <select id="asr-recording-select">
-              <option value="">Memuat…</option>
-            </select>
-          </label>
-          <div class="btn-row">
-            <button type="button" class="btn" id="asr-refresh-btn">
-              Muat ulang daftar
-            </button>
-            <button type="button" class="btn" id="asr-preflight-btn">
-              Jalankan preflight
-            </button>
-          </div>
-          <dl class="kv" id="asr-selected-kv"></dl>
-          <p class="notice" id="asr-ineligible" hidden></p>
-          <p class="muted" id="asr-empty-hint" hidden>
-            Belum ada rekaman berstatus <code>RECORDED</code>. Rekam rapat terlebih
-            dahulu di panel perekaman, lalu tekan <em>Muat ulang daftar</em>.
-          </p>
-        </article>
-
-        <article class="status-card">
-          <header><h3>Jalankan transkripsi</h3></header>
-          <ul class="plain" id="asr-preflight-list"></ul>
-          <div class="btn-row">
-            <button type="button" class="btn btn-primary" id="asr-run-btn" disabled>
-              Proses transkripsi
-            </button>
-            <button type="button" class="btn" id="asr-cancel-btn" disabled>
-              Batalkan
-            </button>
-            <button type="button" class="btn" id="asr-load-btn" disabled>
-              Muat transkrip tersimpan
-            </button>
-          </div>
-          <p class="muted" id="asr-retry-hint" hidden></p>
-          <p class="warn-line" id="asr-error" hidden></p>
-        </article>
-
-        <article class="status-card">
-          <header><h3>Progres &amp; biaya</h3></header>
-          <span class="pill" id="asr-pill">Idle</span>
-          <p class="elapsed" id="asr-elapsed">00:00:00</p>
-          <dl class="kv" id="asr-cost-kv"></dl>
-          <ul class="plain" id="asr-stage-list"></ul>
-        </article>
-
-        <article class="status-card">
-          <header><h3>Pass 2 — transkripsi ulang selektif</h3></header>
-          <dl class="kv" id="asr-pass2-kv"></dl>
-          <table class="participant-table" id="asr-flagged-table">
-            <caption class="muted">
-              Alasan setiap bagian dipilih untuk pass 2. Bagian yang tidak terpilih
-              tetap memakai hasil pass 1.
-            </caption>
-            <thead>
-              <tr><th>Region</th><th>Mulai</th><th>Pass</th><th>Terpilih</th><th>Alasan</th></tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </article>
-      </div>
-
-      <article class="status-card" id="asr-transcript-card">
-        <header><h3>Transkrip</h3></header>
-        <dl class="kv" id="asr-transcript-kv"></dl>
-        <p class="muted">
-          Transkrip di bawah bersifat <strong>read-only</strong> pada Phase 4. Penyuntingan
-          oleh reviewer adalah Phase 7. Segmen bertanda
-          <span class="segment-lowconf">rendah</span> memiliki keyakinan rendah dan
-          sebaiknya diperiksa terhadap audio.
-        </p>
-        <ul class="plain" id="asr-segment-list"></ul>
-        <p class="muted" id="asr-transcript-empty">Belum ada transkrip yang dimuat.</p>
-      </article>
-    </section>
-
-    <!-- ================= MINUTES OF MEETING ================= -->
-    <section aria-labelledby="mom-heading" id="mom-panel" hidden>
-      <div class="section-head">
-        <h2 id="mom-heading">Notulen rapat</h2>
-        <p class="muted">
-          Notulen disusun dari transkrip oleh model bahasa yang berjalan
-          <strong>sepenuhnya di komputer ini</strong>. Transkrip dipotong menjadi
-          beberapa bagian, setiap bagian dibaca terpisah, lalu setiap kutipan
-          dicocokkan kembali ke transkrip oleh pemeriksa yang <strong>bukan
-          model</strong>. Tidak ada unduhan model dan tidak ada koneksi keluar.
-        </p>
-        <p class="warn-line" id="mom-draft-note">
-          Hasilnya adalah <strong>draf</strong>. Belum ada manusia yang memeriksanya.
-          Nama PIC dan tenggat hanya ditulis bila benar-benar disebut di rekaman —
-          sistem ini <strong>tidak mengenali suara siapa pun</strong>, jadi tidak ada
-          poin yang dikaitkan dengan pembicara tertentu.
-        </p>
-      </div>
-
-      <div class="rec-grid">
-        <article class="status-card">
-          <header><h3>Model notulen</h3></header>
-          <dl class="kv" id="mom-model-kv"></dl>
-          <p class="notice" id="mom-model-missing" hidden>
-            Model notulen belum tersedia. Sediakan sekali, dengan akses jaringan:
-            <code>python -m mom_igd asr provision mom-llm</code>. Aplikasi ini tidak
-            pernah mengunduh model sendiri, dan tidak pernah memakai model lain
-            sebagai pengganti.
-          </p>
-        </article>
-
-        <article class="status-card">
-          <header><h3>Pilih transkrip</h3></header>
-          <label class="field">
-            <span>Transkrip selesai</span>
-            <select id="mom-transcript-select">
-              <option value="">— memuat —</option>
-            </select>
-          </label>
-          <div class="btn-row">
-            <button type="button" class="btn" id="mom-refresh-btn">
-              Muat ulang daftar
-            </button>
-          </div>
-          <dl class="kv" id="mom-selected-kv"></dl>
-          <p class="notice" id="mom-ineligible" hidden></p>
-          <p class="muted" id="mom-empty-hint" hidden>
-            Belum ada transkrip yang selesai. Rekam rapat, lalu jalankan transkripsi
-            di panel Transkripsi offline.
-          </p>
-        </article>
-
-        <article class="status-card">
-          <header><h3>Buat notulen</h3></header>
-          <label class="field">
-            <span>Format dokumen</span>
-            <select id="mom-format-select">
-              <option value="docx">Word (.docx)</option>
-              <option value="html">HTML (.html)</option>
-              <option value="markdown">Markdown (.md)</option>
-              <option value="txt">Teks biasa (.txt)</option>
-            </select>
-          </label>
-          <label class="field field-check">
-            <input type="checkbox" id="mom-hide-unverified">
-            <span>
-              Sembunyikan poin yang belum terverifikasi dari dokumen
-              <small class="muted">
-                Poin tetap tersimpan di basis data, dan jumlahnya tetap dicantumkan
-                di dokumen.
-              </small>
-            </span>
-          </label>
-          <div class="btn-row">
-            <button type="button" class="btn btn-primary" id="mom-run-btn" disabled>
-              Buat notulen
-            </button>
-            <button type="button" class="btn" id="mom-cancel-btn" disabled>
-              Batalkan
-            </button>
-            <button type="button" class="btn" id="mom-load-btn" disabled>
-              Muat notulen tersimpan
-            </button>
-          </div>
-          <p class="muted" id="mom-duration-hint">
-            Rapat 90 menit memakan waktu sekitar 15–20 menit. Perekaman tidak pernah
-            dibatalkan demi notulen; pembuatan notulen yang ditunda oleh perekaman.
-          </p>
-          <p class="warn-line" id="mom-error" hidden></p>
-        </article>
-
-        <article class="status-card">
-          <header><h3>Proses</h3></header>
-          <span class="pill" id="mom-pill">Idle</span>
-          <p class="elapsed" id="mom-elapsed">00:00:00</p>
-          <div class="mom-progress" id="mom-progress" hidden>
-            <div class="mom-progress-bar"></div>
-          </div>
-          <dl class="kv" id="mom-cost-kv"></dl>
-          <ul class="plain" id="mom-stage-list"></ul>
-          <ul class="plain" id="mom-warning-list"></ul>
-        </article>
-      </div>
-
-      <article class="status-card" id="mom-minute-card">
-        <header><h3>Notulen</h3></header>
-        <!-- The wrapper is toggled, not the grid: [hidden] loses to any author
-             `display` rule, and .mom-stats sets one. See the note atop app.css. -->
-        <div id="mom-stats-wrap" hidden>
-          <div class="mom-stats" id="mom-stats"></div>
-        </div>
-        <dl class="kv" id="mom-minute-kv"></dl>
-        <p class="muted" id="mom-minute-note" hidden>
-          Setiap poin di bawah mencantumkan waktu dan kutipan asalnya. Poin bertanda
-          <strong>BELUM TERVERIFIKASI</strong> tidak dapat dicocokkan dengan
-          transkrip — periksa sebelum dipakai.
-        </p>
-        <div id="mom-export-row" hidden>
-          <div class="btn-row">
-            <button type="button" class="btn" id="mom-export-btn">
-              Tulis ulang dokumen
-            </button>
-            <span class="muted" id="mom-export-note"></span>
-          </div>
-        </div>
-        <div class="mom-summary" id="mom-summary-box" hidden>
-          <ul id="mom-summary-list"></ul>
-        </div>
-        <div id="mom-sections"></div>
-        <p class="muted" id="mom-minute-empty">Belum ada notulen yang dimuat.</p>
-      </article>
-    </section>
-
-    <!-- ================= FUTURE FEATURES ================= -->
-    <section aria-labelledby="features-heading">
-      <div class="section-head">
-        <h2 id="features-heading">Fitur aplikasi</h2>
-        <p class="muted">
-          Semua kartu di bawah <strong>belum diimplementasikan</strong>. Phase 1 hanya
-          membangun fondasi: konfigurasi, path runtime, database, state machine,
-          API loopback, diagnostik, dan shell ini.
-        </p>
-      </div>
-
-      <div class="feature-grid">
-        <article class="feature-card" aria-disabled="true">
-          <div class="feature-head">
-            <h3>Meeting setup</h3>
-            <span class="phase-tag">Phase 1–2</span>
-          </div>
-          <p>Membuat rapat, agenda, jadwal, dan pre-flight perangkat sebelum merekam.</p>
-          <p class="not-implemented">Belum diimplementasikan</p>
-        </article>
-
-        <article class="feature-card feature-card-enabled" id="card-recording">
-          <div class="feature-head">
-            <h3>Recording</h3>
-            <span class="phase-tag phase-tag-live">Phase 2 · aktif</span>
-          </div>
-          <p>Perekaman WASAPI, chunk PCM16, manifest + checksum, dan pemulihan crash.</p>
-          <p class="implemented">Tersedia</p>
-          <button type="button" class="btn btn-primary" id="open-recording-btn">
-            Buka panel perekaman
-          </button>
-        </article>
-
-        <article class="feature-card feature-card-enabled" id="card-participants">
-          <div class="feature-head">
-            <h3>Participants</h3>
-            <span class="phase-tag phase-tag-live">Phase 3 · aktif</span>
-          </div>
-          <p>
-            Direktori peserta, roster per rapat dengan kapasitas yang dapat diatur,
-            persetujuan biometrik, dan voiceprint terenkripsi.
-          </p>
-          <p class="implemented">Tersedia</p>
-          <button type="button" class="btn btn-primary" id="open-participants-btn">
-            Buka panel peserta
-          </button>
-        </article>
-
-        <article class="feature-card feature-card-enabled" id="card-transcription">
-          <div class="feature-head">
-            <h3>Transcription</h3>
-            <span class="phase-tag phase-tag-live">Phase 4 · aktif</span>
-          </div>
-          <p>
-            Normalisasi audio, VAD, transkripsi dua tahap dengan anggaran waktu, dan
-            normalisasi istilah teknis. Satu model berat pada satu waktu, di proses
-            terpisah. Diarization, voice ID, dan MoM menyusul di Phase 5–8.
-          </p>
-          <p class="implemented">Tersedia</p>
-          <button type="button" class="btn btn-primary" id="open-transcript-btn">
-            Buka panel transkripsi
-          </button>
-        </article>
-
-        <article class="feature-card feature-card-enabled" id="card-mom">
-          <div class="feature-head">
-            <h3>Notulen (MoM)</h3>
-            <span class="phase-tag phase-tag-live">aktif</span>
-          </div>
-          <p>
-            Keputusan, tindak lanjut, pembahasan dan isu diambil dari transkrip oleh
-            model bahasa lokal, lalu setiap kutipan dicocokkan kembali ke transkrip
-            oleh pemeriksa yang bukan model. Hasilnya draf Word, HTML, Markdown atau
-            teks. Tidak ada pengenalan suara: PIC hanya ditulis bila namanya disebut.
-          </p>
-          <p class="implemented">Tersedia</p>
-          <button type="button" class="btn btn-primary" id="open-mom-btn">
-            Buka panel notulen
-          </button>
-        </article>
-
-        <article class="feature-card" aria-disabled="true">
-          <div class="feature-head">
-            <h3>Diarization &amp; voice ID</h3>
-            <span class="phase-tag">Phase 5–6</span>
-          </div>
-          <p>Memisahkan pembicara dan mencocokkannya dengan voiceprint peserta; suara di luar roster menjadi <code>UNKNOWN</code>, tidak pernah dibuang.</p>
-          <p class="not-implemented">Belum diimplementasikan</p>
-        </article>
-
-        <article class="feature-card" aria-disabled="true">
-          <div class="feature-head">
-            <h3>Review</h3>
-            <span class="phase-tag">Phase 9</span>
-          </div>
-          <p>Peninjauan manusia dengan pemutaran audio, koreksi pembicara, dan gate persetujuan.</p>
-          <p class="not-implemented">Belum diimplementasikan</p>
-        </article>
-
-        <article class="feature-card" aria-disabled="true">
-          <div class="feature-head">
-            <h3>Export</h3>
-            <span class="phase-tag">Phase 10</span>
-          </div>
-          <p>Ekspor PDF, Word, JSON, dan Markdown dari snapshot yang telah disetujui.</p>
-          <p class="not-implemented">Belum diimplementasikan</p>
-        </article>
-      </div>
-    </section>
-  </main>
 
   <footer class="footer">
     <p>

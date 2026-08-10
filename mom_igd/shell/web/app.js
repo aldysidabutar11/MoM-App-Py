@@ -514,10 +514,62 @@
 
   // ------------------------------------------------------ calibration
 
+  /* The bar has to move WHILE the operator is speaking.
+
+     Before this it only updated once, when the ten-second test finished, so somebody
+     saying "halo halo halo" watched a motionless bar and concluded the microphone was
+     dead. It was not: the same test measured -45 dBFS with both channels active. A
+     meter that cannot move is indistinguishable from a microphone that cannot hear,
+     and the operator has no way to tell which they are looking at.
+
+     `/audio/level` is a plain dict read, so polling it five times a second costs
+     nothing and opens nothing. It reports `active: false` the moment the microphone
+     closes, which is what stops the bar freezing on somebody's last word and
+     pretending to still be live. */
+  var meterTimer = null;
+
+  function pollMeter() {
+    meterTimer = window.setTimeout(function () {
+      meterTimer = null;
+      get('/audio/level').then(function (envelope) {
+        var level = envelope && envelope.ok ? envelope.data : null;
+        if (level && level.active && level.rms_dbfs !== null) {
+          paintMeter(level.rms_dbfs, level.peak_dbfs);
+          pollMeter();
+        } else if (level && level.active) {
+          pollMeter();
+        }
+      });
+    }, 200);
+  }
+
+  function stopMeter() {
+    if (meterTimer !== null) {
+      window.clearTimeout(meterTimer);
+      meterTimer = null;
+    }
+  }
+
+  /* dBFS to a 0-100 width. -60 is the bottom of the scale rather than -96: the quiet
+     end of a real room sits around -55, and a scale that starts at the noise floor
+     spends most of its length on silence and barely twitches for speech. */
+  function paintMeter(rms, peak) {
+    var scale = function (db) {
+      return Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
+    };
+    el.rms.style.width = scale(rms) + '%';
+    if (peak !== null && peak !== undefined) {
+      el.peak.style.left = scale(peak) + '%';
+    }
+  }
+
   async function calibrate() {
     el.calibrate.disabled = true;
-    el.levelAdvice.textContent = 'Membuka microphone dan mengukur level…';
+    el.levelAdvice.textContent = 'Membuka microphone. Bicaralah normal — batang di atas '
+      + 'akan bergerak mengikuti suara Anda.';
+    pollMeter();
     var envelope = await post('/audio/calibrate', {});
+    stopMeter();
     el.calibrate.disabled = false;
     if (!envelope.ok) {
       el.verdict.dataset.state = 'fail';
@@ -692,13 +744,10 @@
 
   el.open.addEventListener('click', async function () {
     el.panel.hidden = false;
-    el.open.disabled = true;
-    el.open.textContent = 'Panel terbuka';
     await loadDevices();
     await runPreflight();
     await refreshRecovery();
     if (pollTimer === null) poll();
-    el.panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
 
   el.refresh.addEventListener('click', loadDevices);
@@ -715,6 +764,267 @@
     }
     await runPreflight();
   });
+
+
+  /* ---------------------------------------------------------------- voice to text
+
+     The verification an operator actually needs before a meeting. A level meter proves
+     the microphone is delivering *sound*; it says nothing about whether that sound
+     becomes the right words. Somebody responsible for a minute needs to see a sentence
+     they just spoke appear correctly before they trust ninety minutes of it.
+
+     Three things this panel must never do, each learned the hard way on this project:
+
+     * Sit still while the microphone is open. A motionless bar is indistinguishable
+       from a dead microphone, and that mistake cost a day.
+     * Show invented text. Whisper answers noise with fluent sentences, so text that
+       failed the filters is discarded -- and *counted*, because silently discarding it
+       recreates the same "is this thing broken?" confusion from the other direction.
+     * Let itself be read as the transcript. It is a preview from four-second windows
+       with no second pass; the stored transcript comes from the master audio afterwards.
+  */
+
+  var voice = {
+    card: document.getElementById('voice-card'),
+    pill: document.getElementById('voice-pill'),
+    start: document.getElementById('voice-start'),
+    hint: document.getElementById('voice-hint'),
+    rms: document.getElementById('voice-rms'),
+    peak: document.getElementById('voice-peak'),
+    output: document.getElementById('voice-output'),
+    placeholder: document.getElementById('voice-placeholder'),
+    final: document.getElementById('voice-final'),
+    finalText: document.getElementById('voice-final-text'),
+    stats: document.getElementById('voice-stats'),
+    verdict: document.getElementById('voice-verdict'),
+    note: document.getElementById('voice-note')
+  };
+
+  var voiceTimer = null;
+  var voiceSeen = 0;
+
+  /* Local, not borrowed. `show()` lives in a different module's closure, and calling it
+     from here threw a ReferenceError on the first line of the handler -- so the button
+     disabled itself and then nothing happened at all, which is indistinguishable from a
+     dead button. Every helper this panel uses is defined in this scope. */
+  function voiceShow(node, visible) {
+    if (node) node.hidden = !visible;
+  }
+
+  function voiceScale(db) {
+    if (db === null || db === undefined) return 0;
+    return Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
+  }
+
+  function voiceAppend(segments) {
+    /* Segments only ever grow, so redraw from where we stopped rather than rebuilding:
+       the operator is reading this while it updates, and replacing the whole block
+       every 400 ms makes it impossible to follow. */
+    for (var i = voiceSeen; i < segments.length; i += 1) {
+      var seg = segments[i];
+      if (!seg.text) continue;
+      var line = document.createElement('p');
+      line.className = 'voice-line';
+      var stamp = document.createElement('span');
+      stamp.className = 'voice-stamp';
+      var total = Math.floor((seg.started_ms || 0) / 1000);
+      stamp.textContent =
+        String(Math.floor(total / 60)).padStart(2, '0') + ':' +
+        String(total % 60).padStart(2, '0');
+      line.appendChild(stamp);
+      line.appendChild(document.createTextNode(seg.text));
+      voice.output.appendChild(line);
+    }
+    if (segments.length > voiceSeen) {
+      voiceShow(voice.placeholder, false);
+      voice.output.scrollTop = voice.output.scrollHeight;
+    }
+    /* Monotonic, and that is the whole point: this counts what is *on screen*, and a
+       line already drawn cannot become undrawn. Assigning `segments.length` directly
+       printed every preview line twice, and the path there is not obvious.
+
+       `/audio/live` answers with an empty list once the transcriber has been cleared,
+       which happens while the accurate pass is still running. The last poll in flight
+       therefore came back with nothing, reset the counter to zero, and the final
+       response -- carrying the full list -- then redrew all of it underneath the copy
+       already there. Any shrinking answer would do the same. */
+    voiceSeen = Math.max(voiceSeen, segments.length);
+  }
+
+  function voicePoll() {
+    voiceTimer = window.setTimeout(function () {
+      voiceTimer = null;
+      Promise.all([get('/audio/level'), get('/audio/live')]).then(function (both) {
+        var level = both[0] && both[0].ok ? both[0].data : null;
+        var live = both[1] && both[1].ok ? both[1].data : null;
+        if (level && level.active) {
+          voice.rms.style.width = voiceScale(level.rms_dbfs) + '%';
+          voice.peak.style.left = voiceScale(level.peak_dbfs) + '%';
+        }
+        if (live) voiceAppend(live.segments || []);
+        if (level && level.active) {
+          voicePoll();
+        } else {
+          /* The microphone has closed but the request has not come back: the accurate
+             pass is running over the whole recording, and it takes several seconds. Say
+             so. A panel that goes silent here reads as one that has hung, and the
+             operator stops the test before the result they came for arrives. */
+          voice.pill.dataset.state = 'live';
+          voice.pill.textContent = 'MEMBACA ULANG';
+          voice.hint.textContent = 'Microphone sudah ditutup. Model akurat sedang '
+            + 'membaca ulang seluruh rekaman -- tunggu sebentar.';
+          voice.rms.style.width = '0%';
+        }
+      });
+    }, 400);
+  }
+
+  function voiceStopPolling() {
+    if (voiceTimer !== null) {
+      window.clearTimeout(voiceTimer);
+      voiceTimer = null;
+    }
+  }
+
+  async function runVoiceCheck() {
+    voice.start.disabled = true;
+    voiceSeen = 0;
+    voice.output.textContent = '';
+    voice.output.appendChild(voice.placeholder);
+    voiceShow(voice.placeholder, true);
+    voiceShow(voice.note, false);
+    voice.stats.textContent = '';
+    voice.verdict.textContent = '';
+    voiceShow(voice.final, false);
+    voice.pill.dataset.state = 'live';
+    voice.pill.textContent = 'MENDENGAR';
+    voice.hint.textContent = 'Microphone terbuka. Bicaralah normal.';
+    voicePoll();
+
+    var envelope;
+    try {
+      envelope = await post('/audio/voice-check', { seconds: 30 });
+    } catch (err) {
+      envelope = { ok: false, error: String(err) };
+    } finally {
+      /* The button is re-enabled here and nowhere else. Anything that throws between
+         disabling it and this point leaves it dead for the rest of the session, and a
+         dead button looks exactly like a feature that was never wired up -- which is
+         the precise failure this panel already shipped with once. */
+      voiceStopPolling();
+      voice.start.disabled = false;
+      voice.rms.style.width = '0%';
+      voice.hint.textContent = 'Microphone sudah ditutup. Tidak ada yang disimpan.';
+    }
+
+    if (!envelope.ok) {
+      voice.pill.dataset.state = 'fail';
+      voice.pill.textContent = 'GAGAL';
+      voice.verdict.textContent = errorText(envelope);
+      return;
+    }
+
+    var data = envelope.data;
+    var tr = data.transcript || {};
+    voiceAppend(tr.segments || []);
+
+    /* Why the accurate pass produced no text. Anything not listed is an exception type
+       from Python and is shown as-is, which is still better than a blank box. */
+    var VOICE_FINAL_REASON = {
+      NO_AUDIO: 'Tidak ada audio yang sampai ke pemeriksa. Periksa pilihan mikrofon.',
+      TOO_SHORT: 'Rekaman terlalu pendek untuk dibaca ulang. Coba lagi dan bicara '
+        + 'sedikit lebih lama.',
+      NO_SPEECH: 'Model membaca seluruh rekaman dan menilainya sebagai suara ruangan, '
+        + 'bukan ucapan. Kalau Anda memang berbicara: dekatkan mikrofon, atau naikkan '
+        + 'level input di Windows.',
+      EMPTY_DECODE: 'Model berjalan tetapi tidak menghasilkan kata apa pun. Suaranya '
+        + 'kemungkinan terlalu pelan atau tertutup derau.',
+      NO_MODEL: 'Model pengenal suara belum terpasang di komputer ini, jadi '
+        + 'hanya level suara yang bisa diperiksa.'
+    };
+
+    /* What the level measurement means, and what to do about it. Every one of these
+       names the setting to change, because a warning that does not is a warning the
+       operator learns to ignore. */
+    var VOICE_VERDICT = {
+      NO_SIGNAL: 'Tidak ada sinyal sama sekali. Pastikan mikrofon yang benar dipilih, '
+        + 'tidak dalam keadaan mute, dan Windows sudah mengizinkan akses mikrofon.',
+      TOO_QUIET: 'Suara terlalu pelan. Dekatkan mikrofon ke tengah meja, atau naikkan '
+        + 'level input di Windows: Settings > System > Sound > Input.',
+      GOOD: 'Level suara sudah pas.',
+      TOO_LOUD: 'Suara hampir mentok dan kata-kata mulai pecah, yang membuat teksnya '
+        + 'salah. Turunkan level input di Windows: Settings > System > Sound > Input.',
+      CLIPPING: 'Suara pecah (clipping) dan audionya rusak permanen -- teks pasti '
+        + 'banyak salah. Turunkan level input di Windows: Settings > System > Sound > '
+        + 'Input, lalu tes lagi.'
+    };
+
+    /* The accurate pass is what the operator should judge, so it decides the verdict
+       and gets its own block. The streaming lines above it are reassurance during the
+       test, not the answer -- they come from the small model and are cut into
+       six-second pieces. */
+    var finalText = (data.final_text || '').trim();
+    if (finalText) {
+      voice.finalText.textContent = finalText;
+      voiceShow(voice.final, true);
+    } else if (data.final_error) {
+      /* Never an empty box. Each reason is a different thing for the operator to do. */
+      voice.finalText.textContent = VOICE_FINAL_REASON[data.final_error]
+        || ('Lintasan akurat gagal (' + data.final_error + '). '
+            + 'Teks cepat di atas tetap berlaku.');
+      voiceShow(voice.final, true);
+    }
+
+    var previewLines = (tr.segments || []).length;
+    var spoken = finalText ? 1 : previewLines;
+    voice.pill.dataset.state = spoken ? 'ok' : 'warn';
+    voice.pill.textContent = spoken ? 'ADA TEKS' : 'TIDAK ADA TEKS';
+
+    setKv(voice.stats, [
+      /* Not "sentences read": the accurate pass returns one block of text, so that
+         label reported 1 next to three visible lines and read like a fault. These two
+         count different things and are named for what they are. */
+      ['Baris pratinjau', String(previewLines)],
+      ['Bagian diproses', String(tr.decoded_windows || 0)],
+      ['Dibuang (tidak jelas)', String(tr.filtered_windows || 0)],
+      ['Blok audio hilang', String(tr.dropped_blocks || 0)],
+      ['Level', data.levels.rms_dbfs + ' dBFS rata-rata, puncak ' + data.levels.peak_dbfs]
+    ]);
+    /* The service's advice is English -- it is written for the CLI and the logs. The
+       operator of this panel is not the person who reads those, so the verdict is said
+       in the language the rest of the interface is written in, and the English is kept
+       as the fallback rather than dropped. */
+    voice.verdict.textContent = VOICE_VERDICT[data.verdict] || data.advice || '';
+
+    /* Saying nothing here is the failure mode this whole panel exists to prevent. If
+       the operator spoke and no text appeared, they must be told which of the three
+       reasons applies -- otherwise they conclude the microphone is broken, which is
+       exactly the wrong conclusion and exactly the one already reached once. */
+    if (!spoken) {
+      if (!data.model_available) {
+        voice.note.textContent = 'Model transkripsi belum terpasang, jadi teks tidak '
+          + 'bisa dibuat. Level suara di atas tetap menunjukkan microphone berfungsi. '
+          + 'Jalankan: python -m mom_igd asr provision all';
+      } else if (tr.filtered_windows) {
+        voice.note.textContent = 'Suara terdengar, tetapi ' + tr.filtered_windows
+          + ' bagian dibuang karena model sendiri tidak yakin itu ucapan. Biasanya '
+          + 'karena terlalu jauh dari microphone, terlalu pelan, atau ruangan berisik. '
+          + 'Coba lagi lebih dekat dan lebih jelas.';
+      } else {
+        voice.note.textContent = 'Tidak ada suara yang terdengar sama sekali. Periksa '
+          + 'batang level di atas: jika tidak bergerak saat Anda bicara, microphone '
+          + 'belum menangkap suara.';
+      }
+      voiceShow(voice.note, true);
+    } else {
+      voice.note.textContent = 'Bandingkan "Hasil akhir" dengan kalimat yang Anda ucapkan. '
+        + 'Jika artinya sudah tepat, microphone dan pengaturan suara sudah siap dipakai '
+        + 'untuk rapat. Teks ini hanya pratinjau dan tidak disimpan.';
+      voiceShow(voice.note, true);
+    }
+  }
+
+  voice.start.addEventListener('click', function () { runVoiceCheck(); });
 
   el.calibrate.addEventListener('click', calibrate);
   el.preflightBtn.addEventListener('click', runPreflight);
@@ -1851,12 +2161,9 @@
     el.open.addEventListener('click', function () {
       once(async function () {
         show(el.panel, true);
-        el.open.disabled = true;
-        el.open.textContent = 'Panel terbuka';
         await loadParticipants();
         await loadMeetings();
         await searchCandidates();
-        el.panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
     });
   }
@@ -2417,9 +2724,16 @@
 
   async function poll() {
     var response = await get('/asr/status');
-    if (!response.ok) return;
+    if (!response.ok) {
+      /* One failed status call is not the end of the run. Returning here used to stop
+         the timer, so a single hiccup froze the display on a pipeline that was still
+         working. */
+      if (awaitingRun) schedulePoll();
+      return;
+    }
     var data = response.data || {};
     busy = Boolean(data.busy);
+    if (busy) sawBusy = true;
     el.pill.textContent = busy
       ? 'Berjalan' + (data.cancel_requested ? ' (pembatalan diminta)' : '')
       : 'Idle';
@@ -2431,10 +2745,18 @@
     updateButtons();
     if (busy) {
       schedulePoll();
-    } else {
-      stopPolling();
-      stopElapsed();
+      return;
     }
+    if (awaitingRun && sawBusy) {
+      /* The run this panel started has ended, and the status endpoint is what says so.
+         `sawBusy` is required because the first poll can land before the backend has
+         marked itself busy, and a stale `last_result` from a previous run would then be
+         announced as this one's outcome. */
+      finishRun(data.last_result || null, data.last_error || null);
+      return;
+    }
+    stopPolling();
+    stopElapsed();
   }
 
   /* Each poll schedules the next one itself, rather than running on a fixed repeating
@@ -2562,7 +2884,33 @@
 
   /* -- actions ---------------------------------------------------------- */
 
-  async function run() {
+  /* Whether a run started here is still unaccounted for, and whether the backend has
+     been observed working on it. Both are needed to tell "the run finished" apart from
+     "the first poll arrived before the backend marked itself busy". */
+  var awaitingRun = false;
+  var sawBusy = false;
+
+  function finishRun(payload, errorText) {
+    awaitingRun = false;
+    sawBusy = false;
+    busy = false;
+    stopPolling();
+    stopElapsed();
+    if (payload) {
+      renderStages(payload.stages);
+      renderCost(payload);
+      renderPass2(payload);
+    }
+    el.pill.textContent = errorText ? 'Gagal' : 'Selesai';
+    if (errorText) fail(String(errorText));
+    return loadRecordings()
+      .then(function () {
+        return errorText ? null : loadTranscript();
+      })
+      .then(updateButtons);
+  }
+
+  function run() {
     fail('');
     var uuid = selectedUuid();
     if (!uuid) {
@@ -2570,37 +2918,39 @@
       return;
     }
     busy = true;
+    awaitingRun = true;
+    sawBusy = false;
     updateButtons();
     el.pill.textContent = 'Berjalan';
     startElapsed();
     schedulePoll();
 
-    var response = await post('/asr/transcribe', { recording_uuid: uuid });
-    busy = false;
-    stopPolling();
-    stopElapsed();
-    if (!response.ok) {
+    /* Deliberately NOT awaited, and this is the whole point of the note at the top of
+       this panel. The pipeline runs for minutes; the bridge gives up after sixty
+       seconds. Awaiting the POST meant the operator was shown a timeout for a run that
+       was working and would finish -- which is exactly what happened once the pass-2
+       budget was raised and a 135-second recording went from 56s to 98s. `/asr/status`
+       is the source of truth for the outcome; this promise only carries the answers
+       that arrive too fast for a poll to catch. */
+    post('/asr/transcribe', { recording_uuid: uuid }).then(function (response) {
+      if (!awaitingRun) return; // the poll has already accounted for this run
+      if (response.ok) {
+        finishRun(response.data || {}, null);
+        return;
+      }
+      if (Number(response.status) === 0) {
+        /* Transport gave up, not the pipeline: status 0 is the bridge's own timeout or
+           a dropped connection, never an answer from the server. The run continues and
+           the poll will see it end. Reporting this as a failure is the bug being fixed. */
+        return;
+      }
       var detail = (response.data && response.data.detail) || response.error || 'gagal';
       if (detail && typeof detail === 'object') {
-        renderStages(detail.stages);
-        renderCost(detail);
-        renderPass2(detail);
-        fail(String(detail.error || detail.reason_code || 'transkripsi gagal'));
+        finishRun(detail, detail.error || detail.reason_code || 'transkripsi gagal');
       } else {
-        fail(String(detail));
+        finishRun(null, detail);
       }
-      el.pill.textContent = 'Gagal';
-      await loadRecordings();
-      updateButtons();
-      return;
-    }
-    el.pill.textContent = 'Selesai';
-    renderStages((response.data || {}).stages);
-    renderCost(response.data);
-    renderPass2(response.data);
-    await loadRecordings();
-    await loadTranscript();
-    updateButtons();
+    });
   }
 
   async function cancel() {
@@ -2631,7 +2981,6 @@
   if (el.open) {
     el.open.addEventListener('click', function () {
       show(el.panel, true);
-      el.panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
       once(async function () {
         await loadModels();
         await loadRecordings();
@@ -2819,7 +3168,13 @@
 
   function detailOf(response) {
     if (!response) return 'tidak ada jawaban dari server.';
-    var body = response.body;
+    /* `data`, because that is the key `ShellApi.api_get` returns. This module read
+       `response.body` in all seven places it looked at a payload, so every read here
+       silently produced `undefined`: the model showed as "belum tersedia", the feature
+       as "dimatikan di konfigurasi" and the transcript list as empty, on an install
+       where all three were fine. Every other module in this file already used `data`.
+       A static test now checks the whole file against the envelope's real shape. */
+    var body = response.data;
     if (body && typeof body === 'object' && body.detail) {
       return typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail);
     }
@@ -2854,7 +3209,7 @@
       updateButtons();
       return;
     }
-    var status = response.body || {};
+    var status = response.data || {};
     modelReady = Boolean(status.model_ready);
     setKv(el.modelKv, [
       ['Model', status.model_name || 'belum tersedia'],
@@ -2864,6 +3219,16 @@
     ]);
     show(el.modelMissing, !modelReady);
     running = Boolean(status.running);
+    if (running) sawRunning = true;
+    if (awaitingRun && !running && sawRunning) {
+      /* The run this panel started has ended, and the status endpoint is what says so.
+         `sawRunning` is required because the first poll can land before the backend has
+         marked itself running, and a stale `last_result` would then be announced as
+         this run's outcome. `finishRun` clears `awaitingRun` before it calls back in
+         here, so this cannot re-enter. */
+      finishRun(status.last_result || null, status.last_error || null);
+      return;
+    }
     updateButtons();
   }
 
@@ -2875,7 +3240,7 @@
       fail('Tidak dapat memuat daftar transkrip: ' + detailOf(response));
       return;
     }
-    transcripts = (response.body && response.body.transcripts) || [];
+    transcripts = (response.data && response.data.transcripts) || [];
     var previous = el.select.value;
     el.select.textContent = '';
     if (!transcripts.length) {
@@ -3241,7 +3606,34 @@
 
   /* ------------------------------------------------------------------ acts */
 
-  async function run() {
+  /* Whether a run started here is still unaccounted for, and whether the backend has
+     been observed working on it. Both are needed to tell "it finished" apart from "the
+     first poll arrived before the backend marked itself running". */
+  var awaitingRun = false;
+  var sawRunning = false;
+
+  function finishRun(result, errorText) {
+    awaitingRun = false;
+    sawRunning = false;
+    running = false;
+    stopTimers(errorText ? 'Gagal' : 'Selesai');
+    if (result) {
+      renderStages(result.stages);
+      renderWarnings(result.warnings);
+      renderCost(result);
+    }
+    if (errorText) fail('Pembuatan notulen gagal: ' + errorText);
+    updateButtons();
+    return loadModel()
+      .then(function () {
+        return errorText ? null : loadTranscripts();
+      })
+      .then(function () {
+        return errorText ? null : loadMinute();
+      });
+  }
+
+  function run() {
     var row = selected();
     if (!row) return;
     fail('');
@@ -3249,30 +3641,35 @@
     renderWarnings([]);
     renderCost(null);
     running = true;
+    awaitingRun = true;
+    sawRunning = false;
     startTimers();
     updateButtons();
+    schedulePoll();
 
-
-    var response = await post('/mom/generate', {
+    /* Deliberately NOT awaited, for the reason the transcription panel gives at length:
+       the model runs for minutes and the bridge gives up after sixty seconds, so
+       awaiting the POST reports a timeout for a run that is working. `/mom/status` owns
+       the outcome; this promise only carries answers that arrive too fast to poll for,
+       and the refusals -- a capture in progress, a run already going -- which come back
+       immediately. */
+    post('/mom/generate', {
       recording_uuid: row.recording_uuid,
       export_formats: [el.format.value],
       include_unverified: !el.hideUnverified.checked
+    }).then(function (response) {
+      if (!awaitingRun) return; // the poll already accounted for this run
+      if (response.ok) {
+        finishRun(response.data || {}, null);
+        return;
+      }
+      if (Number(response.status) === 0) {
+        /* Transport gave up, not the model: status 0 is the bridge's own timeout or a
+           dropped connection, never an answer from the server. */
+        return;
+      }
+      finishRun(null, detailOf(response));
     });
-
-    running = false;
-    stopTimers(response.ok ? 'Selesai' : 'Gagal');
-    if (!response.ok) {
-      fail('Pembuatan notulen gagal: ' + detailOf(response));
-      updateButtons();
-      await loadModel();
-      return;
-    }
-    var result = response.body || {};
-    renderStages(result.stages);
-    renderWarnings(result.warnings);
-    renderCost(result);
-    await loadTranscripts();
-    await loadMinute();
   }
 
   async function cancel() {
@@ -3289,7 +3686,7 @@
       renderMinute(null);
       return;
     }
-    renderMinute(response.body || null);
+    renderMinute(response.data || null);
   }
 
   async function exportAgain() {
@@ -3305,7 +3702,7 @@
       fail('Ekspor gagal: ' + detailOf(response));
       return;
     }
-    var record = response.body || {};
+    var record = response.data || {};
     el.exportNote.textContent = 'Ditulis: ' + record.format + ' — ' + record.relative_path +
       (record.included_unverified ? ' (memuat poin belum terverifikasi)' : '');
     await loadMinute();
@@ -3327,7 +3724,6 @@
   if (el.open) {
     el.open.addEventListener('click', function () {
       show(el.panel, true);
-      el.panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
       once(async function () {
         await loadModel();
         await loadTranscripts();
@@ -3356,4 +3752,86 @@
   renderCost(null);
   renderMinute(null);
   updateButtons();
+})();
+
+/* ==========================================================================
+   NAVIGATION
+
+   One view is visible; the rest carry `hidden`. The rail owns that decision and
+   nothing else does -- the four workflow modules below never touch each other's
+   visibility, which is what keeps them independent IIFEs.
+
+   Each module still owns its own first load: fetch the device list, run the
+   preflight, start polling. All of that already hangs off the module's "open"
+   button from the previous layout, so rather than reimplement four loaders here,
+   the first visit to a view clicks the button. Whether a view has been visited is
+   tracked here and not inferred from the button's `disabled` flag: two of the four
+   modules never set it, so inferring would have refetched on every single click
+   for transcription and minutes, and not at all for the other two.
+   ========================================================================== */
+(function () {
+  var items = Array.prototype.slice.call(document.querySelectorAll('.nav-item'));
+  if (!items.length) return;
+
+  var LOADER_OF_VIEW = {
+    'view-peserta': 'open-participants-btn',
+    'view-rekam': 'open-recording-btn',
+    'view-teks': 'open-transcript-btn',
+    'view-notulen': 'open-mom-btn'
+  };
+  var visited = {};
+
+  function showView(viewId) {
+    items.forEach(function (item) {
+      var target = document.getElementById(item.dataset.view);
+      var current = item.dataset.view === viewId;
+      if (target) target.hidden = !current;
+      if (current) {
+        item.setAttribute('aria-current', 'page');
+      } else {
+        item.removeAttribute('aria-current');
+      }
+    });
+
+    if (LOADER_OF_VIEW[viewId] && !visited[viewId]) {
+      visited[viewId] = true;
+      var loader = document.getElementById(LOADER_OF_VIEW[viewId]);
+      if (loader) loader.click();
+    }
+
+    /* The rail is sticky but the page is not: without this, opening a long view
+       left the reader half-way down the previous one. */
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }
+
+  items.forEach(function (item) {
+    item.addEventListener('click', function () { showView(item.dataset.view); });
+  });
+
+  /* The home screen repeats the same destinations as large cards, because somebody
+     opening this for the first time reads the middle of the screen, not a rail.
+     They drive the rail rather than duplicating what it does. */
+  Array.prototype.slice.call(document.querySelectorAll('[data-goto]')).forEach(
+    function (button) {
+      button.addEventListener('click', function () {
+        var item = document.getElementById(button.dataset.goto);
+        if (item) item.click();
+      });
+    }
+  );
+
+  /* The same buttons still sit on the capability list under Sistem, where they now
+     read as "go there". Marking the view visited *before* navigating is what stops
+     this from recursing: `showView` would otherwise click the very button whose
+     handler called it. */
+  Object.keys(LOADER_OF_VIEW).forEach(function (viewId) {
+    var loader = document.getElementById(LOADER_OF_VIEW[viewId]);
+    if (!loader) return;
+    loader.addEventListener('click', function () {
+      visited[viewId] = true;
+      showView(viewId);
+    });
+  });
+
+  showView('view-beranda');
 })();

@@ -171,6 +171,8 @@ def test_the_shell_proxy_allowlist_is_closed() -> None:
             "/audio/preflight",
             "/audio/recordings/status",
             "/audio/quality",
+            "/audio/live",
+            "/audio/level",
             "/audio/recovery/pending",
             # Phase 3
             "/enrollment/participants",
@@ -295,12 +297,40 @@ def test_future_features_are_shown_as_not_implemented(sources: dict[str, str]) -
         "Export",
     ):
         assert feature in html, f"the {feature} card must be present"
-    disabled = html.count('aria-disabled="true"')
-    assert disabled == html.count("Belum diimplementasikan"), (
-        "every disabled card must say it is not implemented, and no enabled card may"
+    # Per card, not per document. Counting these words across the whole page was the
+    # brittle version: it broke the moment the paragraph above the grid explained what
+    # the "Tersedia" badge means, which is prose about the labels rather than a label.
+    # Reading each card also checks something the counts never did -- that the card
+    # carrying a claim is the card the claim is about.
+    # The whole element, opening tag included: `aria-disabled` and
+    # `feature-card-enabled` live in the tag, not in the body, so capturing only the
+    # body made every card read as neither available nor unavailable.
+    cards = re.findall(
+        r'<article class="feature-card[^"]*"[^>]*>.*?</article>', html, flags=re.S
     )
-    enabled = html.count("feature-card-enabled")
-    assert enabled == html.count("phase-tag-live") == html.count("Tersedia")
+    assert len(cards) >= 6, f"expected the capability grid, found {len(cards)} card(s)"
+
+    enabled = 0
+    for card in cards:
+        is_disabled = 'aria-disabled="true"' in card
+        is_enabled = "feature-card-enabled" in card
+        assert is_disabled != is_enabled, (
+            "a card is either available or it is not; this one claims both or neither: "
+            f"{card[:120]!r}"
+        )
+        if is_enabled:
+            enabled += 1
+            assert "phase-tag-live" in card and "Tersedia" in card, (
+                "an available card must be labelled available"
+            )
+            assert "Belum diimplementasikan" not in card, (
+                "an available card must not also say it is unimplemented"
+            )
+        else:
+            assert "Belum diimplementasikan" in card, (
+                "a card with no implementation must say so, in those words"
+            )
+            assert "phase-tag-live" not in card and "Tersedia" not in card
     for panel in (
         'id="card-recording"',
         'id="card-participants"',
@@ -310,6 +340,38 @@ def test_future_features_are_shown_as_not_implemented(sources: dict[str, str]) -
         assert panel in html, f"{panel} is implemented and must be enabled"
     assert enabled == 4, (
         "Recording, Participants, Transcription and Minutes are live"
+    )
+
+
+def test_a_card_that_is_partly_built_says_which_part_works(sources: dict[str, str]) -> None:
+    """Two cards described a whole phase as absent while the operator used part of it.
+
+    "Export" read "Belum diimplementasikan" on an install where the operator had just
+    produced a Word file from it; what is missing is export from an *approved* minute,
+    and approval is Phase 9. "Meeting setup" read the same while meetings were being
+    created on every Start. A roadmap phase is not always all-or-nothing, and a card
+    that rounds it to nothing tells the reader something false about their own install.
+    """
+    import re as _re
+
+    html = sources["index.html"]
+    cards = {
+        _re.search(r"<h3>([^<]+)</h3>", card).group(1): card
+        for card in _re.findall(
+            r'<article class="feature-card[^"]*"[^>]*>.*?</article>', html, flags=_re.S
+        )
+        if _re.search(r"<h3>([^<]+)</h3>", card)
+    }
+
+    export = cards["Export"]
+    assert "Ekspor draf sudah tersedia" in export, (
+        "the export card must say draft export works, because it does"
+    )
+    assert "disetujui" in export, "and must name the part that does not"
+
+    setup = cards["Meeting setup"]
+    assert "sudah bisa dibuat" in setup, (
+        "the meeting-setup card must say a meeting is created on Start, because it is"
     )
 
 
@@ -327,3 +389,114 @@ def test_status_cards_exist_for_every_required_area(sources: dict[str, str]) -> 
     html = sources["index.html"]
     for element_id in ("card-backend", "card-database", "card-datadir", "card-readiness"):
         assert f'id="{element_id}"' in html
+
+
+# ===========================================================================
+# The side rail
+# ===========================================================================
+
+
+def test_every_rail_destination_exists(sources: dict[str, str]) -> None:
+    """A rail item pointing at nothing is a button that silently blanks the screen."""
+    import re
+
+    html = sources["index.html"]
+    wanted = set(re.findall(r'data-view="([a-z-]+)"', html))
+    assert wanted, "the rail must have destinations"
+    present = set(re.findall(r'<div class="view" id="([a-z-]+)"', html))
+    assert wanted - present == set(), f"rail points at missing views: {wanted - present}"
+    assert present - wanted == set(), f"views nothing can reach: {present - wanted}"
+
+
+def test_every_home_shortcut_points_at_a_rail_item(sources: dict[str, str]) -> None:
+    """The home cards drive the rail rather than duplicating what it does."""
+    import re
+
+    html = sources["index.html"]
+    wanted = set(re.findall(r'data-goto="([a-z-]+)"', html))
+    assert wanted, "the home screen must offer the steps as cards"
+    present = set(re.findall(r'class="nav-item[^"]*" id="([a-z-]+)"', html))
+    assert wanted - present == set(), f"home points at missing rail items: {wanted - present}"
+
+
+def test_exactly_one_view_is_visible_before_the_script_runs(sources: dict[str, str]) -> None:
+    """Two visible views stack; none visible is a blank window if the script fails.
+
+    The rail sets this properly at startup, but the page must already be correct
+    without it -- `app.js` failing to parse must not leave an empty application.
+    """
+    import re
+
+    views = re.findall(r'<div class="view" id="[a-z-]+"( hidden)?>', sources["index.html"])
+    visible = [marker for marker in views if not marker]
+    assert len(visible) == 1, f"{len(visible)} views are visible with no script running"
+
+
+def test_no_panel_carries_its_own_hidden_flag(sources: dict[str, str]) -> None:
+    """Visibility has one owner. Two nested `hidden` flags is how a view opens blank."""
+    import re
+
+    html = sources["index.html"]
+    for panel in ("recording-panel", "participants-panel", "transcript-panel", "mom-panel"):
+        tag = re.search(rf'<section[^>]*id="{panel}"[^>]*>', html)
+        assert tag, panel
+        assert "hidden" not in tag.group(0), (
+            f"{panel} hides itself as well as its view; the rail owns visibility now"
+        )
+
+
+# ===========================================================================
+# The shape of the bridge's answer
+# ===========================================================================
+
+
+def test_the_script_only_reads_keys_the_bridge_actually_returns(sources: dict[str, str]) -> None:
+    """The minutes panel read `response.body` for its whole life. There is no such key.
+
+    `ShellApi.api_get` and `api_post` answer with `ok`, `status`, and then `data` on
+    success or `error` on failure. Reading anything else yields `undefined` in silence,
+    which is worse than an exception: the minutes panel rendered "Model: belum tersedia"
+    and "Fitur notulen: dimatikan di konfigurasi" on an install where the model was
+    present and the feature enabled, and offered an empty transcript list next to a
+    completed transcript. Seven reads, no error, three wrong statements on screen.
+
+    The allowed set is derived from the Python, not restated here, so adding a key to
+    the envelope cannot leave this test asserting yesterday's shape.
+    """
+    import ast
+    import re
+
+    launcher = (
+        Path(__file__).resolve().parents[1] / "mom_igd" / "shell" / "launcher.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(launcher)
+    allowed: set[str] = set()
+    for node in ast.walk(tree):
+        # Every `return {...}` in the proxy is one shape of the envelope.
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Dict):
+            keys = {
+                key.value
+                for key in node.value.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
+            if "ok" in keys:
+                allowed |= keys
+    assert {"ok", "status", "data", "error"} <= allowed, (
+        f"the proxy's envelope no longer looks as expected: {sorted(allowed)}"
+    )
+
+    # Comments are stripped first. The prose explaining this very defect names
+    # `response.body`, and matching it would fail the test on its own documentation --
+    # a mistake already made three times on this project.
+    script = re.sub(r"/\*.*?\*/", " ", sources["app.js"], flags=re.S)
+    script = re.sub(r"(?<!:)//[^\n]*", " ", script)
+
+    # `x.json()` is a method call on a real `fetch` Response -- the bootstrap reads
+    # `/health` that way, which is allowed -- not a key off the bridge's envelope. So
+    # anything followed by `(` is left alone.
+    used = set(re.findall(r"\b(?:response|envelope)\.([a-z_]+)\b(?!\s*\()", script))
+    unknown = used - allowed
+    assert unknown == set(), (
+        f"app.js reads {sorted(unknown)} off a bridge answer that never carries it; "
+        f"the envelope has {sorted(allowed)}"
+    )

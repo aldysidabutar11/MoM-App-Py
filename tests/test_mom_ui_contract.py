@@ -6,6 +6,8 @@ careless edit and a panel that silently misleads an operator is a test that read
 
 from __future__ import annotations
 
+import ast
+import inspect
 import re
 from pathlib import Path
 
@@ -30,6 +32,24 @@ def js() -> str:
 
 
 @pytest.fixture(scope="module")
+def panel(html: str) -> str:
+    """The minutes panel element, sliced by its own tags.
+
+    This used to run from `id="mom-panel"` to a comment reading FUTURE FEATURES that
+    happened to sit further down the page. Reorganising the document deleted that
+    comment and four assertions about the draft banner started failing for a reason
+    that had nothing to do with the banner. An element's extent is its own tags.
+    """
+    start = html.rindex("<section", 0, html.index('id="mom-panel"'))
+    depth = 0
+    for match in re.finditer(r"</?section\b", html[start:]):
+        depth += 1 if match.group(0) == "<section" else -1
+        if depth == 0:
+            return html[start : html.index(">", start + match.end()) + 1]
+    raise AssertionError("unbalanced <section> around the minutes panel")
+
+
+@pytest.fixture(scope="module")
 def block(js: str) -> str:
     """Just the minutes module."""
     return js[js.index("Minutes panel") :]
@@ -40,32 +60,29 @@ def block(js: str) -> str:
 # ===========================================================================
 
 
-def test_the_panel_says_the_result_is_an_unreviewed_draft(html: str) -> None:
+def test_the_panel_says_the_result_is_an_unreviewed_draft(panel: str) -> None:
     """A page that does not say a machine wrote it will be read as if a person did."""
-    panel = html[html.index('id="mom-panel"') : html.index("FUTURE FEATURES")].lower()
-    assert "draf" in panel
+    lowered = panel.lower()
+    assert "draf" in lowered
     # Either accepted phrasing of "no human has checked this". Listed rather than
     # pattern-matched so widening it stays a deliberate edit.
     assert any(
-        phrase in panel
+        phrase in lowered
         for phrase in ("belum diperiksa", "belum ada manusia yang memeriksa")
     ), "the panel must say no human has reviewed the result"
 
 
-def test_the_panel_says_no_voice_is_recognised(html: str) -> None:
+def test_the_panel_says_no_voice_is_recognised(panel: str) -> None:
     """The roster is on screen elsewhere; the operator must not infer we matched voices."""
-    panel = html[html.index('id="mom-panel"') : html.index("FUTURE FEATURES")]
     assert "tidak mengenali suara" in panel
 
 
-def test_the_panel_explains_that_a_pic_comes_only_from_the_recording(html: str) -> None:
-    panel = html[html.index('id="mom-panel"') : html.index("FUTURE FEATURES")]
+def test_the_panel_explains_that_a_pic_comes_only_from_the_recording(panel: str) -> None:
     assert "disebut di rekaman" in panel
 
 
-def test_hiding_unverified_points_says_they_are_still_stored(html: str) -> None:
+def test_hiding_unverified_points_says_they_are_still_stored(panel: str) -> None:
     """Otherwise the checkbox reads as "delete these", which is not what it does."""
-    panel = html[html.index('id="mom-panel"') : html.index("FUTURE FEATURES")]
     assert "tetap tersimpan" in panel
 
 
@@ -155,9 +172,9 @@ def test_every_call_goes_through_the_bridge(block: str) -> None:
         assert banned not in block, banned
 
 
-def test_the_generate_button_starts_disabled(html: str) -> None:
+def test_the_generate_button_starts_disabled(panel: str) -> None:
     """Eligibility is the server's answer, not the page's guess."""
-    tag = re.search(r'<button[^>]*id="mom-run-btn"[^>]*>', html)
+    tag = re.search(r'<button[^>]*id="mom-run-btn"[^>]*>', panel)
     assert tag and "disabled" in tag.group(0)
 
 
@@ -182,3 +199,44 @@ def test_item_text_is_written_as_text_never_as_markup(block: str) -> None:
     """Transcript content is untrusted input: it is whatever was said in the room."""
     assert "innerHTML" not in block
     assert "textContent" in block
+
+
+# ===========================================================================
+# A run that outlives the bridge's timeout
+# ===========================================================================
+
+
+def test_the_generate_request_is_not_awaited(block: str) -> None:
+    """Same defect as the transcription panel, same reason, one screen later.
+
+    Generating a minute took 38 s on a two-minute transcript; a real meeting is many
+    chunks and comfortably exceeds the bridge's 60 s timeout.
+    """
+    assert "await post('/mom/generate'" not in block, (
+        "holding the request open reports a working run as a timeout"
+    )
+    assert "post('/mom/generate'" in block
+
+
+def test_the_minutes_outcome_comes_from_the_status_endpoint(block: str) -> None:
+    for needed in ("last_result", "last_error", "sawRunning", "awaitingRun"):
+        assert needed in block, needed
+
+
+def test_the_service_remembers_how_the_last_run_ended() -> None:
+    """Polling for an outcome needs an outcome to poll for.
+
+    `AsrService.status()` has carried this since Phase 4 and the minutes service did
+    not, which is why one panel could be fixed by polling and the other could not.
+    """
+    from mom_igd.mom.service import MinutesService
+
+    source = Path(inspect.getfile(MinutesService)).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    status = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "status"
+    )
+    body = ast.unparse(status)
+    assert "last_result" in body and "last_error" in body

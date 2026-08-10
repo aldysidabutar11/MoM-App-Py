@@ -79,9 +79,23 @@ $env:MOM_IGD_DATA_DIR = "D:\MoM-IGD-Data"
 Then: record → transcribe → minute → open the `.docx`. The operator guide is
 [`docs/minutes-generation.md`](docs/minutes-generation.md).
 
-**The runtime data root lives outside the repository.** `MOM_IGD_DATA_DIR` (or
-`--data-dir` on any command) decides where recordings, models, the database and exported
-documents go. Nothing of that is ever committed.
+**The runtime data root lives outside the repository, and cannot be moved inside it.**
+`load_config` refuses a data root under the source tree, because recordings, voiceprints,
+models and the database are exactly what must never reach a git remote. `MOM_IGD_DATA_DIR`,
+`--data-dir`, or `data_root` in `config/local.toml` decides where it lives; precedence runs
+`--data-dir` > env var > `config/local.toml` > the shipped default.
+
+On the machine this was developed on, `D:\` holds more than one root, for reasons worth
+writing down rather than rediscovering:
+
+| Path | What it is |
+|---|---|
+| `D:\MoM-IGD-Models-Phase4` | **The live root.** Schema 7, both ASR models, the minutes model, every recording and export since Phase 4. `config/local.toml` points here, so no flag is needed. |
+| `D:\MoM-IGD-Data` | The shipped default, kept at **schema 3** on purpose: the phase-4 rule is not to migrate it until a manual acceptance result comes back. Holds two 2026-07-28 development captures of 12 s and 84 s, and an empty `models/`. Recording works there; transcription and minutes cannot, which is why opening it by accident looks like a broken install. |
+| `D:\MoM-IGD-Data-backup-*`, `D:\MoM-IGD-Test-Phase3-*` | July development roots, superseded. Kept, not deleted. |
+| `D:\MoM-IGD-Data.zip` | Cold backup, and the only copy of the two ASR model binaries outside `models/`. Re-provisioning them instead needs a 2 GB download over a network this product otherwise never uses. |
+
+A fresh install needs none of this: pick one path, `db init`, `asr provision`, done.
 
 Before running the suite, note that it refuses to touch `D:\MoM-IGD-Data`: a session
 fixture fails the run if the real data root is written to, so tests use temporary
@@ -254,6 +268,33 @@ powershell -ExecutionPolicy Bypass -File .\scripts\phase4_acceptance_preflight.p
 # desktop window (blocks until closed)
 .\.venv\Scripts\python.exe -m mom_igd shell
 ```
+
+### The people who attend meetings
+
+Whoever runs a recording picks a name rather than typing one, so the same person is
+spelled the same way in every minute. The directory is seeded from a file:
+
+```powershell
+copy config\participants.example.toml config\participants.local.toml   # then edit it
+.\.venv\Scripts\python.exe -m mom_igd participant import --dry-run    # see what would change
+.\.venv\Scripts\python.exe -m mom_igd participant import
+```
+
+Safe to repeat: each entry carries a `key`, stored as `external_ref`, so running it
+again adds nobody twice. The **name is deliberately not the key** — two people in one
+organisation genuinely share one, and migration 0003 dropped the UNIQUE index on
+`display_name` for exactly that reason (ADR-0009). Correcting a spelling in the file
+updates the existing person and keeps their UUID; removing a line never deletes
+anybody, because they may already be on the roster of a meeting that happened. Use
+`participant deactivate` for that, which does not delete the row either.
+
+`config/participants.local.toml` is gitignored: colleagues' names are personal data.
+Name the file `config/participants.toml` instead if the list should travel with a
+clone — a decision for whoever owns that data, not a side effect of seeding.
+
+The **directory** has no size limit. A **meeting roster** is separate and capped per
+meeting (`default_meeting_participant_capacity`, 9 by default, ceiling 50); raise it on
+the meeting itself when more people attend.
 
 ### Recording a meeting
 

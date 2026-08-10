@@ -896,3 +896,255 @@ main {
 }
 
 #mom-minute-card { grid-column: 1 / -1; }
+
+/* --- voice to text check ---------------------------------------------------
+   The transcript area is a scrolling log rather than a growing block: the card
+   must not change height while the operator is reading it, and the newest line
+   has to stay in view without the page jumping under them. */
+.voice-output {
+  margin: 10px 0;
+  padding: 10px 12px;
+  min-height: 96px;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: 14px;
+  line-height: 1.55;
+}
+.voice-placeholder { color: var(--text-faint); font-size: 13px; margin: 0; }
+.voice-line { margin: 0 0 6px; }
+.voice-line:last-child { margin-bottom: 0; }
+.voice-stamp {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-right: 8px;
+}
+
+/* The accurate result. Visually separated from the streaming lines because it is a
+   different thing: one pass of the large model over the whole recording, and the only
+   text the operator should judge the microphone by. */
+.voice-final {
+  margin: 10px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+}
+.voice-final h4 { margin: 0 0 6px; font-size: 13px; }
+.voice-final h4 small { font-weight: 400; color: var(--text-muted); }
+.voice-final p { margin: 0 0 6px; font-size: 14px; line-height: 1.55; }
+
+
+/* ==========================================================================
+   THE GUIDED FLOW
+
+   The application is four steps in a fixed order, and the layout now says so.
+   A side rail holds the steps; the main area shows exactly one of them. The
+   previous page put every panel on one scroll behind a wall of feature cards,
+   which required the reader to already understand the product before they could
+   find the record button.
+
+   Everything technical -- the doctor output, the transport evidence, the
+   migration version -- lives behind one quiet destination at the bottom of the
+   rail. An operator who never opens it should still be able to run a meeting.
+   ========================================================================== */
+
+.shell {
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  align-items: start;
+  gap: 0;
+  max-width: 1360px;
+  margin: 0 auto;
+  padding: 0 var(--gap);
+}
+
+.sidenav {
+  position: sticky;
+  top: var(--gap);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--gap) 10px var(--gap) 0;
+}
+
+.nav-heading {
+  margin: 14px 0 4px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.nav-item:hover { background: var(--surface-2); }
+.nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* `aria-current` is the state, and the style reads it directly rather than a
+   parallel class -- one source of truth means the rail cannot look selected
+   while the screen reader is told otherwise. */
+.nav-item[aria-current="page"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.nav-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  background: var(--surface);
+}
+
+.nav-item[aria-current="page"] .nav-num {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.nav-item-quiet .nav-label { color: var(--text-muted); }
+.nav-item-quiet[aria-current="page"] .nav-label { color: var(--accent); }
+
+.nav-foot {
+  margin: 18px 0 0 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+/* A view is a whole screen. Only one is ever not `hidden`; see the note at the
+   top of this file about why `[hidden]` needs `!important` to win here. */
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  padding: var(--gap) 0 32px;
+  min-width: 0;
+}
+
+.view-head h2 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  letter-spacing: -0.01em;
+}
+
+.lede {
+  margin: 0;
+  max-width: 68ch;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+/* --- home: the four steps, in the order they are done --------------------- */
+
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: none;
+}
+
+.step {
+  display: flex;
+  gap: 14px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.step-body { min-width: 0; }
+.step-body h3 { margin: 3px 0 6px; font-size: 16px; }
+.step-body p {
+  margin: 0 0 12px;
+  max-width: 62ch;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.notice-quiet {
+  border-color: var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+@media (max-width: 900px) {
+  .shell { grid-template-columns: minmax(0, 1fr); }
+  .sidenav {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+    padding: var(--gap) 0 0;
+  }
+  .nav-item { width: auto; }
+  .nav-heading, .nav-foot { display: none; }
+}
+
+@media (prefers-color-scheme: dark) {
+  .nav-num { background: var(--surface-2); }
+  .nav-item[aria-current="page"] .nav-num { background: var(--accent); color: #0d1117; }
+  .step-num { color: #0d1117; }
+}
+
+/* `main` predates the rail: it centred itself in the viewport and added its own
+   padding, which was right when it *was* the page. As a grid column it is already
+   placed and `.shell` already pads, so both now fight the layout instead. */
+.shell > main {
+  max-width: none;
+  margin: 0;
+  padding: 0 0 0 24px;
+  gap: 0;
+}
+
+@media (max-width: 900px) {
+  .shell > main { padding-left: 0; }
+}

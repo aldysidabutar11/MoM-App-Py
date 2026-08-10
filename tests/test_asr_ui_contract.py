@@ -79,11 +79,43 @@ def test_the_script_looks_up_only_ids_that_exist(html: str, js: str) -> None:
         assert f'id="{match.group(1)}"' in html, match.group(1)
 
 
-def test_the_panel_starts_hidden(html: str) -> None:
-    assert re.search(r'id="transcript-panel"[^>]*\shidden', html), (
-        "the panel must be hidden until the operator opens it"
-    )
 
+def _panel(html: str) -> str:
+    """The transcription panel element, sliced by its own tags.
+
+    This used to run from the panel's id to a comment reading FUTURE FEATURES further
+    down the page. Reorganising the document into views deleted that comment, and four
+    assertions about what the panel must *say* started failing for a reason that had
+    nothing to do with what it says. An element's extent is its own tags.
+    """
+    start = html.rindex("<section", 0, html.index('id="transcript-panel"'))
+    depth = 0
+    for match in re.finditer(r"</?section\b", html[start:]):
+        depth += 1 if match.group(0) == "<section" else -1
+        if depth == 0:
+            return html[start : html.index(">", start + match.end()) + 1]
+    raise AssertionError("unbalanced <section> around the transcription panel")
+
+
+def test_the_panel_is_not_open_when_the_application_starts(html: str) -> None:
+    """The operator opens transcription; it never greets them already open.
+
+    The flag moved rather than went away. It used to sit on the panel, because the
+    panel was one of several stacked on a single page; it now sits on the view that
+    holds it, because a side rail decides which view is on screen. Asserting it on
+    the panel as well would be asserting that two elements independently hide the
+    same thing, which is how a screen ends up blank after the rail has opened it.
+    """
+    view = re.search(r'<div class="view" id="view-teks"([^>]*)>', html)
+    assert view, "the transcription view must exist"
+    assert "hidden" in view.group(1), (
+        "the transcription view must be hidden until the operator opens it"
+    )
+    panel = re.search(r'<section[^>]*id="transcript-panel"([^>]*)>', html)
+    assert panel and "hidden" not in panel.group(1), (
+        "visibility has one owner: the view. A second flag on the panel would survive "
+        "the rail unhiding the view and leave it blank."
+    )
 
 def test_the_hidden_attribute_still_beats_every_author_display_rule(css: str) -> None:
     """The load-bearing rule. Phase 3's revoke dialog died without it."""
@@ -126,7 +158,7 @@ def test_no_class_on_a_toggled_element_sets_display(css: str, html: str, js: str
 
 
 def test_the_panel_has_no_remote_asset(html: str) -> None:
-    block = html[html.index("transcript-panel") :]
+    block = _panel(html)
     for forbidden in ("http://", "https://", "//cdn", "fonts.googleapis", "integrity="):
         assert forbidden not in block, forbidden
 
@@ -165,7 +197,7 @@ def test_the_panel_offers_no_way_to_download_a_model(html: str, js: str) -> None
     block = js[js.index("Phase 4: transcription panel") :]
     assert "/asr/provision" not in block
     assert "provision" not in block.lower().replace("provisioning", "")
-    panel = html[html.index("transcript-panel") : html.index("FUTURE FEATURES")]
+    panel = _panel(html)
     assert "provision all" in panel, "the panel must tell the operator the command"
     assert "<button" not in panel[panel.index("asr-model-missing") : ][:400]
 
@@ -244,20 +276,20 @@ def test_the_uuid_is_validated_in_the_page_before_being_sent(js: str) -> None:
 
 
 def test_the_panel_states_that_no_speaker_is_assigned(html: str) -> None:
-    panel = html[html.index("transcript-panel") : html.index("FUTURE FEATURES")]
+    panel = _panel(html)
     assert "UNASSIGNED" in panel
     assert "belum" in panel.lower()
 
 
 def test_the_panel_states_that_accuracy_is_not_measured(html: str) -> None:
     """The claim the whole phase must not overstate."""
-    panel = html[html.index("transcript-panel") : html.index("FUTURE FEATURES")]
+    panel = _panel(html)
     assert "belum diukur" in panel.lower()
     assert "pembanding" in panel.lower()
 
 
 def test_the_panel_states_that_the_master_audio_is_not_modified(html: str) -> None:
-    panel = html[html.index("transcript-panel") : html.index("FUTURE FEATURES")]
+    panel = _panel(html)
     assert "tidak pernah diubah" in panel
 
 
@@ -338,3 +370,44 @@ def test_the_provision_route_is_not_reachable_from_the_page() -> None:
     assert not any("provision" in path for path in everything)
     for pattern in ALLOWED_GET_PATTERNS + ALLOWED_POST_PATTERNS:
         assert "provision" not in pattern.pattern
+
+
+# ===========================================================================
+# A run that outlives the bridge's timeout
+# ===========================================================================
+
+
+def test_the_transcribe_request_is_not_awaited(js: str) -> None:
+    """The panel's own header promised this and the code did the opposite.
+
+    `ShellApi` gives up after 60 s. The pipeline runs for minutes -- a 135-second
+    recording took 56 s before the pass-2 budget was raised and 98 s after -- so
+    awaiting the POST showed the operator a timeout for a run that was working and did
+    finish. `/asr/status` carries `last_result` and `last_error` precisely so the answer
+    can be polled for.
+    """
+    block = js[js.index("Phase 4: transcription panel") :]
+    assert "await post('/asr/transcribe'" not in block, (
+        "holding the request open reports a working run as a timeout"
+    )
+    assert "post('/asr/transcribe'" in block
+
+
+def test_a_transport_failure_is_not_reported_as_a_failed_run(js: str) -> None:
+    """`status: 0` is the bridge giving up, never an answer from the server."""
+    block = js[js.index("Phase 4: transcription panel") :]
+    assert "Number(response.status) === 0" in block
+
+
+def test_the_outcome_comes_from_the_status_endpoint(js: str) -> None:
+    block = js[js.index("Phase 4: transcription panel") :]
+    for needed in ("last_result", "last_error", "sawBusy", "awaitingRun"):
+        assert needed in block, needed
+
+
+def test_a_single_failed_status_poll_does_not_end_the_run(js: str) -> None:
+    """One hiccup used to stop the timer and freeze the display on a live pipeline."""
+    block = js[js.index("Phase 4: transcription panel") :]
+    poll = block[block.index("async function poll()") :]
+    poll = poll[: poll.index("function schedulePoll")]
+    assert "if (awaitingRun) schedulePoll();" in poll

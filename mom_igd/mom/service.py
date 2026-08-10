@@ -78,6 +78,14 @@ class MinutesService:
         self._running = False
         self._cancel = threading.Event()
         self._current: str | None = None
+        # The outcome of the most recent run, so a client that is not holding the
+        # request open can still learn how it ended. `AsrService` has carried this
+        # since Phase 4; the omission here is what forced the minutes panel to await
+        # a POST that runs for minutes behind a bridge that gives up after sixty
+        # seconds. Reset when a new run starts, so a stale answer is never mistaken
+        # for the current one.
+        self._last_result: dict | None = None
+        self._last_error: str | None = None
 
     # -- state ---------------------------------------------------------------
 
@@ -109,6 +117,8 @@ class MinutesService:
             "enabled": bool(getattr(self._config.mom, "enabled", True)),
             "running": self._running,
             "current_recording": self._current,
+            "last_result": self._last_result,
+            "last_error": self._last_error,
             "active_capture": self.active_capture(),
             "model_ready": bool(ready),
             "model_name": ready[0].model_name if ready else None,
@@ -209,6 +219,8 @@ class MinutesService:
                 )
             self._running = True
             self._current = recording_uuid
+            self._last_result = None
+            self._last_error = None
             self._cancel.clear()
 
         if export_formats is None:
@@ -224,12 +236,25 @@ class MinutesService:
             should_cancel=self._cancel.is_set,
         )
         try:
-            return pipeline.run(
+            outcome = pipeline.run(
                 recording_uuid,
                 job_id=job_id,
                 export_formats=export_formats,
                 include_unverified=include_unverified,
             )
+        except Exception as exc:
+            # Recorded, then re-raised unchanged: a caller that *is* waiting must still
+            # see the exception, and one that gave up waiting must still be able to find
+            # out. Both readers get the same message.
+            with self._lock:
+                self._last_error = str(exc)
+            raise
+        else:
+            with self._lock:
+                self._last_result = (
+                    outcome.to_dict() if hasattr(outcome, "to_dict") else None
+                )
+            return outcome
         finally:
             with self._lock:
                 self._running = False
