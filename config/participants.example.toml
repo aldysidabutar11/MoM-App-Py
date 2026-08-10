@@ -1,0 +1,53 @@
+# =============================================================================
+# Participant directory seed
+# =============================================================================
+#
+# The people who normally attend meetings, so whoever runs the recording picks a
+# name instead of typing one. This seeds the *directory*, which is shared across
+# every meeting; who actually attends a given meeting is a separate choice made
+# per meeting, on its roster.
+#
+# HOW TO USE IT
+#
+#   copy this file to  config/participants.local.toml
+#   put your real names in it
+#   .\.venv\Scripts\python.exe -m mom_igd participant import
+#
+# `participants.local.toml` is in `.gitignore` on purpose. Colleagues' names are
+# personal data, this repository is public, and a name published to the internet
+# cannot be unpublished. Committing the list is a decision for whoever owns the
+# organisation's data, not a side effect of seeding a database. If your fork is
+# private and you want the list to travel with a clone, rename it to
+# `config/participants.toml`, which the importer also reads and git does not
+# ignore.
+#
+# RE-RUNNING IS SAFE
+#
+# Each entry carries a `key`, written to the participant's `external_ref` as
+# `seed:<key>`. The importer skips a key it has already imported, so running it
+# twice adds nobody twice. The *name* is deliberately not the key: two people in
+# one organisation genuinely share a name, and `display_name` had its UNIQUE
+# index dropped in migration 0003 precisely so the second one is not refused
+# (ADR-0009). Identity is the UUID; the name is a label; the key is only a note
+# to this importer about which row came from which line of this file.
+#
+# Renaming somebody: change `name`, keep `key`, re-run -- the existing row is
+# updated in place and keeps its UUID, so nothing that already points at that
+# participant breaks. Changing `key` instead registers a second person.
+#
+# REMOVING SOMEBODY
+#
+# Delete the line here and the directory keeps them: this importer never
+# deactivates and never deletes, because a participant may already be attached
+# to meetings that happened. Use `participant deactivate <uuid>` for that, which
+# also never deletes the row.
+
+[[participant]]
+key = "example-1"
+name = "Nama Lengkap"
+role = "Ketua rapat"          # optional, free text, shown beside the name
+
+[[participant]]
+key = "example-2"
+name = "Nama Lainnya"
+# `role` may be omitted entirely.

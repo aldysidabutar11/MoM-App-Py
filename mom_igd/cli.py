@@ -498,7 +498,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Participants, biometric consent, enrollment and voiceprints.",
         description=(
             "Phase 3 tooling. Every subcommand here is read-only EXCEPT `create`, "
-            "`update`, `deactivate`, `consent grant`, `consent revoke`, "
+            "`import`, `update`, `deactivate`, `consent grant`, `consent revoke`, "
             "`enrollment cancel` and `cleanup-retry`. None of them opens the "
             "microphone, creates the encryption key or loads a model. "
             "`consent grant` and `consent revoke` require an exact typed "
@@ -524,6 +524,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_create.add_argument("name", help="Display name (not an identifier).")
     p_create.add_argument("--role", default=None)
     p_create.add_argument("--json", action="store_true")
+
+    p_import = participant_sub.add_parser(
+        "import",
+        parents=[common],
+        help="Register everyone in the seed file who is not registered yet.",
+    )
+    p_import.add_argument(
+        "--file",
+        default=None,
+        help=(
+            "Seed file. Defaults to config/participants.local.toml, then "
+            "config/participants.toml."
+        ),
+    )
+    p_import.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would change and write nothing.",
+    )
+    p_import.add_argument("--json", action="store_true")
 
     p_update = participant_sub.add_parser(
         "update", parents=[common], help="Edit descriptive fields."
@@ -1019,7 +1039,7 @@ def _cmd_audio_calibrate(args: argparse.Namespace) -> int:
             print(f"Channel {channel.channel}   : {channel.rms_dbfs:.1f} dBFS rms, {state}")
         print(f"xruns       : {result.xrun_callbacks}")
         print(f"\nVerdict     : {result.verdict.value}")
-        print(f"             {result.verdict.advice}")
+        print(f"             {result.advice}")
         if result.error:
             print(f"\nError: {result.error}", file=sys.stderr)
     return EXIT_OK if result.ok else EXIT_FAILURE
@@ -1597,6 +1617,54 @@ def _cmd_participant_create(args: argparse.Namespace) -> int:
         as_json=args.json,
         text=f"Created participant {person.uuid} ({person.display_name}).",
     )
+    return EXIT_OK
+
+
+def _cmd_participant_import(args: argparse.Namespace) -> int:
+    """Load the directory an operator picks names from.
+
+    Read-mostly and safe to repeat: it registers who is missing, corrects a name or
+    role that changed, and touches nobody else. It never deactivates and never
+    deletes -- a participant removed from the file may already be on the roster of a
+    meeting that happened, and a directory that quietly forgets an attendee makes
+    that meeting unreadable afterwards.
+    """
+    from pathlib import Path
+
+    from mom_igd.paths import repo_root
+    from mom_igd.enrollment.seed import (
+        SeedError,
+        import_participants,
+        load_seed,
+        resolve_seed_file,
+    )
+
+    _config, _paths, people, _consent, _connect = _participant_services(args)
+    try:
+        source = resolve_seed_file(
+            Path(args.file) if args.file else None, repo_root() / "config"
+        )
+        entries = load_seed(source)
+    except SeedError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_FAILURE
+
+    outcome = import_participants(
+        people, entries, dry_run=bool(args.dry_run), source=source
+    )
+    payload = outcome.to_dict()
+    prefix = "Would register" if outcome.dry_run else "Registered"
+    lines = [
+        f"Seed file        : {source}",
+        f"{prefix:17s}: {len(outcome.created)}",
+        f"Updated          : {len(outcome.updated)}",
+        f"Already present  : {len(outcome.unchanged)}",
+    ]
+    for name in outcome.created:
+        lines.append(f"  + {name}")
+    for name in outcome.updated:
+        lines.append(f"  ~ {name}")
+    _emit(payload, as_json=args.json, text="\n".join(lines))
     return EXIT_OK
 
 
@@ -2510,6 +2578,7 @@ _DISPATCH: dict[tuple[str, str | None], Any] = {
     ("mom", "revisions"): _cmd_mom_revisions,
     ("participant", "list"): _cmd_participant_list,
     ("participant", "create"): _cmd_participant_create,
+    ("participant", "import"): _cmd_participant_import,
     ("participant", "update"): _cmd_participant_update,
     ("participant", "deactivate"): _cmd_participant_deactivate,
     ("participant", "consent"): _cmd_participant_consent,
