@@ -21,7 +21,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from mom_igd.audio.backend import AudioBackend, CaptureProfile, StreamError
 from mom_igd.audio.devices import DeviceInfo
@@ -56,6 +56,16 @@ class CalibrationResult:
         return self.snapshot.verdict
 
     @property
+    def advice(self) -> str:
+        """The most specific guidance available for this run.
+
+        Delegates to :attr:`QualitySnapshot.diagnosis`, which asks Windows why the level
+        is wrong rather than listing the three things it could be. A muted microphone and
+        an empty room are byte-identical here; only the endpoint can tell them apart.
+        """
+        return self.snapshot.diagnosis
+
+    @property
     def ok(self) -> bool:
         return self.error is None and self.frames > 0 and self.verdict.is_acceptable
 
@@ -63,7 +73,7 @@ class CalibrationResult:
         return {
             "ok": self.ok,
             "verdict": self.verdict.value,
-            "advice": self.verdict.advice,
+            "advice": self.advice,
             "device": self.device,
             "profile": self.profile,
             "seconds": round(self.seconds, 2),
@@ -105,6 +115,8 @@ def run_calibration(
     seconds: float = 12.0,
     save_to: Path | None = None,
     meter_stride: int = 1,
+    on_level: Callable[[QualitySnapshot], None] | None = None,
+    on_audio: Callable[[bytes], None] | None = None,
 ) -> CalibrationResult:
     """Open the microphone briefly and measure the level.
 
@@ -138,6 +150,14 @@ def run_calibration(
         if not status.is_clean:
             xruns += 1
         collected.append(pcm)
+        # A second consumer, for the voice check that transcribes while it measures.
+        # Same discipline as the capture path: it must not raise, and it must not block
+        # -- this runs on the device callback, where anything slow is a dropped frame.
+        if on_audio is not None:
+            try:
+                on_audio(pcm)
+            except Exception:  # noqa: BLE001 - a listener must not break the measurement
+                pass
 
     try:
         stream = backend.open_input_stream(device.index, profile, _sink)
@@ -159,8 +179,20 @@ def run_calibration(
             time.sleep(_POLL_SECONDS)
             # Analyse as we go so a long run does not hold every block in memory
             # any longer than necessary.
+            consumed = False
             while collected:
                 meter.add(collected.pop(0))
+                consumed = True
+            # Publish the rolling level while the test runs. Without this the operator
+            # watches a still bar for ten to fifteen seconds and concludes the
+            # microphone is dead -- which is exactly what happened, on a microphone
+            # that was working. A meter that does not move is indistinguishable from
+            # one that has nothing to show.
+            if consumed and on_level is not None:
+                try:
+                    on_level(meter.rolling_snapshot())
+                except Exception:  # noqa: BLE001 - a listener must not fail the test
+                    pass
     except StreamError as exc:
         error = str(exc)
     except Exception as exc:  # noqa: BLE001

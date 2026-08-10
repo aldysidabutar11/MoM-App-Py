@@ -21,12 +21,17 @@ AUDIO_GET_PATHS = (
     "/audio/preflight",
     "/audio/recordings/status",
     "/audio/quality",
+    # Live preview text while a capture runs. Read-only; the payload marks itself
+    # `is_preview` so it can never be mistaken for the stored transcript.
+    "/audio/live",
+    "/audio/level",
     "/audio/recovery/pending",
 )
 AUDIO_POST_PATHS = (
     "/audio/devices/select",
     "/audio/open-test",
     "/audio/calibrate",
+    "/audio/voice-check",
     "/audio/recordings/start",
     "/audio/recordings/pause",
     "/audio/recordings/resume",

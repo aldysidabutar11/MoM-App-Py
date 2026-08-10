@@ -128,6 +128,7 @@ class CaptureSession:
         on_chunk: Callable[[FinalisedChunk], None] | None = None,
         meter_stride: int = 1,
         start_seq: int = 0,
+        live_tap: Callable[[bytes], None] | None = None,
     ) -> None:
         self._backend = backend
         self._device_index = device_index
@@ -136,6 +137,8 @@ class CaptureSession:
         self._recording_uuid = recording_uuid
         self._manifest = manifest
         self._on_chunk = on_chunk
+        self._live_tap = live_tap
+        self._tap_failures = 0
 
         self._queue = BoundedFrameQueue(profile, capacity_seconds=queue_seconds)
         self._meter = QualityMeter(profile, stride=meter_stride)
@@ -476,6 +479,41 @@ class CaptureSession:
         with self._writer_lock:
             self._writer.write(pcm, xrun_callbacks=xruns, dropped_frames=dropped)
             self._meter.add(pcm)
+        self._feed_live_tap(pcm)
+
+    def _feed_live_tap(self, pcm: bytes) -> None:
+        """Hand a copy of the audio to the live preview. **Never blocks, never raises.**
+
+        Three properties, and every one of them exists to protect the recording:
+
+        * It runs **after** the master write and **outside** ``_writer_lock``, so a slow
+          consumer cannot delay a byte of evidence or hold a lock the writer needs.
+        * The tap is expected to be non-blocking and to discard what it cannot keep up
+          with. A live preview that falls behind loses preview text; the master is
+          already on disk by the time this is called and cannot lose anything.
+        * Any exception is swallowed. A preview feature must not be able to fail a
+          meeting -- the first failure is logged and the rest are counted, because a tap
+          that throws on every block would otherwise fill the log with the same line.
+
+        This is deliberately not on the device callback. That callback copies and
+        enqueues and does nothing else (ADR-0006); putting a transcriber's queue on it
+        would put a dropped frame in real audio behind a preview feature.
+        """
+        tap = self._live_tap
+        if tap is None:
+            return
+        try:
+            tap(pcm)
+        except Exception as exc:  # noqa: BLE001 - a preview must never break a capture
+            self._tap_failures += 1
+            if self._tap_failures == 1:
+                _LOG.warning(
+                    "Live preview tap failed and will be ignored for the rest of this "
+                    "recording: %s: %s. The recording itself is unaffected.",
+                    type(exc).__name__,
+                    exc,
+                )
+            self._live_tap = None
 
     def _record_loss(self, dropped: int) -> None:
         gap = {

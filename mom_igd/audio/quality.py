@@ -97,6 +97,13 @@ class LevelVerdict(StrEnum):
 
     @property
     def advice(self) -> str:
+        """Generic guidance. Prefer :meth:`LevelSnapshot.diagnosis`, which asks Windows.
+
+        A ``NO_SIGNAL`` verdict cannot distinguish a muted microphone from a silent room:
+        both deliver identical zeroes to every user-mode API. This string therefore lists
+        the possibilities, and the caller that has a snapshot should use the diagnosis
+        instead, which reads the endpoint and names the one that applies.
+        """
         return {
             LevelVerdict.NO_SIGNAL: (
                 "No signal. Check that the right microphone is selected, that it "
@@ -199,8 +206,64 @@ class QualitySnapshot:
             "noise_floor_dbfs": round(self.noise_floor_dbfs, 2),
             "channels": [c.to_dict() for c in self.channels],
             "verdict": self.verdict.value,
-            "advice": self.verdict.advice,
+            "advice": self.diagnosis,
+            "endpoint": self.endpoint_state.to_dict(),
         }
+
+    @property
+    def endpoint_state(self):
+        """What Windows reports about the **default** capture endpoint. Read-only.
+
+        Asked only when the measurement is consistent with a mixer problem, so a healthy
+        calibration costs no COM calls -- and, more importantly, so this can never be
+        used to contradict the audio in front of it. See :attr:`diagnosis`.
+        """
+        from mom_igd.audio.endpoint_state import EndpointState, read_default_capture_endpoint
+
+        if self.verdict is LevelVerdict.NO_SIGNAL and not self.signal_present:
+            return read_default_capture_endpoint()
+        return EndpointState()
+
+    @property
+    def signal_present(self) -> bool:
+        """True when this measurement contains audio, whatever any setting claims.
+
+        An active channel or speech-shaped gaps in the silence are direct evidence that
+        sound reached the decoder. Any explanation that says otherwise is wrong about
+        *this* recording, whichever setting it read.
+        """
+        return bool(self.channels and any(c.active for c in self.channels)) or (
+            self.silence_percent < 95.0 and self.peak_dbfs > -80.0
+        )
+
+    @property
+    def diagnosis(self) -> str:
+        """The most specific advice available, and never one the audio contradicts.
+
+        A muted microphone and an empty room are byte-identical at the capture API, so
+        the level alone can only offer a list; asking Windows replaces the list with the
+        one switch that is wrong. Observed in the field as `mute = True` while privacy
+        was allowed and the device was enabled.
+
+        The guard around it matters as much as the reading. The first version asked
+        Windows whenever the level was low *or* absent, and reported the answer without
+        checking it against the measurement -- so a working microphone at -45 dBFS, with
+        both channels active and five per cent silence, was told it was muted. That is
+        worse than the vague advice it replaced: an operator who can hear the level meter
+        responding is being told to go and fix something that is not broken, and the next
+        real warning is one they have learned to disbelieve.
+
+        Two things are read only when they could be true. The endpoint is consulted only
+        for a genuinely silent capture, and even then the reading is dropped if the audio
+        says otherwise. Note also that the endpoint queried is the Windows **default**,
+        which is not necessarily the device this capture used -- another reason its answer
+        may never override what was actually recorded.
+        """
+        if not self.signal_present:
+            specific = self.endpoint_state.advice
+            if specific:
+                return specific
+        return self.verdict.advice
 
     @property
     def inactive_channels(self) -> tuple[int, ...]:

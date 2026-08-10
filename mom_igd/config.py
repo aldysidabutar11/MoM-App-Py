@@ -216,6 +216,23 @@ class AudioConfig(BaseModel):
     status_poll_hz: float = Field(default=3.0, ge=1.0, le=4.0)
     meter_stride: int = Field(default=1, ge=1, le=64)
 
+    live_preview: bool = False
+    """Transcribe the running capture into on-screen preview text.
+
+    Off by default, and that is deliberate rather than cautious. It loads the pass-1
+    model (693 MiB) for the whole meeting and decodes continuously, which is real work
+    happening beside a recording -- so it is switched on by a deployment that has decided
+    the reassurance is worth it, not inherited by one that never asked.
+
+    Nothing it produces is stored. The transcript still comes from the master audio
+    afterwards, and the preview is discarded when the recording stops.
+    """
+
+    live_preview_threads: int = Field(default=4, ge=1, le=64)
+    """Cores the preview decoder may use, kept well below the batch pipeline's twelve.
+    It runs *during* a capture, and the device callback and writer thread must never
+    wait for a core: a preview that starves the writer drops real audio."""
+
     auto_recover_on_start: bool = True
     quarantine_ambiguous_partials: bool = True
     production_requires_usb: bool = True

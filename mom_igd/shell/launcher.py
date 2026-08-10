@@ -44,6 +44,10 @@ ALLOWED_PROXY_PATHS: Final[frozenset[str]] = frozenset(
         "/audio/preflight",
         "/audio/recordings/status",
         "/audio/quality",
+        # Live preview text while a capture runs. Read-only, and the payload says
+        # `is_preview` so the page cannot show it as the transcript by accident.
+        "/audio/live",
+        "/audio/level",
         "/audio/recovery/pending",
         # Phase 3, read-only. None of these opens the microphone, creates a key,
         # decrypts a voiceprint or loads a model.
@@ -71,6 +75,7 @@ ALLOWED_POST_PATHS: Final[frozenset[str]] = frozenset(
         "/audio/devices/select",
         "/audio/open-test",
         "/audio/calibrate",
+        "/audio/voice-check",
         "/audio/recordings/start",
         "/audio/recordings/pause",
         "/audio/recordings/resume",

@@ -186,6 +186,56 @@ def recording_status(service: ServiceDep) -> dict[str, Any]:
     return _guard(service.status)
 
 
+@audio_router.post("/voice-check", summary="Measure and transcribe, storing nothing")
+def voice_check(
+    service: ServiceDep,
+    seconds: Annotated[float | None, Body(embed=True)] = None,
+) -> dict[str, Any]:
+    """Open the microphone, show the level and the words, keep nothing.
+
+    **Engages the microphone**, so it is a POST reachable only from a deliberate button
+    press -- the same rule that governs `calibrate` and `open-test`.
+
+    Poll `/audio/level` and `/audio/live` while this is in flight to drive the meter and
+    the running text. The response carries the final level verdict and the full preview
+    transcript.
+
+    It also carries `final_text`, and that -- not the preview -- is what the operator
+    should read back. The preview is chunked into six-second windows by the small model
+    so the screen stays alive; `final_text` is one pass of the accurate model over the
+    whole recording, and it is materially better. It arrives several seconds after the
+    microphone closes, so the caller must show that it is still working rather than going
+    silent. When it is empty, `final_error` always says why.
+    """
+    return _guard(service.voice_check, seconds=seconds)
+
+
+@audio_router.get("/level", summary="Level right now, while the microphone is open")
+def live_level(service: ServiceDep) -> dict[str, Any]:
+    """The rolling level during a recording or a microphone test.
+
+    Built to be polled several times a second: it reads one dict and opens nothing.
+    Returns ``active: false`` when the microphone is closed, rather than the last value
+    seen -- a frozen bar is indistinguishable from a working one, which is the whole
+    reason this endpoint exists.
+    """
+    return service.live_level()
+
+
+@audio_router.get("/live", summary="Live preview text for the running capture")
+def live_transcript(service: ServiceDep) -> dict[str, Any]:
+    """Preview text heard so far. **Never the transcript.**
+
+    The payload carries ``is_preview: true`` so no interface can present it as a
+    transcript by leaving a label off. It is discarded when the recording stops; the
+    stored transcript is produced afterwards from the untouched master audio.
+
+    Cheap and safe to poll: it reads a snapshot behind a lock and touches neither the
+    capture path nor the database.
+    """
+    return service.live_transcript()
+
+
 @audio_router.get("/quality", summary="Level meter snapshot")
 def quality(service: ServiceDep) -> dict[str, Any]:
     return _guard(service.quality)

@@ -432,6 +432,82 @@ class FasterWhisperProvider:
 
     # -- transcription ------------------------------------------------------
 
+    def transcribe_preview(
+        self,
+        samples: Any,
+        *,
+        language: str = "id",
+        beam_size: int = 5,
+        initial_prompt: str | None = None,
+        vad_filter: bool = True,
+    ) -> tuple[str, float, float]:
+        """Decode in-memory 16 kHz mono audio and return plain text. **Preview only.**
+
+        A separate entry point rather than a ``samples`` field on
+        :class:`TranscriptionRequest`, deliberately. :meth:`transcribe` carries the
+        evidence chain -- region attribution, window batching, word timings, per-segment
+        confidence, offsets into the working copy -- and it has already been wrong twice
+        about how it reads audio. Threading a second, pathless source through it would put
+        the live preview and the stored transcript on one code path, where a change made
+        for the preview can quietly alter what is recorded as evidence.
+
+        So this returns a string. No timings, no confidence, no region, nothing that can
+        be mistaken for or stored as a transcript segment. The caller is
+        :mod:`mom_igd.asr.live`, whose output is discarded when the recording stops.
+
+        ``samples`` is an ``array('h')`` of int16 at 16 kHz mono -- the same format the
+        working copy holds, so the conversion here matches the batch path exactly.
+
+        Returns ``(text, no_speech_prob, avg_logprob)``. The two numbers are the
+        decoder's own opinion of what it just did, and the caller needs them: Whisper
+        answers a window of noise with fluent invented speech and no outward sign, so
+        text alone cannot be filtered. Observed on this machine -- a loud room with
+        nobody talking produced "Terima kasih" five windows running.
+        """
+        if self._model is None:
+            self.load()
+        assert self._model is not None  # noqa: S101 - load() raises otherwise
+        if len(samples) == 0:
+            return ("", 1.0, 0.0)
+
+        import numpy as np
+
+        clip = np.frombuffer(samples.tobytes(), dtype=np.int16).astype(np.float32) / 32768.0
+        try:
+            kwargs: dict[str, Any] = {
+                "language": language,
+                "task": "transcribe",
+                "beam_size": beam_size,
+                "temperature": 0.0,
+                "word_timestamps": False,
+                # Off, as in the batch path: conditioning on previous text is the main
+                # cause of runaway repetition, and a preview has no second pass to undo
+                # one.
+                "condition_on_previous_text": False,
+                # On, unlike the batch path -- and the difference is not an oversight.
+                # Batch runs VAD as its own checkpointed stage and must not let the
+                # engine re-gate, or the stored regions and the transcribed audio would
+                # disagree. The live path has no such stage, so the engine's own gate is
+                # the only thing trimming the silence a fixed window inevitably includes.
+                "vad_filter": vad_filter,
+            }
+            if initial_prompt:
+                kwargs["initial_prompt"] = initial_prompt
+            emitted, _info = self._model.transcribe(clip, **kwargs)
+            segments = list(emitted)
+            text = " ".join(str(item.text).strip() for item in segments).strip()
+            if not segments:
+                return ("", 1.0, 0.0)
+            # The worst case across the window, not the average: one confident segment
+            # must not vouch for a hallucinated one beside it.
+            no_speech = max(float(getattr(i, "no_speech_prob", 0.0) or 0.0) for i in segments)
+            logprob = min(float(getattr(i, "avg_logprob", 0.0) or 0.0) for i in segments)
+            return (text, no_speech, logprob)
+        except Exception as exc:  # noqa: BLE001 - never leak audio or a path
+            raise ProviderError(
+                f"live preview decode failed ({type(exc).__name__})."
+            ) from None
+
     def transcribe(self, request: TranscriptionRequest) -> TranscriptionResult:
         """Transcribe the requested speech regions of a working copy.
 

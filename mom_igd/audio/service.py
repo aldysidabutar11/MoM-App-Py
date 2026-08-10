@@ -317,6 +317,13 @@ class RecordingService:
         self._lock = SingleRecordingLock(paths.temp_dir / _LOCK_FILENAME)
         self._db_lock = threading.RLock()
         self._active: _Active | None = None
+        #: Live preview transcriber for the running capture, if any. Optional by
+        #: construction: absent here means the recording is unaffected.
+        self._live: Any = None
+        #: Most recent rolling level, published while the microphone is open so the
+        #: interface can move a bar in real time. Plain dict, replaced wholesale, so a
+        #: reader never sees a half-written value and no lock is needed.
+        self._live_level: dict[str, Any] = {"active": False}
         self._state_lock = threading.RLock()
 
     @staticmethod
@@ -533,14 +540,19 @@ class RecordingService:
         duration = seconds if seconds is not None else self._config.audio.calibration_seconds
         if duration <= 0:
             raise RecordingServiceError(f"calibration seconds={duration} must be positive.")
-        result = run_calibration(
-            self._backend,
-            device,
-            self.profile_for(device),
-            seconds=duration,
-            save_to=save_to,
-            meter_stride=self._config.audio.meter_stride,
-        )
+        self._live_level = {"active": True, "source": "calibration"}
+        try:
+            result = run_calibration(
+                self._backend,
+                device,
+                self.profile_for(device),
+                seconds=duration,
+                save_to=save_to,
+                meter_stride=self._config.audio.meter_stride,
+                on_level=self._publish_level,
+            )
+        finally:
+            self._live_level = {"active": False}
         if self._database_ready():
             self._store_setting(_CALIBRATION_KEY, json.dumps(result.evidence()))
             with self._db_lock:
@@ -774,6 +786,7 @@ class RecordingService:
                 directory = self._paths.recordings_dir / meeting_uuid / recording_uuid
                 directory.mkdir(parents=True, exist_ok=True)
                 manifest = ManifestWriter(directory)
+                live = self._start_live_preview(profile)
                 session = CaptureSession(
                     self._backend,
                     device_index=device.index,
@@ -784,6 +797,7 @@ class RecordingService:
                     manifest=manifest,
                     on_chunk=self._on_chunk_finalised,
                     meter_stride=self._config.audio.meter_stride,
+                    live_tap=live.feed if live is not None else None,
                 )
                 self._active = _Active(
                     recording_id=recording_id,
@@ -880,6 +894,10 @@ class RecordingService:
 
     def stop(self) -> dict[str, Any]:
         """Finalise the recording. Idempotent."""
+        # Released before finalisation, not after: the preview holds 693 MiB and the
+        # finalisation path hashes and renames files. Handing that memory back first
+        # costs nothing and keeps the two from overlapping.
+        self._stop_live_preview()
         with self._state_lock:
             active = self._active
             if active is None:
@@ -1168,6 +1186,250 @@ class RecordingService:
             return shutil.disk_usage(probe).free
         except OSError:
             return 0
+
+    def voice_check(self, *, seconds: float | None = None) -> dict[str, Any]:
+        """Open the microphone, show the level moving **and** the words appearing.
+
+        The verification tool an operator actually needs before a meeting. A level meter
+        proves the microphone is delivering *sound*; it says nothing about whether that
+        sound becomes the right words. Somebody responsible for a minute needs to see a
+        sentence they just spoke appear correctly before they trust ninety minutes of it.
+
+        **Nothing is written.** No chunk, no manifest, no database row, no transcript.
+        The audio is measured, transcribed for display, and discarded. This is not a
+        recording and does not appear in the recordings list.
+
+        Refused while a capture is running: the microphone is already in use, and one
+        recording at a time is the rule the whole capture path is built on.
+        """
+        if self._active is not None:
+            raise RecordingServiceError(
+                "A recording is in progress. Stop it before running a voice check -- "
+                "the microphone is already in use."
+            )
+        device, error = self.resolve_device()
+        if device is None:
+            raise RecordingServiceError(error or "No capture device available.")
+
+        profile = self.profile_for(device)
+        # Long enough for at least two accurate windows plus their tail.
+        duration = float(seconds or 30.0)
+        if not 3.0 <= duration <= 60.0:
+            raise RecordingServiceError(
+                f"voice check seconds={duration} must be between 3 and 60. A shorter "
+                "check proves nothing and a longer one is a recording."
+            )
+
+        live = None
+        try:
+            from mom_igd.asr.live import LiveTranscriber
+
+            # The *fast* profile while the operator is speaking. Its job here is only
+            # reassurance -- proof that words are arriving at all -- and for that,
+            # something every six seconds beats something correct at twenty.
+            #
+            # Accuracy comes from the single pass at the end instead. See
+            # `_final_transcription`.
+            live = LiveTranscriber(
+                self._paths.models_dir,
+                source_rate=profile.sample_rate,
+                source_channels=profile.channels,
+                cpu_threads=int(getattr(self._config.audio, "live_preview_threads", 4)),
+                language=getattr(self._config.asr, "language", "id"),
+                initial_prompt=self._live_prompt(),
+            )
+            live.start()
+            self._live = live
+        except Exception as exc:  # noqa: BLE001 - the level check still has value alone
+            _LOG.warning(
+                "Voice check could not start transcription (%s); the level meter still "
+                "runs, so the microphone can be verified even without a model.",
+                type(exc).__name__,
+            )
+            live = None
+
+        # Held in memory for the final pass, and only that. Thirty seconds of 44.1 kHz
+        # stereo is about five megabytes; it is dropped when this method returns and
+        # never touches the disk.
+        captured: list[bytes] = []
+
+        def tap(pcm: bytes) -> None:
+            captured.append(pcm)
+            if live is not None:
+                live.feed(pcm)
+
+        self._live_level = {"active": True, "source": "voice_check"}
+        try:
+            result = run_calibration(
+                self._backend,
+                device,
+                profile,
+                seconds=duration,
+                save_to=None,
+                meter_stride=self._config.audio.meter_stride,
+                on_level=self._publish_level,
+                on_audio=tap,
+            )
+        finally:
+            self._live_level = {"active": False}
+
+        transcript = {"running": False, "segments": [], "text": "", "is_preview": True}
+        if live is not None:
+            transcript = live.stop().to_dict()
+            self._live = None
+
+        final_text, final_error = self._final_transcription(captured, profile)
+
+        return {
+            "ok": result.error is None and result.frames > 0,
+            "seconds": round(result.seconds, 2),
+            "verdict": result.verdict.value,
+            "advice": result.advice,
+            "levels": result.snapshot.to_dict(),
+            "transcript": transcript,
+            # What the operator should actually read and judge.
+            "final_text": final_text,
+            "final_error": final_error,
+            "model_available": live is not None,
+            "error": result.error,
+            # Stated in the payload, not only in the interface: nothing here was kept.
+            "stored": False,
+        }
+
+    def _final_transcription(
+        self, captured: list[bytes], profile: Any
+    ) -> tuple[str, str | None]:
+        """The answer the operator reads: one accurate pass over the whole check.
+
+        The decoding itself lives in `mom_igd.asr.live.decode_once`, not here. Phase 2
+        captures audio and must not try to understand it -- a boundary a test enforces by
+        reading this package, and one this method crossed on its first version by calling
+        the Whisper provider directly. What stays here is what this layer actually owns:
+        the captured bytes, the device profile they were captured with, and the decision
+        that a failed pass must leave the streaming preview standing.
+
+        Imported inside the method, like every other model import in this file, so a
+        machine with no ASR dependency can still run a level check.
+        """
+        try:
+            from mom_igd.asr.live import decode_once
+        except Exception:  # noqa: BLE001 - a level check does not need a decoder
+            return ("", "NO_MODEL")
+        return decode_once(
+            self._paths.models_dir,
+            b"".join(captured),
+            source_rate=profile.sample_rate,
+            source_channels=profile.channels,
+            language=getattr(self._config.asr, "language", "id"),
+            initial_prompt=self._live_prompt(),
+        )
+
+    def _publish_level(self, snapshot: Any) -> None:
+        """Store the rolling level for the interface. Called from the measuring thread."""
+        self._live_level = {
+            "active": True,
+            "source": "calibration",
+            "rms_dbfs": round(snapshot.rms_dbfs, 2),
+            "peak_dbfs": round(snapshot.peak_dbfs, 2),
+            "silence_percent": round(snapshot.silence_percent, 1),
+            "channels": [
+                {"channel": c.channel, "rms_dbfs": round(c.rms_dbfs, 2), "active": c.active}
+                for c in snapshot.channels
+            ],
+        }
+
+    def live_level(self) -> dict[str, Any]:
+        """The level right now, while the microphone is open. Cheap to poll.
+
+        Reports the *recording* meter when a capture is running and the calibration
+        meter when a microphone test is. Idle returns ``active: false`` rather than a
+        stale reading: a bar frozen at somebody's last words looks exactly like a bar
+        that is working, and this project has now been caught by that once.
+        """
+        active = self._active
+        if active is not None:
+            rolling = active.session.quality()
+            return {
+                "active": True,
+                "source": "recording",
+                "rms_dbfs": round(rolling.rms_dbfs, 2),
+                "peak_dbfs": round(rolling.peak_dbfs, 2),
+                "silence_percent": round(rolling.silence_percent, 1),
+                "channels": [
+                    {"channel": c.channel, "rms_dbfs": round(c.rms_dbfs, 2), "active": c.active}
+                    for c in rolling.channels
+                ],
+            }
+        return dict(self._live_level)
+
+    def _live_prompt(self) -> str | None:
+        """The terminology prompt the batch pipeline uses, for the preview too.
+
+        Whisper spells unfamiliar words by ear -- "deploy" comes back as "deploi" -- and
+        a meeting is full of them. The batch path has primed with this since Phase 4;
+        the preview was reading the same rooms without it. Any failure is ignored: a
+        missing glossary must not stop a microphone test.
+        """
+        try:
+            from mom_igd.asr.glossary import load_glossary
+            from mom_igd.paths import repo_root
+
+            glossary = load_glossary(
+                repo_root() / "config" / self._config.asr.glossary_filename
+            )
+            return glossary.initial_prompt(
+                max_chars=int(self._config.asr.initial_prompt_max_chars)
+            )
+        except Exception:  # noqa: BLE001 - a prompt is an optimisation, never a gate
+            return None
+
+    def _start_live_preview(self, profile: Any) -> Any:
+        """Start live preview transcription, or return ``None``. Never raises.
+
+        Off unless ``[audio].live_preview`` is on and a pass-1 model is installed.
+        Everything about this is optional: a machine with no model records exactly as
+        before, and so does a machine where the preview fails to start. The recording is
+        the product; the preview is reassurance that it is working.
+        """
+        if not getattr(self._config.audio, "live_preview", False):
+            return None
+        try:
+            from mom_igd.asr.live import LiveTranscriber
+
+            live = LiveTranscriber(
+                self._paths.models_dir,
+                source_rate=profile.sample_rate,
+                source_channels=profile.channels,
+                cpu_threads=int(getattr(self._config.audio, "live_preview_threads", 4)),
+                language=getattr(self._config.asr, "language", "id"),
+                initial_prompt=self._live_prompt(),
+            )
+            live.start()
+        except Exception as exc:  # noqa: BLE001 - a preview must not stop a recording
+            _LOG.warning(
+                "Live preview could not start (%s); the recording continues without it.",
+                type(exc).__name__,
+            )
+            return None
+        self._live = live
+        return live
+
+    def _stop_live_preview(self) -> None:
+        """Release the preview model. Called on every exit path from a recording."""
+        live, self._live = self._live, None
+        if live is None:
+            return
+        try:
+            live.stop()
+        except Exception:  # noqa: BLE001 - teardown must not mask a recording result
+            pass
+
+    def live_transcript(self) -> dict[str, Any]:
+        """What the preview has heard so far. Empty when the preview is not running."""
+        live = self._live
+        if live is None:
+            return {"running": False, "segments": [], "text": "", "is_preview": True}
+        return live.snapshot().to_dict()
 
     def _on_chunk_finalised(self, finalised: FinalisedChunk) -> None:
         """Mirror a finalised chunk into the database. Runs on the writer thread."""
