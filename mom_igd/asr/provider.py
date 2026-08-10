@@ -12,11 +12,20 @@ So :func:`validate_transcription` is deliberately strict and runs on **every** r
 production or test. It rejects rather than repairs, with two carefully chosen
 exceptions that are corrections of representation rather than of content:
 
-* a word whose bounds sit a hair outside its segment (floating-point drift from the
-  engine's own frame arithmetic) is clamped to the segment, because the alternative is
-  discarding a correct word over a microsecond;
+* a word that **overlaps** its segment but extends past its edge is clamped into it.
+  The engine derives segment bounds from token timings and word bounds from a separate
+  alignment; the two disagree at boundaries by hundreds of milliseconds on ordinary
+  speech, and neither is wrong about which segment the word is in. A word that does not
+  overlap at all is a different claim entirely, and stays an error. See
+  ``_WORD_STRADDLE_CEILING`` for the measurement this rule was written from;
 * a word list that is empty is accepted, because a segment of music or noise
   legitimately produces text with no aligned words.
+
+Both are corrections of *representation*. Segment bounds are never adjusted to fit a
+word: they anchor the transcript to the master recording and region attribution is
+derived from them. Every clamp is counted into ``extra["straddling_words"]``, so "the
+engine disagrees at four boundaries" stays distinguishable from "the engine has started
+disagreeing everywhere".
 
 Everything else -- a reversed interval, a non-finite number, a probability outside
 ``[0, 1]``, a segment that starts before the previous one ends, text beyond the size
@@ -62,8 +71,38 @@ MAX_WORDS_PER_SEGMENT: Final[int] = 800
 _EPSILON: Final[float] = 1e-3
 
 #: How far outside its segment a word may sit before it is an error rather than drift.
-#: 50 ms is larger than any float32 rounding and smaller than any real misalignment.
+#: Used for word *ordering* within a segment, where float32 rounding is the only
+#: expected source of disagreement.
 _WORD_DRIFT_TOLERANCE: Final[float] = 0.05
+
+#: A word must overlap the segment that holds it. That, and not a millisecond count, is
+#: what separates a boundary disagreement from a misattributed word.
+#:
+#: This was a fixed 50 ms tolerance, documented as "larger than any float32 rounding and
+#: smaller than any real misalignment". The first half was right and the second was
+#: wrong, and it refused a real 135-second meeting outright over one word.
+#:
+#: The disagreement is not rounding. faster-whisper derives segment bounds from token
+#: timings and word bounds from a separate DTW alignment over cross-attention; the two
+#: estimators are computed differently and are never reconciled at the edges. Measured on
+#: that recording: 4 of 152 words straddled their segment boundary, the worst by 400 ms,
+#: and **every one of them overlapped its segment** --
+#:
+#:     ' biar'     17.740..18.080  vs segment 18.000..19.640   260 ms before
+#:     ' membuat'  23.240..23.700  vs segment 23.640..24.740   400 ms before
+#:     ' Terima'    5.620.. 6.080  vs segment  6.000.. 6.320   380 ms before
+#:     ' kasih.'    7.740.. 8.200  vs segment  7.600.. 8.000   200 ms after
+#:
+#: A straddling word overlaps; a misattributed word does not. So overlap is required and
+#: the straddle is clamped -- a correction of representation, like the two the module
+#: docstring already describes. The segment bounds are never widened to fit the word:
+#: they are the evidence anchor back to the master recording, and region attribution is
+#: derived from them.
+#:
+#: The ceiling below is a backstop against an engine returning something absurd that
+#: happens to overlap. It is five times the worst straddle ever measured here; no spoken
+#: word runs two seconds past its own segment.
+_WORD_STRADDLE_CEILING: Final[float] = 2.0
 
 
 class ProviderError(RuntimeError):
@@ -326,8 +365,19 @@ def _probability(value: float | None, label: str) -> float | None:
 
 
 def _validate_words(
-    words: Iterable[Word], *, segment_index: int, seg_start: float, seg_end: float
+    words: Iterable[Word],
+    *,
+    segment_index: int,
+    seg_start: float,
+    seg_end: float,
+    straddles: list[float],
 ) -> tuple[Word, ...]:
+    """Validate one segment's words. `straddles` collects every boundary correction.
+
+    Counted rather than merely allowed. A handful of straddling words is the engine's
+    two clocks disagreeing; every word straddling, or one straddling by a second, is a
+    different fact and the operator should be able to see which happened.
+    """
     cleaned: list[Word] = []
     previous_end = -math.inf
     for position, word in enumerate(words):
@@ -342,15 +392,26 @@ def _validate_words(
             raise ProviderOutputError(
                 f"{label} ends before it starts: {start} > {end}"
             )
-        # Drift correction, not content correction: the engine derives these from
-        # frame indices, so a few microseconds outside the segment is arithmetic, not
-        # a misaligned word.
-        if start < seg_start - _WORD_DRIFT_TOLERANCE or end > seg_end + _WORD_DRIFT_TOLERANCE:
+        # Representation, not content. A word that overlaps its segment is in that
+        # segment; the two clocks that produced the two numbers simply disagree about
+        # where the edge is. A word that does not overlap at all is in the wrong
+        # segment, which is a real defect and stays an error.
+        overlaps = start < seg_end + _EPSILON and end > seg_start - _EPSILON
+        straddle = max(seg_start - start, end - seg_end, 0.0)
+        if not overlaps or straddle > _WORD_STRADDLE_CEILING:
             raise ProviderOutputError(
                 f"{label} spans {start:.3f}..{end:.3f}, outside its segment "
-                f"{seg_start:.3f}..{seg_end:.3f} by more than "
-                f"{_WORD_DRIFT_TOLERANCE * 1000:.0f} ms"
+                f"{seg_start:.3f}..{seg_end:.3f}"
+                + (
+                    " and does not overlap it at all"
+                    if not overlaps
+                    else f" by {straddle * 1000:.0f} ms, beyond the "
+                    f"{_WORD_STRADDLE_CEILING * 1000:.0f} ms a boundary "
+                    "disagreement can account for"
+                )
             )
+        if straddle > 0.0:
+            straddles.append(straddle)
         start = min(max(start, seg_start), seg_end)
         end = min(max(end, start), seg_end)
         if start < previous_end - _WORD_DRIFT_TOLERANCE:
@@ -393,6 +454,7 @@ def validate_transcription(
         limit = float(audio_seconds)
 
     validated: list[TranscriptSegment] = []
+    straddles: list[float] = []
     previous_end = -math.inf
     for segment in result.segments:
         label = f"segment {segment.index}"
@@ -434,7 +496,11 @@ def validate_transcription(
                 end=end,
                 text=text,
                 words=_validate_words(
-                    segment.words, segment_index=segment.index, seg_start=start, seg_end=end
+                    segment.words,
+                    segment_index=segment.index,
+                    seg_start=start,
+                    seg_end=end,
+                    straddles=straddles,
                 ),
                 avg_logprob=_finite(segment.avg_logprob, f"{label} avg_logprob"),
                 no_speech_prob=_probability(segment.no_speech_prob, f"{label} no_speech_prob"),
@@ -465,5 +531,11 @@ def validate_transcription(
         ),
         audio_seconds=audio,
         processing_seconds=processing,
-        extra=dict(result.extra),
+        # Reported, not hidden. Zero is the normal answer and is still written, so the
+        # absence of the key means an older result rather than a clean run.
+        extra={
+            **dict(result.extra),
+            "straddling_words": len(straddles),
+            "worst_straddle_ms": round(max(straddles) * 1000, 1) if straddles else 0.0,
+        },
     )

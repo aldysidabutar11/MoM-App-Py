@@ -95,6 +95,13 @@ def _transcribe(payload: dict[str, Any], cancelled: CancelCheck) -> dict[str, An
         language = str(payload.get("language", "id"))
         language_probability: float | None = None
         was_cancelled = False
+        # Boundary corrections made by validation, summed across every window. Carried
+        # out of the worker because the operator sees the stage line, not this process:
+        # a correction nobody can observe is indistinguishable from no correction, and
+        # that is how the rule this replaces survived long enough to refuse a real
+        # meeting outright.
+        straddling_words = 0
+        worst_straddle_ms = 0.0
 
         # Regions are grouped into contiguous windows of at most 30 seconds, because
         # Whisper's encoder always consumes a 30-second window and pads it: decoding a
@@ -132,6 +139,10 @@ def _transcribe(payload: dict[str, Any], cancelled: CancelCheck) -> dict[str, An
                 entry["index"] = len(segments)
                 entry["asr_pass"] = int(payload.get("asr_pass", 1))
                 segments.append(entry)
+            straddling_words += int(result.extra.get("straddling_words", 0) or 0)
+            worst_straddle_ms = max(
+                worst_straddle_ms, float(result.extra.get("worst_straddle_ms", 0.0) or 0.0)
+            )
             audio_seconds += result.audio_seconds
             processing_seconds += result.processing_seconds
             language = result.language
@@ -161,6 +172,8 @@ def _transcribe(payload: dict[str, Any], cancelled: CancelCheck) -> dict[str, An
         "audio_seconds": round(audio_seconds, 3),
         "processing_seconds": round(processing_seconds, 3),
         "load_seconds": round(load_seconds, 3),
+        "straddling_words": straddling_words,
+        "worst_straddle_ms": round(worst_straddle_ms, 1),
         "regions_requested": batch_count,
         "regions_completed": completed_regions,
         "cancelled": was_cancelled,

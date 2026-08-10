@@ -59,7 +59,6 @@ QUARANTINE_DIRNAME: Final[str] = "quarantine"
 
 _MANIFEST_VERSION: Final[int] = 1
 _HASH_BLOCK: Final[int] = 1024 * 1024
-_WAV_HEADER_BYTES: Final[int] = 44
 
 
 class ManifestError(RuntimeError):
@@ -318,12 +317,6 @@ def read_manifest(directory: Path) -> tuple[list[ChunkRecord], list[dict[str, An
     return chunks, events, torn
 
 
-def iter_manifest_events(directory: Path) -> Iterator[dict[str, Any]]:
-    """Yield the non-chunk events in order."""
-    _, events, _ = read_manifest(directory)
-    yield from events
-
-
 @dataclass(slots=True)
 class VerificationReport:
     """Result of verifying a recording directory against its manifest."""
@@ -505,11 +498,6 @@ def _verify_wav_header(path: Path, record: ChunkRecord) -> str | None:
             problems
         )
     return None
-
-
-def expected_wav_size(profile: CaptureProfile, frames: int) -> int:
-    """Size of a canonical 44-byte-header PCM WAV holding ``frames`` frames."""
-    return _WAV_HEADER_BYTES + frames * profile.bytes_per_frame
 
 
 def summarise_records(records: Iterable[ChunkRecord]) -> dict[str, Any]:

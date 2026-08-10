@@ -25,7 +25,6 @@ operator is asked to confirm.
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -729,7 +728,3 @@ def format_device_table(devices: Iterable[DeviceInfo]) -> str:
     lines.append("* = system default input.  ? = transport not verified by Windows.")
     return "\n".join(lines)
 
-
-def probe_environment_hint() -> str:
-    """A short hint about the current process environment, for diagnostics."""
-    return f"platform={sys.platform} pid={os.getpid()}"

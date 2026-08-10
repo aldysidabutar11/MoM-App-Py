@@ -574,7 +574,8 @@ class TranscriptionPipeline:
                 f"{len(segments)} segment(s) over {len(regions)} region(s) with "
                 f"{model1.get('model_name', 'the pass-1 model')} "
                 f"(beam {self._config.asr.pass1_beam_size}, "
-                f"{self._config.asr.pass1_cpu_threads} threads)",
+                f"{self._config.asr.pass1_cpu_threads} threads)"
+                + _straddle_note(pass1),
                 pass1_ms,
             )
 
@@ -695,6 +696,20 @@ class TranscriptionPipeline:
                             f"; {len(merge.regions_without_replacement)} region(s) "
                             "returned nothing and kept their pass-1 text"
                         )
+                    if merge.coverage_supersessions:
+                        # Normal in small numbers -- a pass-2 segment routinely spans
+                        # more than the region it was filed under. Reported because a
+                        # large number means region attribution is drifting, and
+                        # because this is the count that was silently zero while the
+                        # transcript said things twice.
+                        detail += (
+                            f"; {merge.coverage_supersessions} pass-1 segment(s) were "
+                            "retired by a replacement filed under a neighbouring region"
+                        )
+                    # Pass 2 runs the same validation, so it makes the same corrections.
+                    # Reporting them on pass 1 only would have made a pass-2 regression
+                    # invisible -- and pass 2 is the one that rewrites text.
+                    detail += _straddle_note(pass2)
                     self._stage(stages, "asr_pass2_selective", True, detail, pass2_ms)
             else:
                 if skipped_reason != REASON_PASS2_MODEL_UNAVAILABLE:
@@ -801,6 +816,28 @@ def _load_gaps(row: sqlite3.Row) -> list[dict[str, Any]]:
     except (TypeError, ValueError):
         return []
     return loaded if isinstance(loaded, list) else []
+
+
+def _straddle_note(payload: Mapping[str, Any]) -> str:
+    """Report word/segment boundary corrections, and only when there were any.
+
+    The engine derives segment bounds and word bounds from two different estimators, so
+    a few words per recording sit just outside the segment holding them and are clamped
+    back in. Four such words is the engine being itself. Four hundred, or one off by a
+    second, is a regression in the model or the windowing -- and the difference is only
+    visible if the number is printed.
+
+    Silent on a clean run, because a line that appears every time is a line nobody
+    reads.
+    """
+    count = int(payload.get("straddling_words", 0) or 0)
+    if count <= 0:
+        return ""
+    worst = float(payload.get("worst_straddle_ms", 0.0) or 0.0)
+    return (
+        f"; {count} word(s) sat outside the segment holding them, by up to "
+        f"{worst:.0f} ms, and were clamped back into it"
+    )
 
 
 def _segments_from_worker(payload: Mapping[str, Any], *, asr_pass: int) -> list[dict[str, Any]]:

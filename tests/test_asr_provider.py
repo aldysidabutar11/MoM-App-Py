@@ -732,3 +732,125 @@ def test_the_task_registry_offers_no_fake_task() -> None:
     }
     for name in TASK_REGISTRY:
         assert "fake" not in name.lower()
+
+
+# ===========================================================================
+# A word that straddles its segment boundary
+# ===========================================================================
+
+
+def test_a_word_straddling_its_segment_boundary_is_clamped_not_refused() -> None:
+    """The exact output that refused a real 135-second meeting.
+
+    faster-whisper computes segment bounds from token timings and word bounds from a
+    separate alignment over cross-attention. The two disagree at edges by hundreds of
+    milliseconds on ordinary speech -- measured on that recording, 4 of 152 words
+    straddled, the worst by 400 ms. The previous rule allowed 50 ms and threw the whole
+    transcription away over one word.
+    """
+    segment = TranscriptSegment(
+        index=2,
+        start=17.076,
+        end=23.656,
+        text="biar",
+        words=(Word(text=" biar", start=16.816, end=17.196),),
+    )
+    validated = validate_transcription(_result(segment))
+    word = validated.segments[0].words[0]
+    assert word.start == pytest.approx(17.076)
+    assert word.end == pytest.approx(17.196)
+
+
+def test_a_word_straddling_the_end_is_clamped_too() -> None:
+    """Measured: ' kasih.' ran 200 ms past the segment that held it."""
+    segment = TranscriptSegment(
+        index=6,
+        start=7.600,
+        end=8.000,
+        text="kasih",
+        words=(Word(text=" kasih.", start=7.740, end=8.200),),
+    )
+    word = validate_transcription(_result(segment)).segments[0].words[0]
+    assert word.start == pytest.approx(7.740)
+    assert word.end == pytest.approx(8.000)
+
+
+def test_the_segment_is_never_widened_to_fit_the_word() -> None:
+    """Segment bounds anchor the transcript to the master audio.
+
+    Region attribution is derived from them, so moving one to accommodate a word would
+    silently re-attribute the segment. The word gives way, never the segment.
+    """
+    segment = TranscriptSegment(
+        index=2,
+        start=17.076,
+        end=23.656,
+        text="biar",
+        words=(Word(text=" biar", start=16.816, end=17.196),),
+    )
+    validated = validate_transcription(_result(segment)).segments[0]
+    assert validated.start == pytest.approx(17.076)
+    assert validated.end == pytest.approx(23.656)
+
+
+def test_a_word_that_does_not_overlap_its_segment_is_still_refused() -> None:
+    """Overlap is the whole distinction: a straddle is a boundary disagreement, a
+    non-overlapping word is a claim that it belongs somewhere else."""
+    with pytest.raises(ProviderOutputError, match="does not overlap"):
+        validate_transcription(
+            _result(
+                TranscriptSegment(
+                    index=0,
+                    start=10.0,
+                    end=12.0,
+                    text="x",
+                    words=(Word(text="x", start=3.0, end=4.0),),
+                )
+            )
+        )
+
+
+def test_an_absurd_straddle_is_refused_even_when_it_overlaps() -> None:
+    """The backstop. Overlapping by a sliver while spanning nine seconds is not a
+    boundary disagreement, whatever the arithmetic says."""
+    with pytest.raises(ProviderOutputError, match="beyond the"):
+        validate_transcription(
+            _result(
+                TranscriptSegment(
+                    index=0,
+                    start=10.0,
+                    end=12.0,
+                    text="x",
+                    words=(Word(text="x", start=1.0, end=10.5),),
+                )
+            )
+        )
+
+
+def test_boundary_corrections_are_counted() -> None:
+    """Four straddles is the engine's two clocks; four hundred is a regression.
+
+    A silently-tolerated correction cannot be told apart from no correction at all,
+    which is how the 50 ms rule survived long enough to refuse a real meeting.
+    """
+    clean = validate_transcription(
+        _result(
+            TranscriptSegment(
+                index=0, start=1.0, end=2.0, text="x",
+                words=(Word(text="x", start=1.1, end=1.5),),
+            )
+        )
+    )
+    assert clean.extra["straddling_words"] == 0
+    assert clean.extra["worst_straddle_ms"] == 0.0
+
+    straddled = validate_transcription(
+        _result(
+            TranscriptSegment(
+                index=0, start=1.0, end=2.0, text="x",
+                words=(Word(text="x", start=0.6, end=1.5),),
+            )
+        )
+    )
+    assert straddled.extra["straddling_words"] == 1
+    assert straddled.extra["worst_straddle_ms"] == pytest.approx(400.0, abs=1.0)

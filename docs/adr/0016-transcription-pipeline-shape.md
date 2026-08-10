@@ -109,8 +109,11 @@ because the working copy's format is fixed by stage 1 and there is nothing to ne
 Pass 2 re-transcribes the least confident regions with a slower configuration, under a
 budget expressed as a fraction of detected speech (25 % by default). Its output does not
 overwrite pass 1: the pass-2 segments are inserted with `asr_pass = 2` and the pass-1
-segments covering the same region are marked inactive and pointed at their replacement.
-Both rows survive.
+segments **whose audio a pass-2 segment covers** are marked inactive and pointed at their
+replacement. Both rows survive.
+
+Coverage is measured on the clock, not on region bookkeeping — see the fourth defect below
+for why the region-based version produced a transcript that said things twice.
 
 That costs rows and buys three things nothing else does. A reviewer can see what the second
 pass changed. The evidence chain Phase 8 verifies stays intact. And "pass 2 improved the
@@ -125,8 +128,9 @@ Two of the strongest signals — a speaker change inside a region, and overlappi
 not exist until diarization lands in Phase 5, and the rule table is built so those become
 additional codes rather than a rewrite.
 
-**Three defects here were found by running the pipeline against a real recording, and every
-one of them had passed a plausible unit test:**
+**Five defects here were found by running the pipeline against a real recording, and every
+one of them had passed a plausible unit test. Two were found long after the first three, by
+an operator whose transcription simply failed:**
 
 * **Segments arrived with no region attribution.** `validate_transcription` rebuilds every
   segment rather than mutating it, so `region_index` — added to the dataclass — was silently
@@ -138,6 +142,34 @@ one of them had passed a plausible unit test:**
   falsely. Emptiness is now decided by *overlap*, and a region with no attributed segment
   reads the overlapping ones for its signals — so attribution is an optimisation rather than
   a correctness dependency.
+* **The merge repeated the attribution mistake the selector had already been fixed for.**
+  Supersession retired pass-1 segments *by region*, on a stated premise that "partial overlap
+  does not arise, because both passes segment inside the same region boundaries". Batched
+  windows make that false in exactly the way the previous item describes: measured on a
+  135-second meeting, one pass-2 segment filed under region 3 spanned 7.74s..32.96s and
+  covered regions 0, 1, 3, 4 and 5, but only region 3's pass-1 rows were retired. The other
+  four stayed active inside it, so five sentences appeared twice in the transcript — and
+  would have reached the minutes as duplicate points, which is worse than a missing one
+  because a reader who was not in the room cannot tell.
+
+  The lesson had already been learned one stage earlier and simply not carried across:
+  emptiness had been moved to overlap; supersession had not. It now retires a pass-1 segment
+  when pass-2 output covers the majority of its span, whatever region either was filed under,
+  and `SUPERSEDED_BY_PASS2_COVERAGE` keeps that case distinguishable from a region that was
+  genuinely re-transcribed. Retiring is not deleting, which is what makes a majority
+  threshold safe: the row stays one query away. On that recording it took the active segment
+  count from 23 to 18 with the covered time identical at 90.66s — every removal a duplicate,
+  no range left without text.
+* **A word 260 ms outside its segment failed a whole recording.** `validate_transcription`
+  allowed words to sit 50 ms outside the segment holding them, documented as "larger than any
+  float32 rounding and smaller than any real misalignment". The first half was right. The
+  engine derives segment bounds from token timings and word bounds from a separate DTW
+  alignment, and the two disagree at edges by hundreds of milliseconds on ordinary speech: 4
+  of 152 words on that recording, the worst by 400 ms, **every one of them overlapping its
+  segment**. Overlap, not a millisecond count, is what separates a boundary disagreement from
+  a word filed under the wrong segment, so overlap is now the rule and the straddle is clamped
+  into the segment. Segment bounds are never widened to fit a word: they anchor the transcript
+  to the master recording, and region attribution is derived from them.
 * **One over-budget region blocked the entire pass.** Selection stopped at the first region
   that did not fit. A 6.0-second region against a 5.3-second budget meant nothing at all was
   re-transcribed while nine smaller flagged regions waited behind it. It now skips and

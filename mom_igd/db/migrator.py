@@ -551,7 +551,3 @@ def open_migrated(
         raise
     return conn
 
-
-def iter_statement_counts(migrations: Iterable[Migration]) -> dict[str, int]:
-    """Statement count per migration; used by tests and diagnostics."""
-    return {m.label: len(m.statements) for m in migrations}

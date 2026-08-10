@@ -10,7 +10,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from mom_igd.asr.merge import SUPERSEDED_BY_PASS2, merge_pass2_into_pass1
+from mom_igd.asr.merge import (
+    SUPERSEDED_BY_PASS2,
+    SUPERSEDED_BY_PASS2_COVERAGE,
+    merge_pass2_into_pass1,
+)
 
 
 def _segment(
@@ -279,3 +283,113 @@ def test_the_input_segments_are_not_mutated() -> None:
         replaced_region_seqs=[0],
     )
     assert pass1[0] == original
+
+
+# ===========================================================================
+# A pass-2 segment that spans more than the region it was filed under
+# ===========================================================================
+
+
+def test_a_pass1_segment_covered_by_a_neighbours_replacement_is_retired() -> None:
+    """The duplication measured on a real meeting.
+
+    Pass 2 groups regions into thirty-second windows, so the engine emits segments that
+    cross region boundaries and `attribute_to_region` files each under one region.
+    Observed: a pass-2 segment filed under region 3 spanned 7.74s..32.96s and covered
+    regions 0, 1, 3, 4 and 5. Retiring by region alone left four pass-1 segments active
+    inside it, so the same sentences appeared twice -- and would have become duplicate
+    points in the minutes.
+    """
+    pass1 = [
+        {"seq": 0, "region_seq": 0, "start_ms": 7_740, "end_ms": 12_220, "text": "a"},
+        {"seq": 1, "region_seq": 1, "start_ms": 13_020, "end_ms": 16_360, "text": "b"},
+        {"seq": 2, "region_seq": 3, "start_ms": 17_080, "end_ms": 23_660, "text": "c"},
+        {"seq": 3, "region_seq": 4, "start_ms": 27_180, "end_ms": 29_980, "text": "d"},
+        {"seq": 4, "region_seq": 5, "start_ms": 30_420, "end_ms": 32_900, "text": "e"},
+        # Well clear of the replacement: nothing re-transcribed this.
+        {"seq": 5, "region_seq": 9, "start_ms": 53_100, "end_ms": 59_700, "text": "f"},
+    ]
+    pass2 = [
+        {"seq": 0, "region_seq": 3, "start_ms": 7_740, "end_ms": 32_960, "text": "abcde"},
+    ]
+
+    result = merge_pass2_into_pass1(
+        pass1_segments=pass1, pass2_segments=pass2, replaced_region_seqs=[3]
+    )
+    active = {segment["text"] for segment in result.active_segments}
+    assert active == {"abcde", "f"}, (
+        "every pass-1 segment inside the replacement must be retired, and the one "
+        "outside it must survive"
+    )
+    assert result.coverage_supersessions == 4
+
+
+def test_the_two_supersession_reasons_stay_distinguishable() -> None:
+    """Filed-under-this-region and covered-by-a-neighbour are different facts."""
+    pass1 = [
+        {"seq": 0, "region_seq": 1, "start_ms": 0, "end_ms": 2_000, "text": "a"},
+        {"seq": 1, "region_seq": 2, "start_ms": 2_000, "end_ms": 4_000, "text": "b"},
+    ]
+    pass2 = [{"seq": 0, "region_seq": 1, "start_ms": 0, "end_ms": 4_000, "text": "ab"}]
+
+    result = merge_pass2_into_pass1(
+        pass1_segments=pass1, pass2_segments=pass2, replaced_region_seqs=[1]
+    )
+    reasons = {
+        segment["text"]: segment["superseded_reason"]
+        for segment in result.segments
+        if not segment["is_active"]
+    }
+    assert reasons == {
+        "a": SUPERSEDED_BY_PASS2,
+        "b": SUPERSEDED_BY_PASS2_COVERAGE,
+    }
+
+
+def test_a_barely_touched_pass1_segment_survives() -> None:
+    """Overlapping by a sliver is not "this audio has a newer transcription"."""
+    pass1 = [{"seq": 0, "region_seq": 5, "start_ms": 10_000, "end_ms": 20_000, "text": "keep"}]
+    pass2 = [{"seq": 0, "region_seq": 1, "start_ms": 8_000, "end_ms": 11_000, "text": "x"}]
+
+    result = merge_pass2_into_pass1(
+        pass1_segments=pass1, pass2_segments=pass2, replaced_region_seqs=[1]
+    )
+    assert [segment["text"] for segment in result.active_segments] == ["x", "keep"]
+    assert result.coverage_supersessions == 0
+
+
+def test_a_region_pass_two_ignored_entirely_keeps_its_text() -> None:
+    """The original guarantee, unchanged: nothing is retired in favour of nothing."""
+    pass1 = [{"seq": 0, "region_seq": 7, "start_ms": 0, "end_ms": 5_000, "text": "only"}]
+    result = merge_pass2_into_pass1(
+        pass1_segments=pass1, pass2_segments=[], replaced_region_seqs=[7]
+    )
+    assert [segment["text"] for segment in result.active_segments] == ["only"]
+    assert result.regions_without_replacement == (7,)
+    assert result.coverage_supersessions == 0
+
+
+def test_overlapping_pass2_segments_do_not_double_count_coverage() -> None:
+    """Summing raw intersections would exceed 100% and retire on meaningless arithmetic."""
+    pass1 = [{"seq": 0, "region_seq": 4, "start_ms": 0, "end_ms": 10_000, "text": "keep"}]
+    # Two pass-2 segments covering the same 3 seconds: 30% of the pass-1 span, not 60%.
+    pass2 = [
+        {"seq": 0, "region_seq": 1, "start_ms": 0, "end_ms": 3_000, "text": "x"},
+        {"seq": 1, "region_seq": 1, "start_ms": 0, "end_ms": 3_000, "text": "y"},
+    ]
+    result = merge_pass2_into_pass1(
+        pass1_segments=pass1, pass2_segments=pass2, replaced_region_seqs=[1]
+    )
+    assert "keep" in {segment["text"] for segment in result.active_segments}
+
+
+def test_a_retired_segment_is_kept_not_deleted() -> None:
+    """What makes the majority rule safe: nothing is destroyed, only deactivated."""
+    pass1 = [{"seq": 0, "region_seq": 2, "start_ms": 0, "end_ms": 4_000, "text": "old"}]
+    pass2 = [{"seq": 0, "region_seq": 1, "start_ms": 0, "end_ms": 4_000, "text": "new"}]
+    result = merge_pass2_into_pass1(
+        pass1_segments=pass1, pass2_segments=pass2, replaced_region_seqs=[1]
+    )
+    assert len(result.segments) == 2
+    retired = [segment for segment in result.segments if not segment["is_active"]]
+    assert len(retired) == 1 and retired[0]["text"] == "old"
