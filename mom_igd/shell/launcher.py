@@ -210,6 +210,87 @@ class ShellApi:
             "proxy_available": True,
         }
 
+    def get_branding(self) -> dict[str, Any]:
+        """The organisation's mark, as a data URI, for the top bar.
+
+        Read through `resolve_branding` rather than from disk. That function is the only
+        place a branding file is opened -- the rule exists so no renderer can be pointed
+        at a path by a document, and the shell is not an exception to it. One file
+        therefore serves the letterhead and the window, and replacing it changes both.
+
+        Never raises, and an install with no branding is the normal case: the page keeps
+        its built-in mark.
+        """
+        import base64
+
+        try:
+            from mom_igd.mom.pipeline import resolve_branding
+
+            branding = resolve_branding(self._config, self._config.runtime_paths())
+            blob = branding.get("logo")
+            if not blob:
+                return {"ok": True, "logo": None, "organisation": branding.get("organisation") or ""}
+            media = branding.get("logo_media_type") or "image/png"
+            encoded = base64.b64encode(blob).decode("ascii")
+            return {
+                "ok": True,
+                "logo": f"data:{media};base64,{encoded}",
+                "organisation": branding.get("organisation") or "",
+            }
+        except Exception as exc:  # noqa: BLE001 - a logo must never stop the window
+            _LOG.debug("shell.branding.unavailable", extra={"reason": type(exc).__name__})
+            return {"ok": True, "logo": None, "organisation": ""}
+
+    def get_theme(self) -> dict[str, Any]:
+        """The operator's stored light/dark choice, or `system`.
+
+        Not an HTTP call. A new route would need a new entry on the proxy allowlist,
+        which is closed and reviewed on purpose, and this is not application data --
+        it is how the shell paints itself. Never raises: a window that refuses to open
+        because it could not read a colour preference would be a worse fault than the
+        wrong colour.
+        """
+        from mom_igd.shell.preferences import THEME_CHOICES, read_theme
+
+        try:
+            database = self._config.runtime_paths().database_path(
+                self._config.database.filename
+            )
+            return {
+                "ok": True,
+                "theme": read_theme(
+                    database, busy_timeout_ms=self._config.database.busy_timeout_ms
+                ),
+                "choices": list(THEME_CHOICES),
+            }
+        except Exception as exc:  # noqa: BLE001 - a preference must not break startup
+            _LOG.debug("shell.theme.read_failed", extra={"reason": type(exc).__name__})
+            return {"ok": True, "theme": "system", "choices": list(THEME_CHOICES)}
+
+    def set_theme(self, theme: str) -> dict[str, Any]:
+        """Store the choice so the next launch opens the way this one ended."""
+        from mom_igd.shell.preferences import THEME_CHOICES, write_theme
+
+        try:
+            database = self._config.runtime_paths().database_path(
+                self._config.database.filename
+            )
+            stored = write_theme(
+                database,
+                str(theme),
+                busy_timeout_ms=self._config.database.busy_timeout_ms,
+            )
+            return {"ok": True, "theme": stored, "choices": list(THEME_CHOICES)}
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning(
+                "shell.theme.write_failed", extra={"reason": type(exc).__name__}
+            )
+            # The page has already repainted; say the choice did not survive rather
+            # than pretending it did.
+            return {"ok": False, "error": "tidak dapat menyimpan pilihan tema"}
+
     def api_get(self, path: str, query: dict[str, Any] | None = None) -> dict[str, Any]:
         """Perform an authenticated loopback GET on behalf of the page.
 

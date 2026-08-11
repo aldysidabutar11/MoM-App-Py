@@ -572,16 +572,43 @@ def test_the_allowed_range_is_displayed(ui) -> None:
     assert "Nilai yang diperbolehkan" in ui["app.js"]
 
 
+def _without_comments(script: str) -> str:
+    """JavaScript with its comments removed.
+
+    Matching a phrase against the raw file matches the prose *explaining* the phrase.
+    That has now produced a false failure five separate times on this project -- on a
+    `SetMute` docstring, a `show()` comment, an error message, an SVG namespace, and
+    here -- so the strip is the rule rather than the workaround. The reason a line was
+    written belongs beside it, and a checker that cannot tell code from commentary is
+    the thing that has to change.
+    """
+    import re as _re
+
+    script = _re.sub(r"/\*.*?\*/", " ", script, flags=_re.S)
+    return _re.sub(r"(?<!:)//[^\n]*", " ", script)
+
+
 def test_a_capacity_above_the_old_baseline_warns_about_hardware(ui) -> None:
     """The warning is required verbatim in substance: more seats is not more accuracy."""
     # Whitespace-normalised: the copy is concatenated across source lines, and a
     # contiguous-substring assertion breaks the next time somebody reflows it.
-    script = ui["app.js"]
+    script = _without_comments(ui["app.js"])
     flat = " ".join(script.replace("' +", "").replace("'", " ").split())
     assert "var BASELINE_CAPACITY = 9" in script
     assert "capacity > BASELINE_CAPACITY" in script
     assert "membutuhkan conference microphone dan pengujian ruangan" in flat
-    assert "tidak menjamin akurasi pengenalan suara" in flat
+    # The second half used to be "tidak menjamin akurasi pengenalan suara". The
+    # invariant it guards is right and stays; the wording was not. Hedging about the
+    # *accuracy* of voice recognition states that voice recognition happens, and it
+    # does not happen anywhere in this build -- an operator read that sentence, filled
+    # a roster with twenty-two people and asked why every segment was still
+    # UNASSIGNED. What is asserted now is the same promise about a capability that
+    # exists: more seats never buys a better transcript.
+    assert "tidak membuat rapat lebih akurat tertranskripsi" in flat
+    assert "pengenalan suara" not in flat, (
+        "the capacity warning must not mention voice recognition at all; this build "
+        "has none, and naming it here is what caused the confusion"
+    )
 
 
 def test_the_ceiling_is_never_presented_as_a_validated_capability(ui) -> None:

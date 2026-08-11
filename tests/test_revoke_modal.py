@@ -217,36 +217,51 @@ def test_no_element_that_javascript_hides_can_be_stuck_visible(
     )
 
 
-def test_the_cascade_check_actually_detects_the_original_defect(
-    html: str, css: str, js: str
-) -> None:
-    """Negative control: the test above must fail on the code that shipped broken.
+def test_the_cascade_check_actually_detects_the_original_defect() -> None:
+    """Negative control, on a specimen this test owns.
 
-    Without this, a parser that silently found nothing would make the check above
-    pass forever. Here the `[hidden]` rule is removed from the stylesheet text and
-    the same analysis is re-run; it must report the backdrops as stuck.
+    Without a control, a parser that silently found nothing would make the check above
+    pass for ever. It used to build the control by deleting the `[hidden]` rule from the
+    real stylesheet and asserting `.modal-backdrop` was then reported stuck -- which
+    required `.modal-backdrop` to go on declaring `display`.
+
+    That premise died when the defect was fixed. The redesign centres the modal with a
+    transform, so the backdrop declares no `display` at all and no longer needs the
+    `[hidden]` rule to be hideable. The control was asserting that the bug was still
+    there, and repairing the bug is what broke it.
+
+    So the specimen is written here instead: the exact shape of the original defect, in
+    a stylesheet and a fragment this test owns. The analyser must report it stuck without
+    the rule and clear once the rule is present, and neither answer depends on what
+    `app.css` contains today.
     """
-    without_rule = re.sub(
-        r"\[hidden\]\s*\{[^}]*\}", "", _strip_css_comments(css), count=1
-    )
-    declarations = _display_declarations(without_rule)
-    assert "[hidden]" not in declarations, "the control failed to remove the rule"
+    specimen_css = """
+    .modal-backdrop { display: flex; align-items: center; }
+    .fine { color: red; }
+    """
+    specimen_html = '<div class="modal-backdrop" id="specimen-backdrop" hidden></div>'
 
+    declarations = _display_declarations(specimen_css)
     display_classes = {
         selector.lstrip(".")
         for selector in declarations
         if selector.startswith(".") and " " not in selector
     }
     assert "modal-backdrop" in display_classes, (
-        ".modal-backdrop must still declare `display`, otherwise this control "
-        "proves nothing"
+        "the analyser missed a plain `display` declaration; every check built on it "
+        "would pass vacuously"
     )
-    for element_id in ("revoke-backdrop", "consent-backdrop"):
-        match = re.search(
-            r'<\w+([^>]*\bid="' + re.escape(element_id) + r'"[^>]*)>', html
-        )
-        assert match is not None
-        assert "modal-backdrop" in match.group(1)
+    assert "fine" not in display_classes, "the analyser flagged a rule setting no display"
+
+    # The element carries the offending class, so it is stuck: `hidden` cannot hide it.
+    classes = re.search(r'class="([^"]*)"', specimen_html)
+    assert classes and "modal-backdrop" in classes.group(1).split()
+    assert "[hidden]" not in declarations, "the specimen must not carry the safety net"
+
+    # With the net restored, the same analysis reports the rule and its `!important`.
+    with_rule = "[hidden] { display: none !important; }" + specimen_css
+    restored = _display_declarations(with_rule)
+    assert restored.get("[hidden]") == "none !important", restored
 
 
 def test_the_revoke_backdrop_covers_the_viewport_and_sits_above_the_page(

@@ -1719,8 +1719,15 @@
       notes.push(data.capacity_notice);
     }
     if (capacity > BASELINE_CAPACITY) {
+      /* The invariant is that more seats is never more accuracy (ADR-0013). It used
+         to be phrased as "menambah roster tidak menjamin akurasi pengenalan suara",
+         which implies voice recognition exists and is merely unreliable -- and an
+         operator read exactly that, filled a roster with 22 people, and asked why
+         every segment still said UNASSIGNED. The warning is kept; what it warns
+         about is now something this build actually does. */
       notes.push('Kapasitas lebih besar membutuhkan conference microphone dan ' +
-        'pengujian ruangan. Menambah roster tidak menjamin akurasi pengenalan suara.');
+        'pengujian ruangan. Menambah kursi tidak membuat rapat lebih akurat ' +
+        'tertranskripsi -- lebih banyak orang di satu ruangan justru lebih sulit.');
     }
     el.rosterWarning.textContent = notes.join(' ');
     show(el.rosterWarning, notes.length > 0);
@@ -2737,6 +2744,10 @@
     el.pill.textContent = busy
       ? 'Berjalan' + (data.cancel_requested ? ' (pembatalan diminta)' : '')
       : 'Idle';
+    /* Presentational only, and the same marker the minutes panel already uses: it is
+       what lets a stylesheet tell "counting" from "stopped" without a second source of
+       truth that could disagree with the words in the pill. */
+    el.pill.className = busy ? 'pill pill-live' : 'pill';
     if (data.last_result) {
       renderCost(data.last_result);
       renderPass2(data.last_result);
@@ -2902,6 +2913,7 @@
       renderPass2(payload);
     }
     el.pill.textContent = errorText ? 'Gagal' : 'Selesai';
+    el.pill.className = 'pill';
     if (errorText) fail(String(errorText));
     return loadRecordings()
       .then(function () {
@@ -2922,6 +2934,7 @@
     sawBusy = false;
     updateButtons();
     el.pill.textContent = 'Berjalan';
+    el.pill.className = 'pill pill-live';
     startElapsed();
     schedulePoll();
 
@@ -3834,4 +3847,120 @@
   });
 
   showView('view-beranda');
+})();
+
+/* ==========================================================================
+   THEME
+
+   Three states, and `system` is the default: Windows already knows whether it is
+   night, and a two-way switch would make somebody re-choose every time the machine
+   changed on its own. The other two exist for the case this was asked for -- reading
+   the screen outdoors, where a dark interface disappears in daylight.
+
+   The choice is stored by Python, not by the page. This shell may not use
+   localStorage, sessionStorage, cookies or IndexedDB at all: a page that never stores
+   anything cannot accidentally store the session token. So `ShellApi` keeps it in the
+   same `app_settings` table every other application setting lives in, and no HTTP route
+   or proxy-allowlist entry was added for it.
+
+   The paint is applied before the answer arrives and again after. Waiting for a
+   round-trip would show the wrong theme for a frame on every launch.
+   ========================================================================== */
+(function () {
+  var options = Array.prototype.slice.call(document.querySelectorAll('.theme-option'));
+  if (!options.length) return;
+
+  function bridge() {
+    return window.pywebview && window.pywebview.api ? window.pywebview.api : null;
+  }
+
+  function paint(theme) {
+    if (theme === 'system') {
+      /* Removed rather than set to "system": the media query is written as
+         `:root:not([data-theme])`, so the attribute's ABSENCE is what hands control
+         back to Windows. Setting it to any value would keep the override on. */
+      document.documentElement.removeAttribute('data-theme');
+    } else {
+      document.documentElement.setAttribute('data-theme', theme);
+    }
+    options.forEach(function (option) {
+      option.setAttribute(
+        'aria-pressed',
+        option.dataset.theme === theme ? 'true' : 'false'
+      );
+    });
+  }
+
+  function choose(theme) {
+    /* Painted first, stored second. The switch has to feel instant, and a failed write
+       must not leave the operator looking at a theme they did not pick -- if the store
+       refuses, the paint stays and only the persistence is lost, which is reported
+       rather than hidden. */
+    paint(theme);
+    var api = bridge();
+    if (!api || !api.set_theme) return;
+    api.set_theme(theme).then(function (result) {
+      if (result && result.ok === false) {
+        var note = document.getElementById('theme-error');
+        if (note) {
+          note.textContent = String(result.error || 'pilihan tema tidak tersimpan');
+          note.hidden = false;
+        }
+      }
+    });
+  }
+
+  options.forEach(function (option) {
+    option.addEventListener('click', function () { choose(option.dataset.theme); });
+  });
+
+  paint('system');
+
+  /* The stored choice arrives once the bridge is up. Until then the page follows
+     Windows, which is the right thing to show while the answer is in flight. */
+  function load() {
+    var api = bridge();
+    if (!api || !api.get_theme) {
+      window.setTimeout(load, 120);
+      return;
+    }
+    api.get_theme().then(function (result) {
+      paint((result && result.theme) || 'system');
+    });
+  }
+  load();
+})();
+
+/* ==========================================================================
+   ORGANISATION MARK
+
+   Read through the bridge, from the same `resolve_branding` the letterhead uses, so
+   there is one file to replace rather than two places to keep in step.
+
+   The built-in square stays until a logo actually arrives, and stays for good if none
+   is configured: a clone of this tool belongs to whoever cloned it.
+   ========================================================================== */
+(function () {
+  var logo = document.getElementById('brand-logo');
+  var mark = document.getElementById('brand-mark');
+  if (!logo || !mark) return;
+
+  function load() {
+    var api = window.pywebview && window.pywebview.api ? window.pywebview.api : null;
+    if (!api || !api.get_branding) {
+      window.setTimeout(load, 120);
+      return;
+    }
+    api.get_branding().then(function (result) {
+      if (!result || !result.logo) return;
+      logo.src = result.logo;
+      /* `alt` carries the organisation, so the mark is not silent to a screen reader.
+         Empty when unnamed, which is correct: a decorative image with invented alt text
+         is worse than one announced as decoration. */
+      logo.alt = result.organisation || '';
+      logo.hidden = false;
+      mark.hidden = true;
+    });
+  }
+  load();
 })();

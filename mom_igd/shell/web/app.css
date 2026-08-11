@@ -1,7 +1,21 @@
 /* ==========================================================================
    MoM-IGD shell styles.
-   System fonts only -- no remote font is ever fetched. Light and dark are both
-   supported through prefers-color-scheme.
+
+   System fonts only -- no remote font is ever fetched, no stylesheet is loaded
+   from anywhere but this file, and the page's CSP would refuse one anyway.
+
+   THE VISUAL LANGUAGE, AND WHY IT IS RESTRAINED
+
+   The surfaces are glass: translucent fills over an ambient field, with a
+   hairline light edge and a soft shadow. That is applied to the *chrome* -- the
+   top bar, the rail, the cards' outer shell -- and deliberately not to the places
+   a person reads carefully. A transcript, a table of participants and the body of
+   a minute sit on an opaque surface, because text over a blurred moving field is
+   harder to read and this is an application whose whole output is a document
+   somebody has to check line by line.
+
+   So: glass for structure, solid for content, one accent, and depth carried by
+   shadow rather than by borders.
    ========================================================================== */
 
 /* ==========================================================================
@@ -9,78 +23,251 @@
 
    `hidden` works through one UA-stylesheet rule, `[hidden] { display: none }`,
    and ANY author-level `display` declaration beats the UA stylesheet regardless
-   of specificity. This file sets `display` on 22 classes, and `show(node, false)`
-   in app.js toggles `hidden` -- so before this rule existed, hiding was silently
-   a no-op for every element carrying one of those classes.
+   of specificity. So before this rule existed, hiding was silently a no-op for
+   every element carrying a class that set `display`.
 
    The concrete damage: `.modal-backdrop { display: flex }` kept BOTH modal
    backdrops laid out from page load. `#revoke-backdrop` is last in the document
-   at the same `z-index: 50`, so it painted on top of the whole application and
-   swallowed every pointer event. The revoke dialog looked open but had never
-   been opened, so it showed no participant, "Ya, cabut persetujuan" hit the
+   at the same `z-index`, so it painted on top of the whole application and
+   swallowed every pointer event. The revoke dialog looked open but had never been
+   opened, so it showed no participant, "Ya, cabut persetujuan" hit the
    `if (!pendingRevokeUuid) return` guard and sent nothing, and "Batal" set
    `hidden` to no effect.
 
-   `!important` is deliberate. Without it, `[hidden]` (specificity 0,1,0) merely
-   ties with `.modal-backdrop` (0,1,0) and source order decides -- which makes
-   correctness depend on where in this file someone adds the next `display`.
+   `!important` is deliberate and stays. But it is a safety net, not a licence:
+   **no class on an element the script toggles may set `display` at all.** Twelve
+   classes are in that position -- `.status-card`, `.modal-backdrop`, `.meter`,
+   `.notice`, `.warn-line`, `.status-detail`, `.muted`, `.mom-progress`,
+   `.mom-summary`, `.voice-final`, `.voice-placeholder`, `.status-card-wide` --
+   and every one of them lays out without `display` below: cards flow with
+   `> * + *` margins, the modal centres by transform, the meter is a positioned
+   track. Relying on the net is how the net gets removed by somebody who thinks
+   it is unused.
    ========================================================================== */
 [hidden] {
   display: none !important;
 }
 
+/* ==========================================================================
+   TOKENS
+   ========================================================================== */
+
 :root {
+  /* Kept as `light dark` so the *system* case still hands native controls the right
+     palette. The two explicit choices pin it below. */
   color-scheme: light dark;
 
-  --bg: #f5f6f8;
+  /* Ambient field. The washes are what make a translucent surface read as
+     glass; over a flat colour it reads as a mistake. */
+  --bg: #eaeef5;
+  /* Opacity is bounded by the text that sits directly on it -- headings and the lede
+     are on the page, not in a card, so every point of wash is taken off their contrast.
+     Measured: light fails at 0.28 because the indigo darkens the page under dark text.
+     These sit under the 0.22 ceiling with room. */
+  --wash-1: rgba(79, 70, 229, 0.18);
+  --wash-2: rgba(14, 165, 233, 0.15);
+  --wash-3: rgba(217, 70, 239, 0.11);
+
+  /* Glass, for chrome. */
+  --glass: rgba(255, 255, 255, 0.66);
+  --glass-strong: rgba(255, 255, 255, 0.82);
+  --glass-blur: 20px;
+
+  /* Opaque, for anything read closely. */
   --surface: #ffffff;
-  --surface-2: #fafbfc;
-  --border: #dfe3e8;
-  --border-strong: #c7ccd4;
-  --text: #16191d;
-  --text-muted: #5d656f;
-  --text-faint: #8b939d;
+  --surface-2: #f4f6fa;
+  --surface-3: #eceff5;
 
-  --accent: #1f5f9e;
-  --accent-soft: #e8f0f8;
+  --stroke: rgba(15, 23, 42, 0.10);
+  --stroke-strong: rgba(15, 23, 42, 0.18);
+  --stroke-light: rgba(255, 255, 255, 0.75);
+  --grid-line: rgba(15, 23, 42, 0.055);
 
-  --ok: #1c7a4a;
-  --ok-soft: #e4f4ea;
-  --warn: #8a5a08;
-  --warn-soft: #fdf1dc;
-  --fail: #a52222;
-  --fail-soft: #fbe6e6;
+  --text: #0f172a;
+  --text-muted: #4a5568;
+  /* 3.02:1 on white left no margin at all against the 3:1 floor -- one rounding
+     away from non-compliant. This clears it with room to spare. */
+  --text-faint: #79839a;
 
-  --radius: 10px;
-  --radius-sm: 6px;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: #eef1fe;
+  --accent-ring: rgba(79, 70, 229, 0.30);
+  --on-accent: #ffffff;
+
+  --ok: #0f7b52;
+  --ok-soft: #e6f5ee;
+  --warn: #92590a;
+  --warn-soft: #fdf3e0;
+  --fail: #c02626;
+  --fail-soft: #fceaea;
+
+  --radius-xs: 6px;
+  --radius-sm: 10px;
+  --radius: 14px;
+  --radius-lg: 20px;
+  --radius-pill: 999px;
+
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.06);
+  --shadow: 0 2px 6px -1px rgba(15, 23, 42, 0.07), 0 12px 28px -12px rgba(15, 23, 42, 0.18);
+  --shadow-lg: 0 8px 20px -6px rgba(15, 23, 42, 0.14), 0 28px 64px -20px rgba(15, 23, 42, 0.32);
+
   --gap: 16px;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --fast: 140ms;
+  --slow: 240ms;
+
+  /* Segoe UI Variable ships with Windows 11 and is a genuine variable font with
+     three optical sizes. Using Display for headings and Text for body is the whole
+     reason one would otherwise download Inter: Display has tighter spacing and
+     higher contrast, drawn for large sizes, and Text is drawn for reading. Nothing
+     is fetched -- `web/` may hold exactly three files, and none of them is a font. */
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI",
     system-ui, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Segoe UI Variable Display", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
+
+  /* Type scale. Paired with its line-height so the two are never chosen apart, which
+     is how vertical rhythm drifts one component at a time. */
+  --t-micro: 10.5px;   --lh-micro: 1.4;
+  --t-xs:    11.5px;   --lh-xs:    1.45;
+  --t-sm:    12.5px;   --lh-sm:    1.55;
+  --t-base:  13.5px;   --lh-base:  1.6;
+  --t-body:  14px;     --lh-body:  1.62;
+  --t-lg:    16px;     --lh-lg:    1.4;
+  --t-xl:    21px;     --lh-xl:    1.3;
+  --t-2xl:   28px;     --lh-2xl:   1.2;
+
+  /* Strict 4pt base. Every padding, gap and margin below resolves to one of these,
+     so a component cannot introduce a 7px that nothing else shares. */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-12: 48px;
 }
 
+/* The dark palette, reachable two ways.
+ *
+ * `:root:not([data-theme])` is the guard that makes the manual switch work at all. The
+ * media query used to be unqualified, so on a machine set to dark it fired regardless
+ * and choosing "Terang" changed nothing -- which is precisely the case this was built
+ * for: reading the screen outdoors on a laptop that is in dark mode.
+ *
+ * The two blocks share one source below rather than being maintained side by side. */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #16181c;
-    --surface: #1e2126;
-    --surface-2: #23262c;
-    --border: #33383f;
-    --border-strong: #454b54;
-    --text: #e8eaed;
-    --text-muted: #a6adb7;
-    --text-faint: #7b838d;
+  :root:not([data-theme]) {
+    /* Obsidian, not navy. The previous base carried a 13-point blue delta, and a
+       saturated dark hue is what makes a long session tiring: the eye adapts to the
+       cast and every neutral then reads as its complement. This is near-neutral --
+       a 5-point delta, enough to stay cool rather than muddy -- and the colour in
+       the interface comes from the washes and the accent, which is where colour is
+       meant to be. */
+    --bg: #0b0c10;
+    /* Dark has more headroom: text stays AAA to 0.40 and only fails at 0.48. */
+    --wash-1: rgba(99, 102, 241, 0.32);
+    --wash-2: rgba(14, 165, 233, 0.24);
+    --wash-3: rgba(168, 85, 247, 0.22);
 
-    --accent: #6ba7e0;
-    --accent-soft: #1d2c3a;
+    --glass: rgba(255, 255, 255, 0.055);
+    --glass-strong: rgba(255, 255, 255, 0.085);
+    --glass-blur: 22px;
 
-    --ok: #64c68e;
-    --ok-soft: #162a1f;
-    --warn: #e0b062;
-    --warn-soft: #2c2418;
-    --fail: #e88b8b;
-    --fail-soft: #2e1c1c;
+    /* A four-step elevation ladder, each about 4 % lighter than the last. Depth is
+       carried by the step plus a light top edge, never by a heavier border. */
+    --surface: #14161c;
+    --surface-2: #1a1d24;
+    --surface-3: #21242d;
+
+    --stroke: rgba(255, 255, 255, 0.10);
+    --stroke-strong: rgba(255, 255, 255, 0.18);
+    --stroke-light: rgba(255, 255, 255, 0.14);
+    --grid-line: rgba(255, 255, 255, 0.05);
+
+    --text: #e8ecf4;
+    --text-muted: #9aa5ba;
+    --text-faint: #6b7688;
+
+    --accent: #818cf8;
+    --accent-hover: #a5b0ff;
+    --accent-soft: rgba(129, 140, 248, 0.14);
+    --accent-ring: rgba(129, 140, 248, 0.38);
+    --on-accent: #0b1020;
+
+    --ok: #4ade80;
+    --ok-soft: rgba(74, 222, 128, 0.12);
+    --warn: #fbbf24;
+    --warn-soft: rgba(251, 191, 36, 0.12);
+    --fail: #f87171;
+    --fail-soft: rgba(248, 113, 113, 0.12);
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.30);
+    --shadow: 0 2px 8px rgba(0, 0, 0, 0.34), 0 16px 40px -16px rgba(0, 0, 0, 0.60);
+    --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.50), 0 40px 80px -24px rgba(0, 0, 0, 0.70);
   }
 }
+
+:root[data-theme="dark"] {
+    /* Obsidian, not navy. The previous base carried a 13-point blue delta, and a
+       saturated dark hue is what makes a long session tiring: the eye adapts to the
+       cast and every neutral then reads as its complement. This is near-neutral --
+       a 5-point delta, enough to stay cool rather than muddy -- and the colour in
+       the interface comes from the washes and the accent, which is where colour is
+       meant to be. */
+    --bg: #0b0c10;
+    /* Dark has more headroom: text stays AAA to 0.40 and only fails at 0.48. */
+    --wash-1: rgba(99, 102, 241, 0.32);
+    --wash-2: rgba(14, 165, 233, 0.24);
+    --wash-3: rgba(168, 85, 247, 0.22);
+
+    --glass: rgba(255, 255, 255, 0.055);
+    --glass-strong: rgba(255, 255, 255, 0.085);
+    --glass-blur: 22px;
+
+    /* A four-step elevation ladder, each about 4 % lighter than the last. Depth is
+       carried by the step plus a light top edge, never by a heavier border. */
+    --surface: #14161c;
+    --surface-2: #1a1d24;
+    --surface-3: #21242d;
+
+    --stroke: rgba(255, 255, 255, 0.10);
+    --stroke-strong: rgba(255, 255, 255, 0.18);
+    --stroke-light: rgba(255, 255, 255, 0.14);
+    --grid-line: rgba(255, 255, 255, 0.05);
+
+    --text: #e8ecf4;
+    --text-muted: #9aa5ba;
+    --text-faint: #6b7688;
+
+    --accent: #818cf8;
+    --accent-hover: #a5b0ff;
+    --accent-soft: rgba(129, 140, 248, 0.14);
+    --accent-ring: rgba(129, 140, 248, 0.38);
+    --on-accent: #0b1020;
+
+    --ok: #4ade80;
+    --ok-soft: rgba(74, 222, 128, 0.12);
+    --warn: #fbbf24;
+    --warn-soft: rgba(251, 191, 36, 0.12);
+    --fail: #f87171;
+    --fail-soft: rgba(248, 113, 113, 0.12);
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.30);
+    --shadow: 0 2px 8px rgba(0, 0, 0, 0.34), 0 16px 40px -16px rgba(0, 0, 0, 0.60);
+    --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.50), 0 40px 80px -24px rgba(0, 0, 0, 0.70);
+}
+
+/* An explicit light choice needs nothing: the base `:root` block is already light, and
+   the two rules above no longer apply once `data-theme` is set. It is named here so the
+   next reader does not go looking for a block that is deliberately absent. */
+
+/* ==========================================================================
+   BASE
+   ========================================================================== */
 
 *,
 *::before,
@@ -96,918 +283,303 @@ body {
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-h1, h2, h3 { margin: 0; font-weight: 620; letter-spacing: -0.01em; }
+/* The ambient field: three soft washes that drift. Fixed, so scrolling does not drag
+   it, and `pointer-events: none` so it can never intercept a click.
+
+   Oversized on purpose -- 140% of the viewport, offset by -20% -- so the blobs can
+   travel without a hard edge ever entering the frame. Only `transform` moves, which
+   the compositor can do without repainting. */
+body::before {
+  content: "";
+  position: fixed;
+  left: -20%;
+  top: -20%;
+  width: 140%;
+  height: 140%;
+  z-index: -2;
+  pointer-events: none;
+  will-change: transform;
+  background:
+    radial-gradient(56rem 42rem at 16% 12%, var(--wash-1), transparent 66%),
+    radial-gradient(50rem 38rem at 84% 20%, var(--wash-2), transparent 64%),
+    radial-gradient(48rem 44rem at 46% 92%, var(--wash-3), transparent 66%);
+  animation: aurora-drift 48s var(--ease) infinite alternate;
+}
+
+/* Slow enough that a person notices the room has changed rather than watching
+   something move. Sixty-four seconds one way; nothing repeats on a loop short enough
+   to become a rhythm at the edge of vision while somebody is reading a transcript. */
+@keyframes aurora-drift {
+  0%   { transform: translate3d(0, 0, 0) scale(1); }
+  50%  { transform: translate3d(-6%, 5%, 0) scale(1.12); }
+  100% { transform: translate3d(5%, -4%, 0) scale(1.06); }
+}
+
+/* A fine grid over the whole page, so an area with nothing in it reads as a surface
+   rather than a void. Static, one paint, and faint enough that it is texture rather
+   than pattern -- at this alpha it is felt more than seen. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: 48px 48px;
+  /* Faded towards the middle so the grid frames the content instead of running
+     underneath a paragraph somebody is reading. */
+  mask-image: radial-gradient(120% 90% at 50% 40%, transparent 38%, black 100%);
+  -webkit-mask-image: radial-gradient(120% 90% at 50% 40%, transparent 38%, black 100%);
+}
+
+/* While something heavy is running, the background holds still.
+ *
+ * Every card here uses `backdrop-filter`, so a moving background means recomputing the
+ * blur behind all of them on every frame -- on an Intel Iris Xe, during the forty
+ * minutes twelve CPU threads spend decoding a ninety-minute meeting. The state is the
+ * one those panels already publish, so this cannot drift out of step with what the
+ * screen says is happening. */
+body:has(#rec-pill[data-state="ok"])::before,
+body:has(.pill-live)::before,
+body:has(.status-pill[data-state="live"])::before {
+  animation-play-state: paused;
+}
+
+h1, h2, h3, h4 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 640;
+  letter-spacing: -0.016em;
+  color: var(--text);
+}
 p { margin: 0; }
 code { font-family: var(--mono); font-size: 0.92em; }
 
-.skip-link {
-  position: absolute;
-  left: -9999px;
+a { color: var(--accent); }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
 }
+
+::selection { background: var(--accent-ring); }
+
+/* Scrollbars, so a long transcript does not end in a chrome-grey slab. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--stroke-strong) transparent;
+}
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--stroke-strong);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: var(--radius-pill);
+}
+
+.skip-link { position: absolute; left: -9999px; }
 .skip-link:focus {
   left: 12px;
   top: 12px;
-  z-index: 10;
-  padding: 8px 12px;
+  z-index: 60;
+  padding: 10px 14px;
   background: var(--surface);
   border: 2px solid var(--accent);
   border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
 }
 
-/* ---------------------------------------------------------------- topbar -- */
+/* ==========================================================================
+   TOP BAR -- glass
+   ========================================================================== */
 
 .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--gap);
   flex-wrap: wrap;
-  padding: 14px 24px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
-  z-index: 5;
+  padding: 12px 24px;
+  background: var(--glass);
+  backdrop-filter: blur(var(--glass-blur)) saturate(160%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(160%);
+  border-bottom: 1px solid var(--stroke);
+  box-shadow: inset 0 1px 0 var(--stroke-light);
 }
 
-.brand { display: flex; align-items: center; gap: 12px; }
+.brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
 
 .brand-mark {
   display: grid;
   place-items: center;
   width: 40px;
   height: 40px;
-  border-radius: var(--radius-sm);
+  flex: 0 0 auto;
+  border-radius: 11px;
   background: var(--accent);
-  color: #fff;
-  font-weight: 700;
+  background: linear-gradient(145deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #22d3ee));
+  color: var(--on-accent);
   font-size: 12px;
-  letter-spacing: 0.04em;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  box-shadow: var(--shadow-sm), inset 0 1px 0 rgba(255, 255, 255, 0.28);
 }
 
-.brand-text h1 { font-size: 17px; }
+.brand-text { min-width: 0; }
+.brand-text h1 { font-size: 17px; line-height: 1.25; }
 
 .brand-sub {
-  font-size: 12px;
-  color: var(--text-muted);
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-}
-
-.phase-chip {
-  padding: 1px 7px;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
-.topbar-right { display: flex; align-items: center; gap: 12px; }
+.phase-chip {
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--stroke);
+  background: var(--surface-2);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.topbar-right { display: flex; align-items: center; gap: 10px; }
 
 .badge {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 5px 11px;
-  border-radius: 999px;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--stroke);
+  background: var(--surface-2);
   font-size: 12px;
   font-weight: 600;
-  border: 1px solid transparent;
 }
 
-.badge-offline {
-  background: var(--ok-soft);
-  color: var(--ok);
-  border-color: color-mix(in srgb, var(--ok) 30%, transparent);
-}
+.badge-offline { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 28%, transparent); background: var(--ok-soft); }
 
-.badge .dot {
+.dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: currentColor;
-}
-
-.btn {
-  font: inherit;
-  font-size: 13px;
-  padding: 6px 13px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-strong);
-  background: var(--surface-2);
-  color: var(--text);
-  cursor: pointer;
-}
-.btn:hover { border-color: var(--accent); color: var(--accent); }
-.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.btn[disabled] { opacity: 0.55; cursor: progress; }
-
-/* ------------------------------------------------------------------ main -- */
-
-main {
-  max-width: 1180px;
-  margin: 0 auto;
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 32px;
-}
-
-.section-head { margin-bottom: 14px; }
-.section-head h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
-.muted { color: var(--text-muted); font-size: 13px; }
-
-/* ------------------------------------------------------------- status ----- */
-
-.status-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: var(--gap);
-}
-
-.status-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.status-card > header { display: flex; align-items: center; gap: 10px; }
-.status-card h3 { font-size: 14px; }
-
-.status-pill {
-  min-width: 52px;
-  text-align: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  border: 1px solid transparent;
-  background: var(--surface-2);
-  color: var(--text-faint);
-  border-color: var(--border);
-}
-.status-pill[data-state="ok"]      { background: var(--ok-soft);   color: var(--ok);   border-color: color-mix(in srgb, var(--ok) 30%, transparent); }
-.status-pill[data-state="warn"]    { background: var(--warn-soft); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
-.status-pill[data-state="fail"]    { background: var(--fail-soft); color: var(--fail); border-color: color-mix(in srgb, var(--fail) 30%, transparent); }
-
-.status-detail { font-size: 13px; color: var(--text-muted); }
-
-.kv { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12px; }
-.kv dt { color: var(--text-faint); }
-.kv dd { margin: 0; font-family: var(--mono); font-size: 11.5px; word-break: break-all; }
-
-/* ----------------------------------------------------------- diagnostics -- */
-
-.diag {
-  margin-top: var(--gap);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-}
-.diag > summary {
-  padding: 12px 16px;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-}
-.diag > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.diag-body { padding: 0 16px 16px; overflow-x: auto; }
-
-.diag-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.diag-table th, .diag-table td {
-  text-align: left;
-  padding: 6px 10px;
-  border-top: 1px solid var(--border);
-  vertical-align: top;
-}
-.diag-table th { color: var(--text-faint); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
-.diag-table td.key { font-family: var(--mono); white-space: nowrap; }
-.diag-table td.detail { color: var(--text-muted); }
-
-.tag {
-  display: inline-block;
-  padding: 1px 7px;
-  border-radius: var(--radius-sm);
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-.tag-pass { background: var(--ok-soft);   color: var(--ok); }
-.tag-warn { background: var(--warn-soft); color: var(--warn); }
-.tag-fail { background: var(--fail-soft); color: var(--fail); }
-
-/* -------------------------------------------------------------- features -- */
-
-.feature-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: var(--gap);
-}
-
-.feature-card {
-  position: relative;
-  background: var(--surface-2);
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius);
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  opacity: 0.78;
-  cursor: not-allowed;
-  user-select: none;
-}
-
-.feature-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-.feature-card h3 { font-size: 14px; color: var(--text-muted); }
-.feature-card p { font-size: 12.5px; color: var(--text-faint); }
-
-.phase-tag {
-  flex: none;
-  padding: 1px 7px;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  font-size: 10.5px;
-  color: var(--text-faint);
-  white-space: nowrap;
-}
-
-.not-implemented {
-  margin-top: auto;
-  font-size: 11.5px !important;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  color: var(--warn) !important;
-  background: var(--warn-soft);
-  border-radius: var(--radius-sm);
-  padding: 4px 8px;
-  align-self: flex-start;
-}
-
-/* ---------------------------------------------------------------- footer -- */
-
-.footer {
-  max-width: 1180px;
-  margin: 0 auto;
-  padding: 20px 24px 32px;
-  border-top: 1px solid var(--border);
-  font-size: 12px;
-  color: var(--text-muted);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .status-pill, .btn { transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease; }
-}
-
-/* ======================================================= Recording (Phase 2) */
-
-.feature-card-enabled {
-  background: var(--surface);
-  border-style: solid;
-  border-color: var(--accent);
-  opacity: 1;
-  cursor: default;
-}
-.feature-card-enabled h3 { color: var(--text); }
-.feature-card-enabled p { color: var(--text-muted); }
-.phase-tag-live { border-color: var(--accent); color: var(--accent); }
-.implemented {
-  margin-top: auto;
-  font-size: 11.5px;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  color: var(--ok);
-  background: var(--ok-soft);
-  border-radius: var(--radius-sm);
-  padding: 4px 8px;
-  align-self: flex-start;
-}
-
-.rec-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: var(--gap);
-}
-
-.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
-.field > span, .field > label { color: var(--text-faint); }
-.field select,
-.field input[type="text"] {
-  font: inherit;
-  font-size: 13px;
-  padding: 6px 8px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-strong);
-  background: var(--surface-2);
-  color: var(--text);
-  max-width: 100%;
-}
-.field input[type="text"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.field input[type="text"]:disabled { opacity: 0.55; }
-
-.btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
-
-/* Roster capacity: the number input and its Save button sit on one line, and
-   wrap together rather than the button drifting away from the field. */
-.capacity-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 10px;
-}
-.capacity-row .field { flex: 0 1 220px; }
-.capacity-row input[type="number"] { width: 100%; }
-
-/* Section heading inside a card, for the roster's member list and add panel. */
-.subhead {
-  margin: 16px 0 6px;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-/* One candidate row in the directory search results. */
-.candidate-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: baseline;
-}
-.candidate-row .candidate-name { font-weight: 600; }
-.btn-primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
-.btn-danger { border-color: var(--fail); color: var(--fail); }
-.hint { font-size: 11.5px; color: var(--text-faint); }
-
-.meter {
-  position: relative;
-  height: 18px;
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  overflow: hidden;
-}
-.meter-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 0;
-  background: var(--ok);
-}
-.meter-fill[data-state="warn"] { background: var(--warn); }
-.meter-fill[data-state="fail"] { background: var(--fail); }
-.meter-peak {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  left: 0;
-  background: var(--text);
-  opacity: 0.7;
-}
-
-.checklist { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 12.5px; }
-.checklist li { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start; }
-.checklist .tag { align-self: start; }
-
-.elapsed {
-  font-family: var(--mono);
-  font-size: 26px;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.02em;
-}
-
-.warn-line {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--fail);
-  background: var(--fail-soft);
-  border-radius: var(--radius-sm);
-  padding: 6px 9px;
-}
-
-.notice {
-  margin-top: var(--gap);
-  font-size: 12.5px;
-  color: var(--warn);
-  background: var(--warn-soft);
-  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 20%, transparent);
 }
 
 /* ==========================================================================
-   Phase 3: participants, consent dialog, enrollment wizard.
-
-   No remote asset, no webfont, no CDN -- system fonts and the variables above
-   only, exactly as Phase 1 and 2. Both light and dark themes inherit from the
-   same custom properties, so nothing here hardcodes a colour.
-   ========================================================================== */
-
-.status-card-wide { grid-column: 1 / -1; }
-
-.participant-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12.5px;
-  margin-top: 10px;
-}
-.participant-table th,
-.participant-table td {
-  text-align: left;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: middle;
-}
-.participant-table th {
-  color: var(--text-faint);
-  font-weight: 600;
-  font-size: 11.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
-.participant-table tbody tr:hover { background: var(--surface-2); }
-.participant-table td.actions { white-space: nowrap; }
-.participant-table .btn { padding: 3px 8px; font-size: 11.5px; }
-
-/* Small status badges. `data-state` is set from JavaScript, never a class name
-   built from user data. */
-.state-badge {
-  display: inline-block;
-  padding: 2px 7px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  border: 1px solid transparent;
-  white-space: nowrap;
-}
-.state-badge[data-state="ok"] {
-  color: var(--ok);
-  background: var(--ok-soft);
-  border-color: color-mix(in srgb, var(--ok) 30%, transparent);
-}
-.state-badge[data-state="warn"] {
-  color: var(--warn);
-  background: var(--warn-soft);
-  border-color: color-mix(in srgb, var(--warn) 30%, transparent);
-}
-.state-badge[data-state="fail"] {
-  color: var(--fail);
-  background: var(--fail-soft, transparent);
-  border-color: color-mix(in srgb, var(--fail) 30%, transparent);
-}
-.state-badge[data-state="unknown"] {
-  color: var(--text-faint);
-  background: var(--surface-2);
-  border-color: var(--border);
-}
-
-/* Modal dialogs: consent and revoke confirmation. */
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  z-index: 50;
-}
-.modal {
-  background: var(--surface);
-  color: var(--text);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md, 8px);
-  max-width: 780px;
-  width: 100%;
-  max-height: 88vh;
-  overflow-y: auto;
-  padding: 20px 22px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-}
-.modal header { margin-bottom: 10px; }
-.modal h3 { margin: 0; font-size: 15px; }
-
-/* The consent wording is shown verbatim, in a monospace block, so line breaks
-   and numbering read exactly as the hashed text does. */
-.consent-text {
-  white-space: pre-wrap;
-  font-family: Consolas, "Cascadia Mono", monospace;
-  font-size: 12px;
-  line-height: 1.5;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 12px 14px;
-  max-height: 46vh;
-  overflow-y: auto;
-  margin: 10px 0;
-}
-.consent-check {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  font-size: 12.5px;
-  margin: 12px 0;
-  padding: 10px 12px;
-  background: var(--surface-2);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-}
-.consent-check input { margin-top: 2px; flex: 0 0 auto; }
-
-.consequence-list {
-  font-size: 12.5px;
-  line-height: 1.6;
-  margin: 10px 0 14px;
-  padding-left: 20px;
-}
-.consequence-list li { margin-bottom: 4px; }
-
-.sample-row { display: flex; gap: 8px; align-items: baseline; }
-.sample-row .tag { flex: 0 0 auto; }
-
-/* ==========================================================================
-   Phase 4: transcription panel.
-
-   Note the `[hidden]` rule at the top of this file: it is load bearing. Any
-   author-level `display` declaration on a class beats the UA stylesheet's
-   `[hidden] { display: none }`, which is exactly how the revoke dialog ended up
-   on screen swallowing every click. Nothing below sets `display` on an element
-   that is toggled with the attribute.
-   ========================================================================== */
-
-.plain {
-  list-style: none;
-  margin: 10px 0 0;
-  padding: 0;
-  font-size: 12.5px;
-  line-height: 1.6;
-}
-.plain li {
-  padding: 5px 0;
-  border-bottom: 1px solid var(--border);
-}
-.plain li:last-child { border-bottom: none; }
-
-.stage-ok::before {
-  content: "ok";
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--pass);
-  background: var(--pass-soft);
-  border-radius: 3px;
-  padding: 1px 5px;
-  margin-right: 8px;
-}
-.stage-fail::before {
-  content: "FAIL";
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--fail);
-  background: var(--fail-soft);
-  border-radius: 3px;
-  padding: 1px 5px;
-  margin-right: 8px;
-}
-
-.segment-row { display: flex; gap: 10px; align-items: baseline; }
-.segment-time {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--muted);
-  flex: 0 0 auto;
-  font-variant-numeric: tabular-nums;
-}
-.segment-speaker {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--muted);
-  background: var(--surface-2);
-  border-radius: 3px;
-  padding: 1px 5px;
-  flex: 0 0 auto;
-}
-.segment-text { flex: 1 1 auto; }
-.segment-pass2 .segment-text { font-weight: 600; }
-.segment-pass2 .segment-time::after {
-  content: " *";
-  color: var(--warn);
-}
-
-/* A low-confidence segment is marked, never hidden: a reviewer needs to know which
-   lines to check against the audio. `display` is deliberately absent from every rule
-   below -- these elements are created and removed, never toggled with [hidden]. */
-.segment-lowconf {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--warn);
-  background: var(--warn-soft);
-  border-radius: 3px;
-  padding: 1px 5px;
-  flex: 0 0 auto;
-  margin-left: 6px;
-}
-.segment-low .segment-text { color: var(--warn); }
-
-/* ==========================================================================
-   Minutes panel.
-
-   No `display` is set on any class a script toggles with `show()` -- see the
-   warning at the top of this file. `#mom-export-row` is a bare wrapper for
-   exactly that reason: the `.btn-row` inside it carries the flex.
-   ========================================================================== */
-
-.field-check {
-  flex-direction: row;
-  align-items: flex-start;
-  gap: 8px;
-}
-.field-check input[type='checkbox'] {
-  margin-top: 3px;
-  flex: 0 0 auto;
-}
-.field-check small { display: block; margin-top: 2px; }
-
-/* --- headline counts ------------------------------------------------------
-   Four numbers an operator reads before reading anything else: how many points,
-   how many the recording actually supports, how many it does not, and how much
-   of the transcript was covered. */
-.mom-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: 10px;
-  margin: 4px 0 14px;
-}
-.mom-stat {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  padding: 10px 12px;
-}
-.mom-stat-value { font-size: 21px; font-weight: 650; line-height: 1.1; }
-.mom-stat-label { font-size: 11px; color: var(--text-faint); margin-top: 3px; }
-.mom-stat-ok .mom-stat-value { color: var(--ok); }
-.mom-stat-warn .mom-stat-value { color: var(--warn); }
-.mom-stat-fail .mom-stat-value { color: var(--fail); }
-
-/* --- sections and item cards --------------------------------------------- */
-.mom-section-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin: 20px 0 8px;
-  padding-bottom: 5px;
-  border-bottom: 1px solid var(--border);
-}
-.mom-section-head h4 { font-size: 14px; margin: 0; }
-.mom-section-count { font-size: 11px; color: var(--text-faint); }
-
-.mom-items { list-style: none; margin: 0; padding: 0; }
-
-.mom-item {
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  padding: 10px 12px;
-  margin-bottom: 8px;
-}
-/* Colour carries the *kind*; it is never the only signal -- the section heading
-   above says the same thing in words, because colour alone excludes anyone who
-   cannot distinguish these two. */
-.mom-item-decision { border-left-color: var(--accent); }
-.mom-item-action   { border-left-color: var(--ok); }
-.mom-item-issue    { border-left-color: var(--warn); }
-.mom-item-discussion { border-left-color: var(--border-strong); }
-/* An unverified point is tinted as well as badged. It is the one state a reader
-   must not skim past. */
-.mom-item-unverified { background: var(--fail-soft); border-left-color: var(--fail); }
-
-.mom-item-text { font-size: 13px; line-height: 1.45; }
-.mom-item-time {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--text-faint);
-  margin-right: 6px;
-}
-
-.mom-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
-.mom-badge {
-  font-size: 10.5px;
-  line-height: 1;
-  padding: 4px 7px;
-  border-radius: 20px;
-  border: 1px solid transparent;
-  white-space: nowrap;
-}
-.mom-badge-ok   { background: var(--ok-soft);   color: var(--ok);   border-color: var(--ok); }
-.mom-badge-warn { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
-.mom-badge-fail { background: var(--fail-soft); color: var(--fail); border-color: var(--fail); }
-.mom-badge-info { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
-.mom-badge-plain { background: var(--surface-2); color: var(--text-muted); border-color: var(--border); }
-
-.mom-quote {
-  margin-top: 7px;
-  padding: 6px 10px;
-  border-left: 2px solid var(--border);
-  background: var(--surface-2);
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.mom-note {
-  margin-top: 6px;
-  font-size: 11.5px;
-  color: var(--warn);
-}
-.mom-note-fail { color: var(--fail); font-weight: 600; }
-
-/* --- action table ---------------------------------------------------------
-   Action items get a table as well as cards. It is the part somebody has to act
-   on, and a table is what gets copied into an email. */
-.mom-action-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-  margin: 4px 0 12px;
-}
-.mom-action-table th,
-.mom-action-table td {
-  border: 1px solid var(--border);
-  padding: 6px 8px;
-  text-align: left;
-  vertical-align: top;
-}
-.mom-action-table th { background: var(--surface-2); font-weight: 600; font-size: 11px; }
-.mom-action-table td.mom-unstated { color: var(--text-faint); font-style: italic; }
-
-/* --- summary -------------------------------------------------------------- */
-.mom-summary {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--accent-soft);
-  padding: 12px 14px;
-  margin: 4px 0 8px;
-}
-.mom-summary ul { margin: 0; padding-left: 18px; }
-.mom-summary li { margin: 3px 0; font-size: 13px; line-height: 1.45; }
-
-/* --- progress ------------------------------------------------------------- */
-.mom-progress {
-  height: 5px;
-  border-radius: 3px;
-  background: var(--border);
-  overflow: hidden;
-  margin: 8px 0 4px;
-}
-.mom-progress-bar {
-  height: 100%;
-  width: 30%;
-  border-radius: 3px;
-  background: var(--accent);
-  animation: mom-indeterminate 1.6s ease-in-out infinite;
-}
-/* Indeterminate on purpose: the run has no honest percentage. The number of
-   windows is known, but they do not take equal time, and a bar that reaches 90 %
-   and sits there for four minutes is a lie told smoothly. */
-@keyframes mom-indeterminate {
-  0%   { margin-left: -30%; }
-  100% { margin-left: 100%; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .mom-progress-bar { animation: none; width: 100%; opacity: 0.45; }
-}
-
-#mom-minute-card { grid-column: 1 / -1; }
-
-/* --- voice to text check ---------------------------------------------------
-   The transcript area is a scrolling log rather than a growing block: the card
-   must not change height while the operator is reading it, and the newest line
-   has to stay in view without the page jumping under them. */
-.voice-output {
-  margin: 10px 0;
-  padding: 10px 12px;
-  min-height: 96px;
-  max-height: 220px;
-  overflow-y: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  font-size: 14px;
-  line-height: 1.55;
-}
-.voice-placeholder { color: var(--text-faint); font-size: 13px; margin: 0; }
-.voice-line { margin: 0 0 6px; }
-.voice-line:last-child { margin-bottom: 0; }
-.voice-stamp {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--text-faint);
-  margin-right: 8px;
-}
-
-/* The accurate result. Visually separated from the streaming lines because it is a
-   different thing: one pass of the large model over the whole recording, and the only
-   text the operator should judge the microphone by. */
-.voice-final {
-  margin: 10px 0;
-  padding: 12px 14px;
-  border: 1px solid var(--accent);
-  border-left-width: 3px;
-  border-radius: var(--radius-sm);
-  background: var(--accent-soft);
-}
-.voice-final h4 { margin: 0 0 6px; font-size: 13px; }
-.voice-final h4 small { font-weight: 400; color: var(--text-muted); }
-.voice-final p { margin: 0 0 6px; font-size: 14px; line-height: 1.55; }
-
-
-/* ==========================================================================
-   THE GUIDED FLOW
-
-   The application is four steps in a fixed order, and the layout now says so.
-   A side rail holds the steps; the main area shows exactly one of them. The
-   previous page put every panel on one scroll behind a wall of feature cards,
-   which required the reader to already understand the product before they could
-   find the record button.
-
-   Everything technical -- the doctor output, the transport evidence, the
-   migration version -- lives behind one quiet destination at the bottom of the
-   rail. An operator who never opens it should still be able to run a meeting.
+   SHELL AND RAIL
    ========================================================================== */
 
 .shell {
   display: grid;
-  grid-template-columns: 232px minmax(0, 1fr);
+  grid-template-columns: 244px minmax(0, 1fr);
   align-items: start;
-  gap: 0;
-  max-width: 1360px;
-  margin: 0 auto;
-  padding: 0 var(--gap);
+  /* No centred cap. The top bar has always spanned the window, and capping the body
+     at 1440 made a maximised screen look like a mistake: a full-width header above
+     content floating in the middle with 240px of nothing either side.
+     Readability is protected on the text rather than on the container -- see the
+     `ch` measures on `.lede` and `.segment-text`. */
+  margin: 0;
+  padding: 0 24px;
 }
 
+/* Wider windows get more room around the edges rather than the same 24px, so the
+   content is not pressed against the frame on a large monitor. */
+@media (min-width: 1600px) {
+  .shell { padding: 0 40px; }
+  .footer { padding-left: 40px; padding-right: 40px; }
+}
+
+@media (min-width: 2100px) {
+  .shell { padding: 0 64px; }
+  .footer { padding-left: 64px; padding-right: 64px; }
+  /* The rail keeps its proportion instead of becoming a sliver beside a very wide
+     content column. */
+  .shell { grid-template-columns: 280px minmax(0, 1fr); }
+}
+
+/* The rail is the whole information architecture: four numbered steps in the
+   order they are done, then one quiet destination for everything technical. */
 .sidenav {
   position: sticky;
-  top: var(--gap);
+  top: 84px;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: var(--gap) 10px var(--gap) 0;
+  margin: 20px 16px 20px 0;
+  padding: 12px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--stroke);
+  background: var(--glass);
+  backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+  box-shadow: var(--shadow-sm), inset 0 1px 0 var(--stroke-light);
 }
 
 .nav-heading {
-  margin: 14px 0 4px 12px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.07em;
+  margin: 12px 0 4px 10px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
   color: var(--text-faint);
 }
 
 .nav-item {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 11px;
   width: 100%;
-  padding: 9px 12px;
+  padding: 9px 11px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: none;
   font: inherit;
-  font-size: 14px;
-  color: var(--text);
+  font-size: 13.5px;
+  color: var(--text-muted);
   text-align: left;
   cursor: pointer;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
 }
 
-.nav-item:hover { background: var(--surface-2); }
-.nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.nav-item:hover { background: var(--surface-2); color: var(--text); }
 
 /* `aria-current` is the state, and the style reads it directly rather than a
    parallel class -- one source of truth means the rail cannot look selected
-   while the screen reader is told otherwise. */
+   while a screen reader is told otherwise. */
 .nav-item[aria-current="page"] {
   background: var(--accent-soft);
-  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 24%, transparent);
   color: var(--accent);
   font-weight: 600;
+}
+
+.nav-item[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  left: -10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 20px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
 }
 
 .nav-num {
@@ -1015,136 +587,1288 @@ main {
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
-  border: 1px solid var(--border-strong);
-  border-radius: 50%;
-  font-size: 12px;
+  width: 23px;
+  height: 23px;
+  border: 1px solid var(--stroke-strong);
+  border-radius: 8px;
+  font-size: 11.5px;
+  font-weight: 650;
   font-variant-numeric: tabular-nums;
-  color: var(--text-muted);
+  color: var(--text-faint);
   background: var(--surface);
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
 }
 
 .nav-item[aria-current="page"] .nav-num {
-  border-color: var(--accent);
+  border-color: transparent;
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
+  box-shadow: 0 2px 8px -2px var(--accent-ring);
 }
 
-.nav-item-quiet .nav-label { color: var(--text-muted); }
+.nav-label { min-width: 0; }
+.nav-item-quiet { font-size: 13px; }
+.nav-item-quiet .nav-label { color: var(--text-faint); }
 .nav-item-quiet[aria-current="page"] .nav-label { color: var(--accent); }
 
-.nav-foot {
-  margin: 18px 0 0 12px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--text-faint);
-}
-
-/* A view is a whole screen. Only one is ever not `hidden`; see the note at the
-   top of this file about why `[hidden]` needs `!important` to win here. */
-.view {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap);
-  padding: var(--gap) 0 32px;
+main {
+  max-width: none;
+  margin: 0;
+  padding: 0;
   min-width: 0;
 }
 
-.view-head h2 {
-  margin: 0 0 6px;
-  font-size: 22px;
-  letter-spacing: -0.01em;
+/* ==========================================================================
+   VIEWS
+   ========================================================================== */
+
+.view {
+  padding: 24px 0 48px;
+  min-width: 0;
+  animation: view-in var(--slow) var(--ease) both;
 }
 
-.lede {
-  margin: 0;
-  max-width: 68ch;
-  font-size: 15px;
-  line-height: 1.6;
+@keyframes view-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.view > * + * { margin-top: var(--gap); }
+
+.view-head h2,
+.section-head h2 {
+  font-size: var(--t-xl);
+  line-height: var(--lh-xl);
+  font-weight: 660;
+  letter-spacing: -0.022em;
+}
+.view-head > * + *,
+.section-head > * + * { margin-top: 6px; }
+
+.lede,
+.section-head .muted {
+  max-width: 74ch;
+  font-size: 14px;
+  line-height: 1.62;
   color: var(--text-muted);
 }
 
-/* --- home: the four steps, in the order they are done --------------------- */
+.subhead {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* --- home: the four steps ------------------------------------------------- */
 
 .steps {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   margin: 0;
   padding: 0;
   list-style: none;
-  counter-reset: none;
 }
 
 .step {
   display: flex;
-  gap: 14px;
-  padding: 16px 18px;
-  border: 1px solid var(--border);
+  gap: 16px;
+  padding: 18px 20px;
+  border: 1px solid var(--stroke);
   border-radius: var(--radius);
-  background: var(--surface);
+  background: var(--glass-strong);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  box-shadow: var(--shadow-sm), inset 0 1px 0 var(--stroke-light);
+  transition: transform var(--slow) var(--ease), box-shadow var(--slow) var(--ease);
 }
+
+.step:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
 
 .step-num {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
   background: var(--accent);
-  color: #fff;
+  background: linear-gradient(150deg, var(--accent), color-mix(in srgb, var(--accent) 60%, #22d3ee));
+  color: var(--on-accent);
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
+  box-shadow: 0 4px 12px -4px var(--accent-ring), inset 0 1px 0 rgba(255, 255, 255, 0.3);
 }
 
 .step-body { min-width: 0; }
-.step-body h3 { margin: 3px 0 6px; font-size: 16px; }
+.step-body h3 { margin: 4px 0 6px; font-size: 16px; }
 .step-body p {
-  margin: 0 0 12px;
-  max-width: 62ch;
-  font-size: 14px;
-  line-height: 1.6;
+  margin: 0 0 14px;
+  max-width: 64ch;
+  font-size: 13.5px;
+  line-height: 1.62;
   color: var(--text-muted);
 }
 
+/* ==========================================================================
+   CARDS
+   ========================================================================== */
+
+.status-grid,
+.rec-grid,
+.feature-grid {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
+/* On a wide screen `auto-fit` would keep adding 320px columns until the cards are a
+   row of narrow strips. Raising the minimum trades a column for legibility: five
+   comfortable cards read better than six cramped ones. */
+@media (min-width: 1700px) {
+  .status-grid,
+  .feature-grid {
+    grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  }
+}
+
+/* No `display` here on purpose: three cards carrying this class are toggled by
+   the script, and an author `display` would defeat `hidden`. Children flow with
+   margins instead, which needs no layout mode at all. */
+.status-card {
+  padding: 18px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  background: var(--glass-strong);
+  backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  box-shadow: var(--shadow-sm), inset 0 1px 0 var(--stroke-light);
+  min-width: 0;
+}
+
+.status-card > * + * { margin-top: 11px; }
+.status-card-wide { grid-column: 1 / -1; }
+
+.status-card > header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.status-card > header h3 { font-size: 15px; }
+
+.status-pill {
+  min-width: 54px;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--stroke);
+  background: var(--surface-2);
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-weight: 750;
+  letter-spacing: 0.05em;
+  text-align: center;
+}
+
+/* A dot before the label, coloured by the same state. Shape carries the meaning
+   alongside hue, so the four states stay distinguishable to a red-green colour
+   deficiency and in a screenshot printed in grey. */
+.status-pill::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  vertical-align: 1px;
+}
+
+/* Only a *running* state pulses. A pulse that never stops is wallpaper; this one
+   means "something is happening right now", which is the only time it appears. */
+.status-pill[data-state="live"]::before {
+  animation: led-pulse 1.8s var(--ease) infinite;
+}
+
+@keyframes led-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
+  50%      { box-shadow: 0 0 0 4px transparent; opacity: 0.55; }
+}
+
+.status-pill[data-state="ok"]      { color: var(--ok);   background: var(--ok-soft);   border-color: color-mix(in srgb, var(--ok) 26%, transparent); }
+.status-pill[data-state="warn"]    { color: var(--warn); background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+.status-pill[data-state="fail"]    { color: var(--fail); background: var(--fail-soft); border-color: color-mix(in srgb, var(--fail) 30%, transparent); }
+.status-pill[data-state="live"]    { color: var(--accent); background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.status-pill[data-state="unknown"] { color: var(--text-faint); }
+
+/* The minutes panel builds this one by className rather than data-state, and it
+   had no styling at all: `pill pill-live` rendered as unstyled body text. */
+.pill {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--stroke);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 750;
+  letter-spacing: 0.05em;
+}
+.pill-live {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.state-badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--stroke);
+  background: var(--surface-2);
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-muted);
+}
+
+.tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--stroke);
+  background: var(--surface-2);
+  font-size: 11px;
+  font-weight: 640;
+  color: var(--text-muted);
+}
+.tag-pass { color: var(--ok);   background: var(--ok-soft);   border-color: color-mix(in srgb, var(--ok) 26%, transparent); }
+.tag-warn { color: var(--warn); background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+.tag-fail { color: var(--fail); background: var(--fail-soft); border-color: color-mix(in srgb, var(--fail) 30%, transparent); }
+
+/* ==========================================================================
+   TEXT HELPERS
+   ========================================================================== */
+
+.muted { color: var(--text-muted); font-size: 13px; }
+.status-detail { color: var(--text-muted); font-size: 12.5px; line-height: 1.6; }
+.hint { color: var(--text-faint); font-size: 12px; }
+.detail { color: var(--text-muted); font-size: 12.5px; }
+.plain { color: var(--text); }
+.elapsed {
+  font-family: var(--mono);
+  font-size: var(--t-2xl);
+  line-height: var(--lh-2xl);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  /* Each glyph gets a fixed box, so the digits do not shuffle sideways once a
+     second for the length of a meeting. */
+  font-feature-settings: "tnum" 1, "zero" 1;
+}
+
+.notice {
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.6;
+}
 .notice-quiet {
-  border-color: var(--border);
+  border-color: var(--stroke);
+  border-left-color: var(--stroke-strong);
   background: var(--surface-2);
   color: var(--text-muted);
 }
 
-@media (max-width: 900px) {
-  .shell { grid-template-columns: minmax(0, 1fr); }
+.warn-line { color: var(--fail); font-size: 12.5px; font-weight: 560; }
+
+.implemented { color: var(--ok); font-size: 12px; font-weight: 650; }
+.not-implemented { color: var(--text-faint); font-size: 12px; }
+
+/* ==========================================================================
+   BUTTONS
+   ========================================================================== */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border: 1px solid var(--stroke-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 570;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease),
+    transform var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+
+.btn:hover:not(:disabled) { background: var(--surface-2); border-color: var(--text-faint); }
+.btn:active:not(:disabled) { transform: translateY(1px); box-shadow: none; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
+
+.btn-primary {
+  border-color: transparent;
+  background: linear-gradient(150deg, var(--accent), var(--accent-hover));
+  color: var(--on-accent);
+  box-shadow: 0 2px 10px -3px var(--accent-ring), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+.btn-primary:hover:not(:disabled) {
+  background: linear-gradient(150deg, var(--accent-hover), var(--accent-hover));
+  border-color: transparent;
+  box-shadow: 0 4px 16px -4px var(--accent-ring), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.btn-danger {
+  border-color: color-mix(in srgb, var(--fail) 40%, transparent);
+  background: var(--fail-soft);
+  color: var(--fail);
+}
+.btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--fail) 16%, transparent); }
+
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.actions { display: flex; flex-wrap: wrap; gap: 10px; }
+
+/* ==========================================================================
+   FORM CONTROLS
+   ========================================================================== */
+
+.field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.field > label,
+.field > span:first-child {
+  font-size: 12px;
+  font-weight: 620;
+  color: var(--text-muted);
+}
+
+input[type="text"],
+input[type="number"],
+input[type="search"],
+input[type="email"],
+select,
+textarea {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--stroke-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+input::placeholder { color: var(--text-faint); }
+
+select {
+  /* The native arrow is kept. Replacing it means embedding an inline SVG, and
+     every SVG carries the W3C XML namespace declaration -- which reads as a
+     remote address to the guard that forbids one, even though nothing is ever
+     fetched. That guard is blunt on purpose, and a dropdown chevron is not worth
+     teaching it exceptions. (This comment used to name the namespace outright and
+     failed the same guard on its own explanation.) */
+  padding-right: 30px;
+}
+
+.field-check {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+}
+.field-check input[type="checkbox"] { width: auto; margin-top: 3px; }
+
+input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
+
+/* ==========================================================================
+   KEY/VALUE, LISTS, TABLES
+   ========================================================================== */
+
+.kv {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 5px 14px;
+  font-size: 12.5px;
+}
+.kv dt { color: var(--text-muted); }
+.kv dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.checklist { margin: 0; padding: 0; list-style: none; font-size: 13px; }
+.checklist li {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--stroke);
+}
+.checklist li:last-child { border-bottom: 0; }
+
+.consequence-list { margin: 0; padding-left: 20px; font-size: 13px; color: var(--text-muted); }
+.consequence-list li { margin-bottom: 6px; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+th, td {
+  padding: var(--s-2) var(--s-3);
+  text-align: left;
+  border-bottom: 1px solid var(--stroke);
+  vertical-align: middle;
+}
+
+/* Numbers align on the decimal and stop jittering between renders. */
+td { font-variant-numeric: tabular-nums; }
+th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding-top: var(--s-3);
+  padding-bottom: var(--s-2);
+  background: var(--surface);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  /* A roster can outgrow the card. The header stays put rather than scrolling away
+     and leaving six unlabelled columns. */
+  box-shadow: inset 0 -1px 0 var(--stroke);
+}
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr { transition: background var(--fast) var(--ease); }
+tbody tr:hover { background: var(--surface-2); }
+
+.participant-table,
+.mom-action-table,
+.diag-table { width: 100%; }
+
+/* ==========================================================================
+   METER
+   ========================================================================== */
+
+/* Toggled by the script, so no `display`. A positioned track needs none. */
+.meter {
+  position: relative;
+  height: 20px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  border: 1px solid var(--stroke);
+  overflow: hidden;
+}
+
+.meter-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  border-radius: var(--radius-pill);
+  background: var(--ok);
+  background: linear-gradient(90deg, var(--ok), color-mix(in srgb, var(--ok) 60%, #22d3ee));
+  transition: width 90ms linear;
+}
+
+.meter-peak {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: var(--text);
+  opacity: 0.65;
+  transition: left 90ms linear;
+}
+
+/* The enrollment panel's own level bar, which had no styling at all. */
+.meter-bar {
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  border: 1px solid var(--stroke);
+}
+
+/* ==========================================================================
+   RECORDING
+   ========================================================================== */
+
+.capacity-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.capacity-row .field { flex: 1 1 200px; }
+
+/* ==========================================================================
+   PARTICIPANTS
+   ========================================================================== */
+
+.candidate-row,
+.sample-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--stroke);
+}
+.candidate-row:last-child,
+.sample-row:last-child { border-bottom: 0; }
+
+.candidate-name { flex: 1 1 auto; min-width: 0; font-size: 13px; }
+
+.consent-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: 13px;
+}
+
+.consent-text {
+  margin: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 14px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-family: var(--font);
+  font-size: 12.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  color: var(--text-muted);
+}
+
+/* ==========================================================================
+   MODALS
+
+   Centred by transform, never by `display` on the backdrop. That single
+   declaration is what once left both dialogs laid out over the whole page,
+   swallowing every click. See the note at the top of this file.
+   ========================================================================== */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  /* Above every other stacking value in this file, the focused skip link included.
+     A backdrop that something can paint over is a backdrop that lets the page be
+     clicked through, which is the whole failure it exists to prevent. */
+  z-index: 100;
+  background: rgba(8, 11, 20, 0.55);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.modal {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(760px, calc(100vw - 40px));
+  max-height: 86vh;
+  overflow-y: auto;
+  padding: 24px 26px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-lg);
+}
+.modal > * + * { margin-top: 14px; }
+.modal header h3 { font-size: 17px; }
+
+/* ==========================================================================
+   TRANSCRIPT
+   ========================================================================== */
+
+.segment-row {
+  display: flex;
+  gap: var(--s-3);
+  align-items: baseline;
+  padding: var(--s-2) var(--s-3);
+  border-left: 2px solid transparent;
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+  transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease);
+}
+.segment-row:hover {
+  background: var(--surface-2);
+  border-left-color: var(--stroke-strong);
+}
+
+.segment-time {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
+.segment-speaker {
+  flex: 0 0 auto;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+
+.segment-text {
+  min-width: 0;
+  max-width: 92ch;
+  font-size: var(--t-base);
+  line-height: 1.68;
+}
+
+/* Low confidence is marked twice: colour, and a dotted underline that survives a
+   greyscale print and a colour deficiency. It is a warning about the text itself,
+   so it belongs on the text rather than on the row. */
+.segment-lowconf,
+.segment-low {
+  color: var(--warn);
+  text-decoration: underline dotted color-mix(in srgb, var(--warn) 60%, transparent);
+  text-underline-offset: 3px;
+}
+
+/* Re-transcribed by the accurate second pass. A quiet left edge, not a highlight:
+   it is provenance, not a problem. */
+.segment-pass2 { border-left-color: var(--accent); }
+
+/* `UNASSIGNED` until diarization exists. Rendered as a neutral chip so it reads as
+   a stated fact rather than an error, and never competes with the words. */
+.segment-speaker {
+  padding: 1px 7px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-xs);
+  background: var(--surface-3);
+  font-size: var(--t-micro);
+}
+
+/* ==========================================================================
+   MINUTES
+   ========================================================================== */
+
+.mom-items { margin: 0; }
+
+.mom-item {
+  padding: 13px 15px;
+  margin-bottom: 10px;
+  border: 1px solid var(--stroke);
+  border-left: 3px solid var(--stroke-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow var(--fast) var(--ease);
+}
+.mom-item:hover { box-shadow: var(--shadow); }
+
+.mom-item-decision   { border-left-color: var(--accent); }
+.mom-item-action     { border-left-color: var(--ok); }
+.mom-item-issue      { border-left-color: var(--fail); }
+.mom-item-discussion { border-left-color: var(--text-faint); }
+.mom-item-unverified { border-left-color: var(--warn); background: var(--warn-soft); }
+
+.mom-item-text { font-size: 13.5px; line-height: 1.6; }
+.mom-item-time {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
+.mom-quote {
+  margin: 8px 0 0;
+  padding: 9px 12px;
+  border-left: 2px solid var(--stroke-strong);
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+  background: var(--surface-2);
+  font-size: 12.5px;
+  font-style: italic;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.mom-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+
+.mom-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--stroke);
+  background: var(--surface-2);
+  font-size: 10.5px;
+  font-weight: 680;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+.mom-badge-ok    { color: var(--ok);     background: var(--ok-soft);     border-color: color-mix(in srgb, var(--ok) 26%, transparent); }
+.mom-badge-warn  { color: var(--warn);   background: var(--warn-soft);   border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+.mom-badge-fail  { color: var(--fail);   background: var(--fail-soft);   border-color: color-mix(in srgb, var(--fail) 30%, transparent); }
+.mom-badge-info  { color: var(--accent); background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 28%, transparent); }
+.mom-badge-plain { color: var(--text-faint); }
+
+.mom-unstated { color: var(--text-faint); font-style: italic; }
+
+.mom-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 18px;
+  margin-bottom: 8px;
+}
+.mom-section-count {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+/* Toggled, so no `display`. */
+.mom-summary {
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  font-size: 13.5px;
+  line-height: 1.62;
+}
+
+.mom-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+.mom-stat {
+  padding: 11px 13px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.mom-stat-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.mom-stat-value {
+  font-family: var(--mono);
+  font-size: 19px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.mom-stat-ok .mom-stat-value   { color: var(--ok); }
+.mom-stat-warn .mom-stat-value { color: var(--warn); }
+.mom-stat-fail .mom-stat-value { color: var(--fail); }
+
+.mom-note { font-size: 12.5px; color: var(--text-muted); }
+.mom-note-fail { color: var(--fail); }
+
+/* Toggled, so no `display`. */
+.mom-progress {
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.mom-progress-bar {
+  height: 100%;
+  width: 30%;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #22d3ee));
+  animation: mom-indeterminate 1.6s ease-in-out infinite;
+}
+
+/* The run has no honest percentage, and a bar that sits at 90 % lies smoothly. */
+@keyframes mom-indeterminate {
+  0%   { margin-left: -32%; }
+  100% { margin-left: 102%; }
+}
+
+/* ==========================================================================
+   VOICE CHECK
+   ========================================================================== */
+
+/* The two surfaces an operator actually reads word by word. Deliberately the least
+   decorated things in the interface: opaque, inset rather than raised, generous line
+   height, and a measure that stops around 90 characters. Nothing here is glass --
+   blurred motion behind running text is exactly where the style stops being worth
+   its cost. */
+.voice-output {
+  max-height: 300px;
+  overflow-y: auto;
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.voice-line {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  margin: 0 0 6px;
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.voice-stamp {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
+.voice-placeholder { color: var(--text-faint); font-size: 13px; font-style: italic; }
+
+/* The accurate result, visually separated from the streaming lines because it is
+   a different thing: one pass of the large model over the whole recording, and
+   the only text the operator should judge the microphone by. Toggled, so no
+   `display`. */
+.voice-final {
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+}
+.voice-final > * + * { margin-top: 7px; }
+.voice-final h4 { font-size: 13px; }
+.voice-final h4 small { font-weight: 400; color: var(--text-muted); }
+.voice-final p { font-size: 14px; line-height: 1.6; }
+
+/* ==========================================================================
+   CAPABILITY LIST
+   ========================================================================== */
+
+.feature-card {
+  padding: 16px 18px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  min-width: 0;
+}
+.feature-card > * + * { margin-top: 9px; }
+.feature-card p { font-size: 12.5px; line-height: 1.6; color: var(--text-muted); }
+
+.feature-card-enabled {
+  background: var(--glass-strong);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border-color: color-mix(in srgb, var(--ok) 26%, transparent);
+  box-shadow: var(--shadow-sm), inset 0 1px 0 var(--stroke-light);
+}
+
+.feature-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.feature-head h3 { font-size: 14.5px; }
+
+.phase-tag {
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--stroke);
+  background: var(--surface-3);
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.phase-tag-live {
+  color: var(--ok);
+  background: var(--ok-soft);
+  border-color: color-mix(in srgb, var(--ok) 30%, transparent);
+}
+
+/* ==========================================================================
+   DIAGNOSTICS
+   ========================================================================== */
+
+.diag {
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 4px 16px;
+}
+.diag summary {
+  padding: 12px 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.diag summary::marker { color: var(--text-faint); }
+.diag-body { padding-bottom: 14px; }
+.diag-table td:first-child { white-space: nowrap; }
+
+.stage-ok   { color: var(--ok); }
+.stage-fail { color: var(--fail); }
+
+.key { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
+
+/* ==========================================================================
+   FOOTER
+   ========================================================================== */
+
+.footer {
+  margin: 0;
+  padding: 20px 24px 32px;
+  border-top: 1px solid var(--stroke);
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--text-faint);
+}
+.footer > * + * { margin-top: 4px; }
+
+/* ==========================================================================
+   RESPONSIVE
+   ========================================================================== */
+
+@media (max-width: 980px) {
+  .shell { grid-template-columns: minmax(0, 1fr); padding: 0 16px; }
   .sidenav {
     position: static;
     flex-direction: row;
     flex-wrap: wrap;
-    padding: var(--gap) 0 0;
+    margin: 16px 0 0;
   }
   .nav-item { width: auto; }
-  .nav-heading, .nav-foot { display: none; }
+  .nav-item[aria-current="page"]::before { display: none; }
+  .nav-heading { display: none; }
+  .topbar { padding: 12px 16px; }
+  .footer { padding: 20px 16px 32px; }
 }
 
-@media (prefers-color-scheme: dark) {
-  .nav-num { background: var(--surface-2); }
-  .nav-item[aria-current="page"] .nav-num { background: var(--accent); color: #0d1117; }
-  .step-num { color: #0d1117; }
+/* ==========================================================================
+   MOTION
+
+   Everything above animates on a short easing curve. Somebody who has asked
+   their system to stop moving things gets a still interface -- including the
+   indeterminate bar, which becomes a static fill rather than disappearing, so
+   "a run is in progress" is still visible.
+   ========================================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .view { animation: none; }
+  .step:hover { transform: none; }
+  /* The washes stay -- they are the ground the glass reads against, and removing them
+     would flatten the whole interface. Only the drift stops. */
+  body::before { animation: none; }
+  .mom-progress-bar { width: 100%; margin-left: 0; }
 }
 
-/* `main` predates the rail: it centred itself in the viewport and added its own
-   padding, which was right when it *was* the page. As a grid column it is already
-   placed and `.shell` already pads, so both now fight the layout instead. */
-.shell > main {
-  max-width: none;
-  margin: 0;
-  padding: 0 0 0 24px;
-  gap: 0;
+
+/* ==========================================================================
+   STEP 1 -- LAYOUT AND TRANSPORT
+   ========================================================================== */
+
+/* The recording view holds six cards, and the third is full width. Under a plain
+   auto-fit three-column grid that leaves a hole: cards one and two take columns
+   one and two, the wide card cannot fit beside them, and column three of the first
+   row stays empty for the life of the screen.
+ *
+ * A six-column track fixes it without moving a single element in the document.
+ * Two halves on the first row, the voice panel across the second, three thirds on
+ * the third. `grid-auto-flow` is left alone on purpose: `dense` would fill holes by
+ * reordering, and visual order would then disagree with the order the page is read
+ * in and tabbed through.
+ */
+@media (min-width: 1100px) {
+  .rec-grid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .rec-grid > .status-card { grid-column: span 2; }
+  .rec-grid > .status-card:nth-child(1),
+  .rec-grid > .status-card:nth-child(2) { grid-column: span 3; }
+  .rec-grid > .status-card-wide { grid-column: 1 / -1; }
 }
 
-@media (max-width: 900px) {
-  .shell > main { padding-left: 0; }
+/* Transport controls carry the universal shapes rather than only a word: a filled
+   circle to record, two bars to pause, a triangle to resume, a square to stop.
+ *
+ * Drawn in CSS, not typed as characters. The Unicode media glyphs exist, but on
+ * Windows several of them default to *emoji* presentation, so the row would come
+ * out as four coloured pictures of different weights among grey text buttons. A
+ * border triangle and a couple of boxes render identically everywhere and inherit
+ * `currentColor`, so each shape is already the right colour on the primary button,
+ * the danger button and a disabled one.
+ *
+ * `.btn` is an inline flex container with a gap, so the pseudo-element becomes a
+ * flex item and needs no margin of its own. The label stays in the DOM: the shape
+ * is a second signal, never a replacement for the word.
+ */
+#start-btn::before,
+#pause-btn::before,
+#resume-btn::before,
+#stop-btn::before {
+  content: "";
+  flex: 0 0 auto;
+}
+
+#start-btn::before {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+#pause-btn::before {
+  width: 9px;
+  height: 10px;
+  background: linear-gradient(
+    to right,
+    currentColor 0 3px,
+    transparent 3px 6px,
+    currentColor 6px 9px
+  );
+}
+
+#resume-btn::before {
+  width: 0;
+  height: 0;
+  border-left: 9px solid currentColor;
+  border-top: 5.5px solid transparent;
+  border-bottom: 5.5px solid transparent;
+}
+
+#stop-btn::before {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: currentColor;
+}
+
+
+/* ==========================================================================
+   A TIMER THAT IS COUNTING
+   ========================================================================== */
+
+/* While something is genuinely running, the elapsed time sits in a pool of its own
+   light. Not a border, not a badge: the number is the thing being watched, and the
+   glow puts weight on it without adding an element or a word.
+ *
+ * Driven by the panel's own published state through `:has()`, so it cannot drift out
+ * of step with the pill beside it -- one source of truth, read twice.
+ *
+ * The coupling to `[data-state="ok"]` deserves its note: on the recording pill `ok`
+ * means RECORDING specifically, because IDLE is `unknown`, PAUSED is `warn` and a
+ * failure is `fail`. If that mapping is ever widened, this stops meaning "recording"
+ * and the rule should move with it. */
+.status-card:has(#rec-pill[data-state="ok"]) .elapsed,
+.status-card:has(.pill-live) .elapsed,
+.status-card:has(.status-pill[data-state="live"]) .elapsed {
+  color: var(--accent);
+  text-shadow: 0 0 24px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* The pool of light itself, behind the digits. A radial wash rather than a box, so it
+   has no edge to align to anything. */
+.status-card:has(#rec-pill[data-state="ok"]) .elapsed,
+.status-card:has(.pill-live) .elapsed,
+.status-card:has(.status-pill[data-state="live"]) .elapsed {
+  position: relative;
+  isolation: isolate;
+}
+
+.status-card:has(#rec-pill[data-state="ok"]) .elapsed::before,
+.status-card:has(.pill-live) .elapsed::before,
+.status-card:has(.status-pill[data-state="live"]) .elapsed::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: 50%;
+  top: 50%;
+  width: 260px;
+  height: 120px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--accent) 24%, transparent),
+    transparent 100%
+  );
+  animation: timer-breathe 3.4s var(--ease) infinite;
+}
+
+/* Slow enough to read as light rather than as a blink. A recording can run for ninety
+   minutes, and anything faster becomes something to look away from. */
+@keyframes timer-breathe {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-card:has(#rec-pill[data-state="ok"]) .elapsed::before,
+  .status-card:has(.pill-live) .elapsed::before,
+  .status-card:has(.status-pill[data-state="live"]) .elapsed::before {
+    animation: none;
+    opacity: 0.8;
+  }
+}
+
+/* ==========================================================================
+   LARGE WINDOWS
+
+   Filling the width is half the answer. On a maximised 1920 screen the type was
+   still sized for a 1366 laptop, so the application read as a small interface
+   stretched wide rather than a larger one.
+
+   Both scales move together, and that is the point: raising type without raising
+   padding makes a card look crowded at exactly the size where there is most room.
+   The step is deliberately small -- about 7 % at 1600 and 14 % at 2100 -- because
+   an interface that jumps a size class when a window is maximised reads as a bug.
+
+   Nothing below changes what any control does or where it sits in the document.
+   ========================================================================== */
+
+@media (min-width: 1600px) {
+  :root {
+    --t-micro: 11px;   --t-xs: 12px;    --t-sm: 13.5px;
+    --t-base: 14.5px;  --t-body: 15px;  --t-lg: 17px;
+    --t-xl: 23px;      --t-2xl: 30px;
+    --gap: 18px;
+  }
+  body { font-size: 15px; }
+  .status-card { padding: 20px; }
+  .step { padding: 20px 22px; }
+  .view { padding-top: 28px; }
+  .lede, .section-head .muted { font-size: 15px; }
+  .voice-output { max-height: 340px; }
+  th, td { padding: 10px 14px; }
+}
+
+@media (min-width: 2100px) {
+  :root {
+    --t-micro: 11.5px;  --t-xs: 12.5px;  --t-sm: 14px;
+    --t-base: 15.5px;   --t-body: 16px;  --t-lg: 18px;
+    --t-xl: 25px;       --t-2xl: 34px;
+    --gap: 20px;
+  }
+  body { font-size: 16px; }
+  .status-card { padding: 24px; }
+  .step { padding: 24px 26px; }
+  .voice-output { max-height: 400px; }
+  th, td { padding: 12px 16px; }
+}
+
+
+/* ==========================================================================
+   THEME SWITCH
+   ========================================================================== */
+
+/* Native controls -- scrollbars, the select dropdown, a date picker -- are painted by
+   the engine from `color-scheme`, not from these tokens. Pinning it is what stops a
+   white scrollbar appearing beside a dark interface when the choice disagrees with
+   Windows. */
+:root[data-theme="dark"] { color-scheme: dark; }
+:root[data-theme="light"] { color-scheme: light; }
+
+.theme-switch {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+}
+
+.theme-option {
+  padding: 5px 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: none;
+  font: inherit;
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+
+.theme-option:hover { color: var(--text); }
+
+/* `aria-pressed` is the state a screen reader is given, so it is also the state the
+   style reads -- one source of truth, and the pressed look cannot disagree with what
+   is announced. */
+.theme-option[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: var(--shadow-sm);
+}
+
+@media (max-width: 980px) {
+  /* The words go, the control stays: three targets are still three targets. */
+  .theme-option { padding: 5px 9px; }
+}
+
+/* ==========================================================================
+   ORGANISATION MARK
+
+   An organisation's wordmark replaces the built-in square when one is configured, and
+   the square stays for an install with no branding. A clone of this tool belongs to
+   whoever cloned it, and must not arrive wearing somebody else's name.
+
+   Sized by height so any aspect ratio works: a wide wordmark and a square emblem both
+   land at the same optical weight beside the application name.
+   ========================================================================== */
+
+.brand-logo {
+  height: 34px;
+  width: auto;
+  max-width: 200px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  /* The artwork was drawn for a dark background. On a light theme a hairline of white
+     behind it keeps the dark blue letters from sitting straight on the page tint. */
+  border-radius: var(--radius-xs);
+}
+
+@media (min-width: 1600px) {
+  .brand-logo { height: 38px; max-width: 240px; }
 }

@@ -22,6 +22,25 @@ def sources() -> dict[str, str]:
     return {name: (WEB_DIR / name).read_text(encoding="utf-8") for name in ASSETS}
 
 
+def _css_block(css: str, opener: str) -> str:
+    """The body of the rule starting with `opener`, ending at its matching brace.
+
+    Slicing to the end of the file was the earlier shape, and it made every rule added
+    afterwards part of whatever block was being examined. A block ends where its brace
+    closes.
+    """
+    start = css.index(opener)
+    depth = 0
+    for position in range(css.index("{", start), len(css)):
+        if css[position] == "{":
+            depth += 1
+        elif css[position] == "}":
+            depth -= 1
+            if depth == 0:
+                return css[start : position + 1]
+    raise AssertionError(f"unbalanced braces after {opener!r}")
+
+
 def test_the_expected_assets_exist_and_nothing_else() -> None:
     assert WEB_DIR.is_dir()
     present = {p.name for p in WEB_DIR.iterdir() if p.is_file()}
@@ -499,4 +518,155 @@ def test_the_script_only_reads_keys_the_bridge_actually_returns(sources: dict[st
     assert unknown == set(), (
         f"app.js reads {sorted(unknown)} off a bridge answer that never carries it; "
         f"the envelope has {sorted(allowed)}"
+    )
+
+
+def test_no_class_anywhere_on_a_toggled_element_sets_display(sources: dict[str, str]) -> None:
+    """The whole application, not one panel.
+
+    `hidden` works through a single UA-stylesheet rule, so any author `display`
+    declaration on a toggled element defeats it. `.modal-backdrop { display: flex }`
+    once kept both dialogs laid out from page load; the second painted over the whole
+    application and swallowed every click, so the revoke dialog looked open, showed no
+    participant, and neither of its buttons did anything.
+
+    The `!important` net in `app.css` catches that. This asserts the net is not needed:
+    cards flow with `> * + *` margins, the modal centres by transform, the meter is a
+    positioned track. A rule relied upon and never exercised is a rule somebody deletes
+    as dead.
+    """
+    import re
+
+    html, js = sources["index.html"], sources["app.js"]
+    css = re.sub(r"/\*.*?\*/", " ", sources["app.css"], flags=re.S)
+
+    toggled = set(re.findall(r"(?:show|voiceShow)\(\s*(?:el|voice)\.(\w+)", js))
+    lookups = dict(re.findall(r"(\w+):\s*document\.getElementById\(['\"]([^'\"]+)['\"]\)", js))
+    ids = {lookups[name] for name in toggled if name in lookups}
+    assert ids, "the script must toggle something"
+
+    classes: set[str] = set()
+    for element_id in ids:
+        tag = re.search(rf'<[^>]*\bid="{re.escape(element_id)}"[^>]*>', html)
+        if not tag:
+            continue
+        found = re.search(r'class="([^"]*)"', tag.group(0))
+        if found:
+            classes |= set(found.group(1).split())
+
+    offenders = sorted(
+        {
+            name
+            for name in classes
+            for rule in re.finditer(rf"\.{re.escape(name)}\s*(?:,[^{{]*)?\{{([^}}]*)\}}", css)
+            if re.search(r"(^|[;\s])display\s*:", rule.group(1))
+        }
+    )
+    assert offenders == [], (
+        f"these classes set `display` and sit on elements the script hides: {offenders}. "
+        "Lay them out with margins, position or transform instead."
+    )
+
+
+def test_the_roster_never_implies_that_it_identifies_voices(sources: dict[str, str]) -> None:
+    """An operator filled a roster with 22 people and asked why every segment still
+    said UNASSIGNED.
+
+    The behaviour was correct and the screen was not. Its only sentence about voices
+    read "Menambah roster tidak menjamin akurasi pengenalan suara" -- which says voice
+    recognition exists and merely is not guaranteed. It does not exist: nothing in this
+    build assigns a speaker, `validate_transcription` rejects any result carrying one,
+    and `minute_items` has no foreign key to a participant.
+
+    Hedging about the accuracy of an absent capability is worse than silence, because
+    it invites exactly the conclusion that was drawn. The roster card must state the
+    absence outright, and no asset may hedge about it.
+    """
+    html = sources["index.html"]
+    # Comments stripped first: the prose explaining why this phrasing was removed names
+    # the phrasing, and matching it would fail the test on its own documentation.
+    js = re.sub(r"/\*.*?\*/", " ", sources["app.js"], flags=re.S)
+    js = re.sub(r"(?<!:)//[^\n]*", " ", js)
+
+    hedges = (
+        "tidak menjamin akurasi pengenalan suara",
+        "belum akurat mengenali suara",
+        "akurasi pengenalan suara",
+    )
+    for phrase in hedges:
+        assert phrase not in js, (
+            f"app.js hedges about voice recognition ({phrase!r}); this build has none, "
+            "so the honest statement is that it does not happen at all"
+        )
+        assert phrase not in html, f"index.html hedges about voice recognition ({phrase!r})"
+
+    card = html[html.index('id="roster-card"') :]
+    card = card[: card.index("</article>")]
+    assert "tidak membuat aplikasi mengenali suara" in card, (
+        "the roster card must say outright that adding a name does not make the "
+        "application recognise a voice"
+    )
+    assert "UNASSIGNED" in card, (
+        "and must name the mark the operator will actually see on every segment"
+    )
+    assert "diucapkan" in card, (
+        "and must say the one thing the roster does do: correct the spelling of a name "
+        "the meeting said out loud"
+    )
+
+
+def test_the_moving_background_stays_cheap(sources: dict[str, str]) -> None:
+    """A background that moves must animate nothing the compositor cannot handle.
+
+    Every card in this shell uses `backdrop-filter`, so a moving background means the
+    blur behind all of them is recomputed each frame -- on an Intel Iris Xe, while
+    twelve CPU threads decode audio for forty minutes. Animating `transform` and
+    `opacity` keeps that on the GPU. Animating a size, a colour or a gradient would
+    force layout or paint on every frame instead, and the cost would land exactly where
+    the machine has none to spare.
+    """
+    css = re.sub(r"/\*.*?\*/", " ", sources["app.css"], flags=re.S)
+
+    frames = re.search(r"@keyframes aurora-drift\s*\{(.*?)\n\}", css, re.S)
+    assert frames, "the drifting background must exist"
+    animated = set(re.findall(r"(?<![\w-])([a-z-]+)\s*:", frames.group(1)))
+    assert animated <= {"transform", "opacity"}, (
+        f"the background animates {sorted(animated - {'transform', 'opacity'})}, which "
+        "cannot be composited; only transform and opacity may move"
+    )
+
+    assert "requestAnimationFrame" not in sources["app.js"], (
+        "the background is CSS only -- a script loop would run beside the ASR worker"
+    )
+    assert "<canvas" not in sources["index.html"]
+
+
+def test_the_background_stops_while_heavy_work_runs(sources: dict[str, str]) -> None:
+    """Motion is a luxury; the transcription is not.
+
+    Keyed off the state the panels already publish, so the background cannot keep
+    drifting while the screen says a job is running -- one source of truth, read twice.
+    """
+    css = re.sub(r"/\*.*?\*/", " ", sources["app.css"], flags=re.S)
+    paused = re.search(r"([^{}]*)\{\s*animation-play-state:\s*paused", css)
+    assert paused, "the background must pause while something heavy is running"
+    selector = paused.group(1)
+    for state in ("#rec-pill", "pill-live", 'data-state="live"'):
+        assert state in selector, f"the pause must react to {state}"
+
+
+def test_stillness_is_honoured_without_flattening_the_design(sources: dict[str, str]) -> None:
+    """`prefers-reduced-motion` stops the drift and keeps the washes.
+
+    Removing the gradients as well would leave the glass surfaces with nothing to be
+    glass against, so somebody who asked for less movement would get a different, worse
+    interface rather than the same one holding still.
+    """
+    css = re.sub(r"/\*.*?\*/", " ", sources["app.css"], flags=re.S)
+    body = _css_block(css, "@media (prefers-reduced-motion: reduce)")
+    assert re.search(r"body::before\s*\{\s*animation:\s*none", body), (
+        "the drift must stop under reduced motion"
+    )
+    assert "background: none" not in body and "display: none" not in body, (
+        "the washes must survive; only the movement stops"
     )

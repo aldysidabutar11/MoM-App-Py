@@ -74,10 +74,28 @@ def test_every_referenced_element_exists(html: str, element_id: str) -> None:
 
 def test_the_script_looks_up_only_ids_that_exist(html: str, js: str) -> None:
     """A missing id attaches no listener, and the button silently does nothing."""
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     for match in re.finditer(r"getElementById\('([^']+)'\)", block):
         assert f'id="{match.group(1)}"' in html, match.group(1)
 
+
+
+def _asr_module(js_text: str) -> str:
+    """The transcription module, ending where its IIFE closes.
+
+    Every assertion here used to read from the marker comment to the end of the file, so
+    a module appended afterwards was examined as though it were part of this panel. The
+    theme module -- whose comment explains that `localStorage` may not be used -- failed
+    a check that `localStorage` never appears. Comments are stripped for the same reason:
+    prose about a rule is not a breach of it.
+    """
+    import re as _re
+
+    start = js_text.index("Phase 4: transcription panel")
+    end = js_text.index("\n})();", start)
+    block = js_text[start:end]
+    block = _re.sub(r"/\*.*?\*/", " ", block, flags=_re.S)
+    return _re.sub(r"(?<!:)//[^\n]*", " ", block)
 
 
 def _panel(html: str) -> str:
@@ -132,7 +150,7 @@ def test_no_class_on_a_toggled_element_sets_display(css: str, html: str, js: str
     real: which `el.X` the script toggles, which element id that is, which classes that
     element carries, and whether any rule for those classes sets `display`.
     """
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     toggled_vars = set(re.findall(r"show\(el\.(\w+)", block))
     assert toggled_vars, "the panel must toggle something"
 
@@ -164,14 +182,14 @@ def test_the_panel_has_no_remote_asset(html: str) -> None:
 
 
 def test_the_script_never_touches_the_session_token(js: str) -> None:
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     for forbidden in ("session_token", "X-MoM-Session-Token", "Bearer", "localStorage"):
         assert forbidden not in block, forbidden
 
 
 def test_the_script_reaches_the_api_only_through_the_bridge(js: str) -> None:
     """A direct fetch would need the token in JavaScript."""
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     for forbidden in ("fetch(", "XMLHttpRequest", "WebSocket", "EventSource"):
         assert forbidden not in block, forbidden
     assert "window.pywebview" in block
@@ -180,21 +198,21 @@ def test_the_script_reaches_the_api_only_through_the_bridge(js: str) -> None:
 
 def test_the_script_never_uses_inner_html(js: str) -> None:
     """Transcript text is arbitrary user speech; assigning it as HTML is an injection."""
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     for forbidden in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
         assert forbidden not in block, forbidden
     assert "textContent" in block
 
 
 def test_the_script_calls_no_microphone_api(js: str) -> None:
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     for forbidden in ("getUserMedia", "AudioContext", "MediaRecorder", "mediaDevices"):
         assert forbidden not in block, forbidden
 
 
 def test_the_panel_offers_no_way_to_download_a_model(html: str, js: str) -> None:
     """Provisioning is a deliberate command-line action, not a button."""
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     assert "/asr/provision" not in block
     assert "provision" not in block.lower().replace("provisioning", "")
     panel = _panel(html)
@@ -204,7 +222,7 @@ def test_the_panel_offers_no_way_to_download_a_model(html: str, js: str) -> None
 
 def test_the_transcribe_button_is_disabled_until_everything_is_ready(js: str) -> None:
     """Eligibility, model readiness and a passed preflight -- all three, server-decided."""
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     assert (
         "el.run.disabled = busy || !eligible || !modelsReady || !preflightOk" in block
     )
@@ -212,7 +230,7 @@ def test_the_transcribe_button_is_disabled_until_everything_is_ready(js: str) ->
 
 def test_eligibility_comes_from_the_server_not_from_javascript(js: str) -> None:
     """The button's enabled state and the explanation beside it cannot then disagree."""
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     assert "entry.eligible" in block
     assert "ineligible_reason" in block
     # No client-side reimplementation of the rules the server already applied.
@@ -222,7 +240,7 @@ def test_eligibility_comes_from_the_server_not_from_javascript(js: str) -> None:
 
 def test_the_button_says_proses_transkripsi(html: str, js: str) -> None:
     assert "Proses transkripsi" in html
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     assert "Proses transkripsi ulang" in block, (
         "re-running an already-transcribed recording must say so on the button"
     )
@@ -230,25 +248,25 @@ def test_the_button_says_proses_transkripsi(html: str, js: str) -> None:
 
 def test_re_running_is_explained_as_a_new_revision(js: str) -> None:
     """Pressing it on a recording that already has a transcript must not look destructive."""
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     assert "revisi baru" in block
     assert "tidak ditimpa" in block
 
 
 def test_the_panel_shows_elapsed_time_while_running(html: str, js: str) -> None:
     assert 'id="asr-elapsed"' in html
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     assert "startElapsed" in block and "stopElapsed" in block
 
 
 def test_the_elapsed_timer_does_not_use_a_repeating_timer(js: str) -> None:
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     assert "setInterval" not in block
     assert "tickElapsed" in block
 
 
 def test_low_confidence_segments_are_marked_not_hidden(css: str, js: str) -> None:
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     assert "LOW_CONFIDENCE_LOGPROB" in block
     assert "avg_logprob" in block
     assert "segment-lowconf" in block
@@ -256,7 +274,7 @@ def test_low_confidence_segments_are_marked_not_hidden(css: str, js: str) -> Non
 
 
 def test_the_panel_runs_preflight_before_offering_the_button(js: str) -> None:
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     assert "/asr/preflight" in block
     assert "preflightOk = false" in block, (
         "selecting another recording must invalidate the previous preflight"
@@ -265,7 +283,7 @@ def test_the_panel_runs_preflight_before_offering_the_button(js: str) -> None:
 
 def test_the_uuid_is_validated_in_the_page_before_being_sent(js: str) -> None:
     """Even though it now comes from a server-supplied list, not from typing."""
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     assert "UUID_RE.test" in block
     assert re.search(r"UUID_RE\s*=\s*/\^\[0-9a-f\]\{8\}", block)
 
@@ -295,12 +313,12 @@ def test_the_panel_states_that_the_master_audio_is_not_modified(html: str) -> No
 
 def test_the_panel_shows_the_speaker_status_from_the_payload(js: str) -> None:
     """Rendered from data, so a later phase that assigns one needs no page change."""
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     assert "segment.speaker_status" in block
 
 
 def test_the_panel_shows_pass2_reason_codes(js: str) -> None:
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     assert "reason_codes" in block
     assert "selected_for_pass2" in block
 
@@ -332,7 +350,7 @@ def test_every_path_the_panel_calls_is_on_the_allowlist(js: str) -> None:
         ALLOWED_PROXY_PATHS,
     )
 
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     literal_gets = set(re.findall(r"get\('(/asr/[\w/]*)'\)", block))
     assert literal_gets <= ALLOWED_PROXY_PATHS, literal_gets - ALLOWED_PROXY_PATHS
     literal_posts = set(re.findall(r"post\('(/asr/[\w/]*)'", block))
@@ -386,7 +404,7 @@ def test_the_transcribe_request_is_not_awaited(js: str) -> None:
     finish. `/asr/status` carries `last_result` and `last_error` precisely so the answer
     can be polled for.
     """
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     assert "await post('/asr/transcribe'" not in block, (
         "holding the request open reports a working run as a timeout"
     )
@@ -395,19 +413,19 @@ def test_the_transcribe_request_is_not_awaited(js: str) -> None:
 
 def test_a_transport_failure_is_not_reported_as_a_failed_run(js: str) -> None:
     """`status: 0` is the bridge giving up, never an answer from the server."""
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     assert "Number(response.status) === 0" in block
 
 
 def test_the_outcome_comes_from_the_status_endpoint(js: str) -> None:
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     for needed in ("last_result", "last_error", "sawBusy", "awaitingRun"):
         assert needed in block, needed
 
 
 def test_a_single_failed_status_poll_does_not_end_the_run(js: str) -> None:
     """One hiccup used to stop the timer and freeze the display on a live pipeline."""
-    block = js[js.index("Phase 4: transcription panel") :]
+    block = _asr_module(js)
     poll = block[block.index("async function poll()") :]
     poll = poll[: poll.index("function schedulePoll")]
     assert "if (awaitingRun) schedulePoll();" in poll

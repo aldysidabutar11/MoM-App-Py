@@ -19,7 +19,8 @@
 
   <header class="topbar">
     <div class="brand">
-      <span class="brand-mark" aria-hidden="true">MoM</span>
+      <span class="brand-mark" id="brand-mark" aria-hidden="true">MoM</span>
+      <img class="brand-logo" id="brand-logo" alt="" hidden>
       <div class="brand-text">
         <h1 id="app-name">MoM-IGD</h1>
         <p class="brand-sub">
@@ -33,6 +34,15 @@
       <span class="badge badge-offline" id="offline-badge" title="Aplikasi tidak pernah menghubungi layanan cloud saat runtime.">
         <span class="dot" aria-hidden="true"></span> Offline Mode
       </span>
+      <div class="theme-switch" role="group" aria-label="Tampilan terang atau gelap">
+        <button type="button" class="theme-option" id="theme-system" data-theme="system"
+                title="Ikuti pengaturan Windows">Sistem</button>
+        <button type="button" class="theme-option" id="theme-light" data-theme="light"
+                title="Selalu terang -- untuk dipakai di luar ruangan">Terang</button>
+        <button type="button" class="theme-option" id="theme-dark" data-theme="dark"
+                title="Selalu gelap">Gelap</button>
+      </div>
+      <span class="warn-line" id="theme-error" hidden></span>
       <button type="button" class="btn" id="refresh-btn">Muat ulang status</button>
     </div>
   </header>
@@ -182,6 +192,20 @@
                 Daftar ini berisi rapat yang sudah pernah direkam. Sebuah rapat dibuat saat
                 Anda menekan <strong>Start</strong> di langkah 1, jadi kalau daftarnya masih
                 kosong, rekam dulu.
+              </p>
+              <p class="notice">
+                <strong>Menambahkan nama di sini tidak membuat aplikasi mengenali suara.</strong>
+                Versi ini <strong>tidak memisahkan siapa yang berbicara</strong> sama sekali,
+                jadi setiap kalimat di transkrip tetap bertanda <code>UNASSIGNED</code> berapa
+                pun nama yang Anda masukkan. Memisahkan pembicara adalah Phase 5 dan
+                mencocokkannya dengan suara adalah Phase 6 &mdash; keduanya belum ada kodenya.
+              </p>
+              <p class="status-detail">
+                Yang <em>dilakukan</em> daftar ini hari ini: saat notulen menulis penanggung
+                jawab, ejaan namanya diambil dari sini &mdash; tetapi hanya kalau nama itu
+                memang <strong>diucapkan</strong> di rapat. Daftar ini tidak pernah bisa
+                memunculkan nama yang tidak terdengar. Ia juga menjadi dasar untuk Phase 5
+                dan 6 nanti.
               </p>
               <div class="capacity-row">
                 <div class="field">
