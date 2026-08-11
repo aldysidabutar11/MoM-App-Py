@@ -1,0 +1,73 @@
+# Konfigurasi mesin ini. Ditulis oleh 1-PASANG.bat.
+#
+# Berkas ini berisi hal yang khusus untuk pemasangan ini -- letak folder data,
+# kebijakan organisasi ini -- bukan hal yang berlaku untuk semua orang. Yang
+# berlaku umum ada di config/default.toml dan sebaiknya tidak diubah.
+#
+# Aman diubah dengan Notepad. Aplikasi membacanya saat mulai, jadi tutup dan
+# buka lagi aplikasinya setelah mengubah sesuatu di sini.
+#
+# Urutan prioritas: --data-dir > MOM_IGD_DATA_DIR > berkas ini > default.toml.
+#
+# ---------------------------------------------------------------------------
+# CATATAN UNTUK YANG MEMBANGUN PAKET, bukan untuk yang memakainya.
+#
+# Berkas ini adalah templat dengan lima penanda. `build_bundle.py` mengisi empat
+# di antaranya saat paket dibangun, dan `pasang.ps1` mengisi {{DATA_ROOT}} saat
+# paket dipasang -- karena hanya itu yang belum diketahui sampai seseorang
+# memilih foldernya.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Tempat seluruh hasil kerja disimpan. Diisi oleh skrip pemasangan.
+#
+# Isinya: exports/ (notulen jadi), recordings/ (audio asli, tidak pernah
+# diubah), working/ (salinan kerja, aman dihapus), db/ (basis data),
+# models/ (model AI), branding/ (logo kop).
+#
+# Penanda di bawah sengaja TIDAK diberi kutip: `pasang.ps1` yang memasang
+# kutipnya, karena hanya skrip itu yang tahu isinya. Path Windows penuh dengan
+# backslash, dan di TOML backslash berarti hal yang berbeda tergantung jenis
+# kutipnya -- menaruh kutip di sini memaksa satu jenis dan membuat skripnya
+# menebak yang lain.
+# ---------------------------------------------------------------------------
+data_root = {{DATA_ROOT}}
+
+[participants]
+# Jumlah kursi pada rapat BARU. Bawaan aplikasi adalah 9, dan 9 itu nilai awal,
+# bukan batas.
+#
+# Kalau direktori peserta organisasi ini lebih besar daripada angka di bawah,
+# rapat baru akan menolak orang berikutnya yang dipilih operator -- dengan pesan
+# yang benar, pada saat yang paling tidak tepat. Isi sedikit di atas jumlah orang
+# yang ada, bukan mentok di langit-langit, supaya salah ketik "220" tetap ditolak.
+#
+# Kapasitas tetap milik masing-masing rapat dan masih bisa diubah pada rapat itu
+# sendiri.
+default_meeting_participant_capacity = {{KAPASITAS}}
+
+# Langit-langit pengaman. Ukuran daftar sebesar ini belum pernah diukur
+# akurasinya, dan tidak ada yang mengklaim sebaliknya.
+maximum_meeting_participant_capacity = {{KAPASITAS_MAKSIMUM}}
+
+[asr]
+# Seberapa banyak bagian bicara yang boleh ditranskrip ulang oleh model yang
+# lebih akurat. Bawaan aplikasi 0.25.
+#
+# Model tahap satu cepat tetapi tidak cukup baik untuk dijadikan notulen pada
+# bahasa Indonesia bercampur istilah teknis. Diukur pada rekaman 135 detik,
+# audio dan model yang sama:
+#
+#     nilai   waktu   hasil
+#     0.25    55.8s   "katol informas di panggil dengan seluruh tahan"
+#     1.00    97.8s   "katalog informasi dipanggil dengan selalu tahan"
+#
+# Biayanya nyata dan pantas disebut terus terang: pada nilai 1.0, rapat 60 menit
+# perlu sekitar 43 menit untuk ditranskrip, bukan sekitar 25 menit.
+#
+# Turunkan ke 0.25 kalau kecepatan lebih penting daripada ketepatan kata pada
+# laptop tertentu. Laptop yang lebih lambat dari mesin pengukuran akan lebih
+# lambat lagi dari angka di atas.
+pass2_budget_ratio = {{RASIO_PASS2}}
+
+{{BLOK_BRANDING}}

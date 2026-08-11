@@ -103,6 +103,35 @@ directories only.
 
 ---
 
+## Installing a team, without the internet
+
+The quick start above uses the network twice — `pip install`, then `asr provision` at
+~4.3 GiB. Once, that is fine. Ten times it is tens of gigabytes of downloads, ten
+chances to resolve dependencies differently, and ten chances to land on the Microsoft
+Store interpreter, whose filesystem redirection breaks native module loading.
+
+[`packaging/build_bundle.py`](packaging/build_bundle.py) produces **one ZIP that
+installs with no network at all** — the wheels, the models and the official Python
+installer travel inside it:
+
+```powershell
+.\.venv\Scripts\python.exe packaging\build_bundle.py `
+    --out D:\MoM-IGD-Rilis `
+    --models-from D:\MoM-IGD-Data\models
+```
+
+The recipient extracts it and double-clicks `1-PASANG.bat`. It asks two questions — may
+Python 3.12 be installed, and where should the data live — and does the rest itself,
+in about five minutes. Then `2-JALANKAN.bat` to run and `3-PERIKSA.bat` to diagnose.
+`PANDUAN.md`, the operator guide, travels inside the ZIP in Indonesian.
+
+Building needs the network; installing from the result does not. That asymmetry is the
+point. The organisation's participant list and letterhead are **build-time inputs**, not
+repository content — a bundle built without them installs perfectly well, with an empty
+participant directory and no logo. See [`packaging/README.md`](packaging/README.md).
+
+---
+
 ## Setup
 
 ### 1. Python 3.12 (required)
@@ -533,6 +562,9 @@ MoM-IGD/
 │  │                          · audio_checks.py (Phase 2 device/capture checks)
 │  ├─ jobs/                   workflow state machine (declaration + persistence)
 │  └─ shell/                  pywebview launcher + static web/ assets
+├─ packaging/
+│  ├─ build_bundle.py         builds the offline installation ZIP
+│  └─ bundle/                 what goes in its root: .bat, PANDUAN.md, scripts/
 ├─ tests/                     the Phase 1 + Phase 2 test suite
 ├─ requirements.txt           pinned runtime closure
 ├─ requirements-dev.txt       pinned dev/test closure

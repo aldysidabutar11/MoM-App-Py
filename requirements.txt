@@ -165,6 +165,12 @@ huggingface-hub==1.25.1
 humanfriendly==10.0
 mpmath==1.3.0
 numpy==2.2.6
+# `onnxruntime` requires `packaging` unconditionally, so it belongs to the RUNTIME
+# closure -- it was pinned only in requirements-dev.txt, which meant installing this
+# file alone resolved it to whatever was newest that day. Found by the offline bundle
+# builder: resolving the two files in separate passes produced a wheelhouse holding
+# two versions of it. Keep the pin identical in both files.
+packaging==26.2
 onnxruntime==1.23.2
 protobuf==7.35.1
 pyreadline3==3.5.6
