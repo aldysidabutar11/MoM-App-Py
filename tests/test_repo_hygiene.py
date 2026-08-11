@@ -21,8 +21,48 @@ REPO = repo_root()
 SKIP_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", "htmlcov"}
 
 
+def _in_git_working_tree() -> bool:
+    """Whether these tests can ask git anything at all.
+
+    Computed once at import: the answer cannot change during a session, and the
+    tests that depend on it are parametrised twenty-one ways.
+    """
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--git-dir"], cwd=str(REPO), capture_output=True
+        )
+    except OSError:  # pragma: no cover - git is not installed at all
+        return False
+    return completed.returncode == 0
+
+
+_GIT_WORKING_TREE = _in_git_working_tree()
+
+
+def _require_git() -> None:
+    """Skip, rather than fail, when there is no repository to interrogate.
+
+    ``git check-ignore -q`` exits 1 for "not ignored" and 128 for "this is not a
+    git repository", and ``_is_ignored`` collapsed both to ``False``. Run from an
+    extracted release bundle -- tracked files present, no ``.git`` -- that turned
+    every artefact into "would be committed": twenty-one failures that said
+    nothing whatever about ``.gitignore``, which is the only thing this file can
+    check. A red suite that means nothing is how an operator learns to ignore a
+    red suite.
+
+    The sibling checks in ``test_mom_boundaries`` and ``test_participant_seed``
+    already skip on exactly this condition; these now agree with them. The
+    guarantee is unchanged everywhere it is answerable, which is the repository
+    and CI -- and the six checks below that read ``.gitignore`` and
+    ``.gitattributes`` from disk keep running either way.
+    """
+    if not _GIT_WORKING_TREE:
+        pytest.skip("not a git working tree")
+
+
 def _check_ignored(paths: list[str]) -> set[str]:
     """Return the subset of ``paths`` that git would ignore."""
+    _require_git()
     if not paths:
         return set()
     result = subprocess.run(
@@ -35,6 +75,7 @@ def _check_ignored(paths: list[str]) -> set[str]:
 
 
 def _is_ignored(path: str) -> bool:
+    _require_git()
     return (
         subprocess.run(
             ["git", "check-ignore", "-q", "--", path], cwd=str(REPO)

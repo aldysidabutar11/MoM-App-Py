@@ -673,7 +673,7 @@ def test_stillness_is_honoured_without_flattening_the_design(sources: dict[str, 
 
 
 def test_the_setup_guide_tells_a_new_clone_where_its_data_goes() -> None:
-    """A colleague with no D: drive follows every step correctly and then fails.
+    r"""A colleague with no D: drive follows every step correctly and then fails.
 
     The guide covered Python, the environment, dependencies and models, and stopped. The
     shipped `data_root` is `D:\MoM-IGD-Data`, so the first command on a C:-only laptop
@@ -685,7 +685,9 @@ def test_the_setup_guide_tells_a_new_clone_where_its_data_goes() -> None:
     readme = (root / "README.md").read_text(encoding="utf-8")
 
     assert "data_root" in readme, "the setup guide must name the setting"
-    assert "config/local.toml" in readme or "config\local.toml" in readme
+    # Raw: `\l` is not an escape sequence, so this string only meant what it looks
+    # like by accident. Python warns about it today and will raise tomorrow.
+    assert "config/local.toml" in readme or r"config\local.toml" in readme
     assert "exports/" in readme, "and must say where the finished documents land"
     assert (root / "config" / "local.example.toml").is_file(), (
         "the file the guide tells the reader to copy must exist"
