@@ -1,0 +1,58 @@
+# Machine-local configuration. Copy this to `config/local.toml` and edit.
+#
+# `config/local.toml` is gitignored on purpose: it holds settings that belong to one
+# installation -- this machine's disk layout, this organisation's policy -- rather than
+# to the product. Anything that should be true for everyone who clones the repository
+# belongs in `config/default.toml` instead.
+#
+# Precedence: --data-dir > MOM_IGD_DATA_DIR > this file > config/default.toml.
+
+# ---------------------------------------------------------------------------
+# Where everything the application produces is written. REQUIRED READING: the
+# shipped default is D:\MoM-IGD-Data, and on a machine with no D: drive the
+# first command fails with "The system cannot find the path specified". Set a
+# path that exists.
+#
+# It must be outside the repository -- configuration validation refuses a data
+# root inside the source tree, because recordings, voiceprints and the database
+# are exactly what must never reach a git remote.
+# ---------------------------------------------------------------------------
+data_root = 'D:\MoM-IGD-Data'
+
+# ---------------------------------------------------------------------------
+# Everything below is optional. The shipped defaults are sensible; these are the
+# settings a real deployment most often wants to change.
+# ---------------------------------------------------------------------------
+
+# [participants]
+# # Seats on a NEW meeting's roster. Nine is the shipped default and it is a
+# # default, not a limit. If your participant directory is larger, raise this --
+# # otherwise the tenth person an operator picks is refused, correctly, at the
+# # worst possible moment.
+# default_meeting_participant_capacity = 9
+# # A safety ceiling, so a typo of "220" is still refused. Raising it does not
+# # make a large roster accurate; nothing here has been measured for that.
+# maximum_meeting_participant_capacity = 50
+
+# [asr]
+# # How much of the detected speech the accurate second model may re-transcribe.
+# # 0.25 is fast; 1.0 is materially better on Indonesian technical speech and
+# # roughly doubles the wall time. Measured on one 135-second recording:
+# #
+# #   ratio  wall    RTF    result
+# #   0.25   55.8s   0.41   "katol informas di panggil dengan seluruh tahan"
+# #   1.00   97.8s   0.72   "katalog informasi dipanggil dengan selalu tahan"
+# #
+# # At RTF 0.72 a sixty-minute meeting takes about 43 minutes to transcribe.
+# pass2_budget_ratio = 0.25
+
+# [mom.document]
+# # The letterhead on exported minutes. Presentation only: nothing here changes
+# # what is extracted, what is verified or what is stored, and the draft banner
+# # beneath it is deliberately not configurable.
+# organisation = ""
+# organisation_subtitle = ""
+# # A bare filename inside <data_root>/branding -- PNG or JPEG, under 2 MB. A
+# # path is refused. Prefer artwork with a transparent background: a baked-in
+# # backdrop prints as a band across the top of a white page.
+# logo_filename = ""

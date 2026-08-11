@@ -199,6 +199,59 @@ actually decode is not recorded as ready.
 Nothing else downloads, ever. A missing model is `MODEL_UNAVAILABLE` — never a silent
 fetch, and never a fall back to whichever other model happens to be present.
 
+### 5. Where the data goes (set this before the first run)
+
+Everything the application produces lives under one **runtime data root**, outside the
+repository. The shipped default is `D:\MoM-IGD-Data`, which is right for the machine this
+was built on and wrong for a laptop with no D: drive -- there, the first command fails
+with `The system cannot find the path specified`. `doctor` says so plainly, but it is
+easier to set it first.
+
+Pick a path that exists, then make it the default for this machine:
+
+```powershell
+copy config\local.example.toml config\local.toml
+notepad config\local.toml          # set data_root to a real path
+```
+
+`config/local.toml` is gitignored: it holds this machine's settings, not the product's.
+Precedence is `--data-dir` > `MOM_IGD_DATA_DIR` > `config/local.toml` > the shipped
+default, so a one-off run can still point somewhere else.
+
+Then create the tree and check it:
+
+```powershell
+.\.venv\Scripts\python.exe -m mom_igd db init
+.\.venv\Scripts\python.exe -m mom_igd doctor        # expect FAIL: 0
+```
+
+What appears under the root, and what each part is for:
+
+| Folder | Holds |
+|---|---|
+| `exports/` | **The finished minutes.** Word, HTML, Markdown and text, one file per revision. This is the folder to open. |
+| `recordings/` | Master audio, one directory per meeting, plus its manifest and checksums. Never modified after capture. |
+| `working/` | The 16 kHz mono copy transcription reads. Derived, and safe to delete. |
+| `db/` | The SQLite database: meetings, participants, transcripts, minutes. |
+| `models/` | Model weights, fetched by `asr provision`. Several GB. |
+| `branding/` | Optional letterhead logo — see below. |
+| `logs/`, `temp/`, `backups/`, `keys/`, `voiceprints/` | Runtime support. |
+
+### 6. Optional, per organisation
+
+Neither is in the repository, because neither belongs to a general-purpose tool.
+
+**The people who attend your meetings.** Copy `config/participants.example.toml` to
+`config/participants.local.toml`, put the names in, and run `participant import`. The
+operator then picks a name instead of typing one. See the section above for what the
+roster does and does not do — it does **not** identify voices.
+
+**Your letterhead.** Drop a PNG or JPEG into `<data_root>/branding/`, then set
+`organisation` and `logo_filename` under `[mom.document]` in `config/local.toml`. The same
+file is used by the exported documents and by the application window, so there is one
+place to change it. A transparent PNG is worth asking your design team for: artwork with a
+background baked in prints that background across the top of a white page.
+
 ---
 
 ## Commands
